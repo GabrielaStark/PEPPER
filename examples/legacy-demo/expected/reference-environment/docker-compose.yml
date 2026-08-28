@@ -1,0 +1,51 @@
+# Entorno de referencia del legacy-demo.
+#
+# Esto es la RESPUESTA ESPERADA de la fase Rehydrate para este fixture, no un
+# insumo: PEPPER debería llegar a algo equivalente partiendo de artifacts/.
+# Sirve además para levantar el demo a mano y capturar evidencia real.
+#
+# NOTA: no verificado en el entorno donde se escribió (sin Docker ni red).
+# Trátese como especificación ejecutable, no como algo probado.
+#
+# Fidelidad antes que modernización: las versiones reproducen el stack original
+# (Java 8, WildFly 10, PostgreSQL 9.6), no las actuales.
+
+version: "3"
+
+services:
+  database:
+    image: postgres:9.6
+    environment:
+      POSTGRES_DB: solicitudes
+      POSTGRES_USER: solicitudes_app
+      POSTGRES_PASSWORD: solicitudes
+    volumes:
+      # Los scripts de artifacts/database/ se ejecutan en orden al inicializar.
+      - ../../artifacts/database:/docker-entrypoint-initdb.d:ro
+    command:
+      # Observabilidad que PEPPER activa porque controla el entorno reconstruido:
+      # en producción esto sería inaceptable; aquí es la fuente de evidencia SQL.
+      - postgres
+      - -c
+      - log_statement=all
+      - -c
+      - log_line_prefix=%m [%p] %u@%d
+      - -c
+      - log_destination=stderr
+    ports:
+      - "5432:5432"
+
+  application:
+    build:
+      context: .
+      dockerfile: wildfly.Dockerfile
+    depends_on:
+      - database
+    environment:
+      DB_HOST: database
+      DB_PORT: 5432
+      DB_NAME: solicitudes
+      DB_USER: solicitudes_app
+      DB_PASSWORD: solicitudes
+    ports:
+      - "8080:8080"

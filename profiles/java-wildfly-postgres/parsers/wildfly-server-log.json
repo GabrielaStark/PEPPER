@@ -1,0 +1,29 @@
+{
+  "parser_version": "0.1.0",
+  "source": "wildfly",
+  "description": "server.log de WildFly/JBoss EAP con el formato por defecto: '2026-08-25 13:20:44,401 INFO  [logger] (thread) mensaje'. Hora local sin zona (se aplica la de la sesión), milisegundos con coma.",
+  "line_pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2},\\d{3})\\s+(?P<severity>[A-Z]+)\\s+\\[(?P<logger>[^\\]]+)\\]\\s+\\((?P<thread>[^)]+)\\)\\s+(?P<message>.*)$",
+  "timestamp": { "group": "timestamp", "format": "%Y-%m-%d %H:%M:%S,%f" },
+  "fields": {
+    "component": { "from": "logger", "transform": "last_segment" },
+    "severity": {
+      "from": "severity",
+      "map": { "TRACE": "debug", "DEBUG": "debug", "INFO": "info", "WARN": "warn", "WARNING": "warn", "ERROR": "error", "FATAL": "fatal" },
+      "default": "info"
+    },
+    "message": { "from": "message" },
+    "metadata.logger": { "from": "logger" },
+    "metadata.thread": { "from": "thread" }
+  },
+  "event_type": {
+    "default": "log",
+    "rules": [
+      { "when": { "field": "message", "matches": "Exception|^\\s+at [\\w.$]+\\(" }, "value": "exception" }
+    ]
+  },
+  "continuation": { "pattern": "^(\\s+at |Caused by: |\\t|\\s+\\.\\.\\. \\d+ more)" },
+  "affinity": ["thread"],
+  "noise": [
+    { "id": "pool-validation", "description": "validación periódica del pool de conexiones (JCA)", "matches": "^Periodic validation: pool" }
+  ]
+}

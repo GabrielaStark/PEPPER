@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pepper/event.schema.json",
+  "title": "PepperEvent",
+  "description": "Evento normalizado. Toda fuente de evidencia (log de aplicación, SQL, HTTP, contenedor) se convierte a esta forma antes de correlacionar. Los parsers son de perfil o genéricos; este schema es único.",
+  "type": "object",
+  "required": ["event_id", "timestamp", "session_id", "source", "event_type"],
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "description": "Identificador único del evento dentro de la sesión (p. ej. E-0341). Las conclusiones del discovery referencian este ID."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Momento del evento con zona horaria."
+    },
+    "session_id": {
+      "type": "string",
+      "description": "Sesión de observación (ventana de flujo) a la que pertenece el evento."
+    },
+    "source": {
+      "type": "string",
+      "description": "Fuente de la evidencia, p. ej.: http-proxy, container, postgresql, wildfly, application. Vocabulario abierto: los perfiles pueden aportar fuentes nuevas."
+    },
+    "component": {
+      "type": "string",
+      "description": "Componente lógico dentro de la fuente, p. ej.: ApplicationService, database, frontend."
+    },
+    "event_type": {
+      "type": "string",
+      "enum": ["log", "method", "sql", "http_request", "http_response", "exception", "container", "transaction", "custom"],
+      "description": "Naturaleza del evento."
+    },
+    "operation": {
+      "type": "string",
+      "description": "Operación observada, p. ej.: saveApplication, INSERT, POST /applications."
+    },
+    "correlation_id": {
+      "type": ["string", "null"],
+      "description": "ID que enlaza eventos de una misma petición. Normalmente lo inyecta el proxy HTTP de PEPPER; null si no fue posible propagarlo hasta esta fuente."
+    },
+    "message": {
+      "type": "string",
+      "description": "Texto relevante del evento, ya reducido."
+    },
+    "raw_ref": {
+      "type": "string",
+      "description": "Referencia a la evidencia cruda de origen, formato archivo:línea (p. ej. application/server.log:4812). Obligatoria en la práctica para trazabilidad; solo puede faltar en eventos sintéticos del propio PEPPER."
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["debug", "info", "warn", "error", "fatal"],
+      "description": "Severidad normalizada, cuando la fuente la expresa."
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Datos adicionales específicos de la fuente (tabla afectada, status HTTP, duración, thread, contenedor...). Libre, pero las claves comunes recomendadas son: table, http_status, duration_ms, thread, container, transaction_id."
+    }
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pepper/session.schema.json",
+  "title": "PepperSession",
+  "description": "Sesión de observación (session.json): la ventana de un flujo funcional y los colectores que capturaron evidencia. Lo produce Observe y lo consume Correlate.",
+  "type": "object",
+  "required": ["session_id", "observed_start", "observed_end", "collectors"],
+  "additionalProperties": false,
+  "properties": {
+    "session_id": { "type": "string", "description": "Identificador de la sesión; etiqueta todos los eventos (event.session_id)." },
+    "flow_name": { "type": "string", "description": "Nombre funcional del flujo observado, p. ej. 'Registrar solicitud'." },
+    "observed_start": { "type": "string", "format": "date-time", "description": "Inicio de la ventana, marcado por el operador." },
+    "observed_end": { "type": "string", "format": "date-time", "description": "Fin de la ventana." },
+    "timezone": {
+      "type": "string",
+      "pattern": "^([+-]\\d{2}:\\d{2}|Z|UTC)$",
+      "description": "Zona que se asume para las fuentes cuyos timestamps no la traen (p. ej. logs de aplicación con hora local)."
+    },
+    "synthetic": { "type": "boolean", "description": "true si la evidencia fue construida a mano y no capturada de una ejecución real." },
+    "synthetic_note": { "type": "string" },
+    "operator_note": { "type": "string", "description": "Lo que el operador hizo durante la ventana, en sus palabras." },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "profile_id": { "type": ["string", "null"], "description": "Perfil usado; Correlate lo toma por defecto para resolver parsers." },
+        "support_tier": { "type": "integer", "enum": [1, 2, 3] }
+      }
+    },
+    "collectors": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["source", "file"],
+        "additionalProperties": false,
+        "properties": {
+          "source": { "type": "string", "description": "Nombre de la fuente, tal como aparecerá en event.source. Determina el parser: builtin del núcleo (http-proxy) o declarado por el perfil." },
+          "file": { "type": "string", "description": "Ruta relativa al directorio de evidencia." },
+          "kind": { "type": "string", "enum": ["generic", "profile"], "description": "Si el colector es genérico del núcleo o específico del perfil." },
+          "note": { "type": "string" }
+        }
+      }
+    }
+  }
+}

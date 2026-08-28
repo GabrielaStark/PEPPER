@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pepper/flow.schema.json",
+  "title": "PepperFlow",
+  "description": "Resultado de Correlate (flow.json): los eventos de la ventana agrupados por petición, con la clave que sustenta cada enlace, y los que no pudieron asignarse con confianza.",
+  "type": "object",
+  "required": ["schema_version", "session_id", "window", "traces", "unassigned", "stats"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string" },
+    "session_id": { "type": "string" },
+    "flow_name": { "type": "string" },
+    "window": {
+      "type": "object",
+      "required": ["start", "end"],
+      "additionalProperties": false,
+      "properties": {
+        "start": { "type": "string", "format": "date-time" },
+        "end": { "type": "string", "format": "date-time" }
+      }
+    },
+    "traces": {
+      "type": "array",
+      "description": "Una traza por correlation_id (normalmente, una por petición HTTP), en orden de inicio.",
+      "items": {
+        "type": "object",
+        "required": ["correlation_id", "request", "events"],
+        "additionalProperties": false,
+        "properties": {
+          "correlation_id": { "type": "string" },
+          "request": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "method": { "type": ["string", "null"] },
+              "path": { "type": ["string", "null"] },
+              "status": { "type": ["integer", "null"] },
+              "duration_ms": { "type": ["number", "null"] },
+              "started": { "type": "string", "format": "date-time" },
+              "ended": { "type": ["string", "null"], "format": "date-time", "description": "null si no se observó respuesta (traza abierta hasta el fin de la ventana)." }
+            }
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["event_id", "timestamp", "source", "event_type", "summary", "basis"],
+              "additionalProperties": false,
+              "properties": {
+                "event_id": { "type": "string" },
+                "timestamp": { "type": "string", "format": "date-time" },
+                "source": { "type": "string" },
+                "component": { "type": ["string", "null"] },
+                "event_type": { "type": "string" },
+                "summary": { "type": "string" },
+                "basis": { "type": "string", "description": "Qué sustenta el enlace: 'correlation_id', 'ventana temporal', 'ventana temporal + thread X', 'pid N (ventanas concurrentes)'..." }
+              }
+            }
+          }
+        }
+      }
+    },
+    "unassigned": {
+      "type": "array",
+      "description": "Eventos que no se asignaron a ninguna petición, con la razón. Siguen en events.jsonl.",
+      "items": {
+        "type": "object",
+        "required": ["event_id", "timestamp", "source", "summary", "reason", "candidates"],
+        "additionalProperties": false,
+        "properties": {
+          "event_id": { "type": "string" },
+          "timestamp": { "type": "string", "format": "date-time" },
+          "source": { "type": "string" },
+          "summary": { "type": "string" },
+          "reason": { "type": "string" },
+          "candidates": { "type": "array", "items": { "type": "string" }, "description": "Peticiones concurrentes entre las que no se pudo decidir, si aplica." }
+        }
+      }
+    },
+    "stats": {
+      "type": "object",
+      "required": ["events", "assigned", "unassigned"],
+      "additionalProperties": false,
+      "properties": {
+        "events": { "type": "integer" },
+        "assigned": { "type": "integer" },
+        "unassigned": { "type": "integer" }
+      }
+    }
+  }
+}

@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pepper/runtime-discovery.schema.json",
+  "title": "RuntimeDiscovery",
+  "description": "Contrato de salida de PEPPER: lo que el agente de análisis produce y lo que STARK (u otro consumidor) recibe. Independiente del motor que lo generó. Regla central: toda conclusión referencia evidencia; lo indeterminable va a unknowns, no se omite.",
+  "type": "object",
+  "required": ["schema_version", "flow", "engine", "steps", "candidate_rules", "unknowns", "evidence"],
+  "additionalProperties": false,
+  "$defs": {
+    "evidenceRefs": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" },
+      "description": "IDs de entradas en 'evidence' que sustentan esta conclusión."
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["confirmada", "fuertemente_sustentada", "candidata", "desconocida", "contradicha"],
+      "description": "Mapeo a la procedencia de stark: confirmada/fuertemente_sustentada→inferida (código y runtime; solo una persona con nombre la promueve a confirmada), candidata→inferida con nota o pregunta abierta, contradicha→en-duda, desconocida→pregunta abierta."
+    }
+  },
+  "properties": {
+    "schema_version": { "type": "string", "description": "Versión de este contrato, semver." },
+    "flow": {
+      "type": "object",
+      "required": ["name", "session_id", "observed_start", "observed_end"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "description": "Nombre funcional del flujo, p. ej. 'Registrar solicitud'." },
+        "session_id": { "type": "string" },
+        "observed_start": { "type": "string", "format": "date-time" },
+        "observed_end": { "type": "string", "format": "date-time" }
+      }
+    },
+    "engine": {
+      "type": "object",
+      "required": ["agent"],
+      "additionalProperties": false,
+      "description": "Quién analizó. Solo registro: la forma de la salida no depende del motor.",
+      "properties": {
+        "agent": { "type": "string", "description": "p. ej. claude-code, codex." },
+        "model": { "type": "string" },
+        "analyzed_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "role"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "role": { "type": "string" },
+          "observed_in": { "$ref": "#/$defs/evidenceRefs" }
+        }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "description": "Secuencia observada del flujo, en orden.",
+      "items": {
+        "type": "object",
+        "required": ["order", "component", "action", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "order": { "type": "integer" },
+          "timestamp": { "type": "string", "format": "date-time" },
+          "component": { "type": "string" },
+          "action": { "type": "string", "description": "Qué ocurrió, p. ej. 'ApplicationService.saveApplication()', 'INSERT application'." },
+          "correlation_basis": { "type": "string", "description": "Qué clave sustenta el enlace de este paso al flujo (correlation_id, ventana temporal, ...)." },
+          "evidence": { "$ref": "#/$defs/evidenceRefs" }
+        }
+      }
+    },
+    "candidate_rules": {
+      "type": "array",
+      "description": "Reglas de negocio candidatas. Nunca autoritativas: el humano decide qué se convierte en conocimiento.",
+      "items": {
+        "type": "object",
+        "required": ["id", "statement", "confidence", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "description": "p. ej. R-001." },
+          "statement": { "type": "string", "description": "Formulada con cautela: 'el sistema parece...'." },
+          "confidence": { "$ref": "#/$defs/confidence" },
+          "evidence": { "$ref": "#/$defs/evidenceRefs" },
+          "code_refs": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Ubicaciones en el código fuente que la implementarían (archivo:línea), cuando hay código."
+          }
+        }
+      }
+    },
+    "queries": {
+      "type": "array",
+      "description": "Consultas y cambios de datos observados.",
+      "items": {
+        "type": "object",
+        "required": ["operation", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "operation": { "type": "string", "enum": ["SELECT", "INSERT", "UPDATE", "DELETE", "PROCEDURE", "DDL", "OTHER"] },
+          "table": { "type": "string" },
+          "statement": { "type": "string", "description": "SQL observado, saneado si contiene datos sensibles." },
+          "evidence": { "$ref": "#/$defs/evidenceRefs" }
+        }
+      }
+    },
+    "dependencies": {
+      "type": "array",
+      "description": "Dependencias observadas (servicios externos, colas, integraciones).",
+      "items": {
+        "type": "object",
+        "required": ["name", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "kind": { "type": "string" },
+          "detail": { "type": "string" },
+          "evidence": { "$ref": "#/$defs/evidenceRefs" }
+        }
+      }
+    },
+    "errors": {
+      "type": "array",
+      "description": "Errores y excepciones observados durante el flujo.",
+      "items": {
+        "type": "object",
+        "required": ["description", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "description": { "type": "string" },
+          "component": { "type": "string" },
+          "evidence": { "$ref": "#/$defs/evidenceRefs" }
+        }
+      }
+    },
+    "contradictions": {
+      "type": "array",
+      "description": "Divergencias entre lo esperado (código/documentación) y lo observado. Siempre requieren validación humana.",
+      "items": {
+        "type": "object",
+        "required": ["expected", "observed", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "expected": { "type": "string", "description": "Qué decía el código o la documentación, con referencia (archivo:línea o doc)." },
+          "observed": { "type": "string" },
+          "possible_causes": { "type": "array", "items": { "type": "string" } },
+          "evidence": { "$ref": "#/$defs/evidenceRefs" }
+        }
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "description": "Lo que no pudo determinarse. Parte obligatoria de la salida: se declara, no se omite.",
+      "items": {
+        "type": "object",
+        "required": ["question"],
+        "additionalProperties": false,
+        "properties": {
+          "question": { "type": "string" },
+          "why_unknown": { "type": "string", "description": "Por qué la evidencia disponible no alcanza." },
+          "recommended_evidence": { "type": "string", "description": "Qué observación o artefacto adicional lo resolvería." }
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "description": "Registro de evidencia referenciable. Cada entrada resuelve a un evento normalizado o a evidencia cruda.",
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "description": "p. ej. E-034. Es lo que referencian las conclusiones." },
+          "event_id": { "type": "string", "description": "Evento en events.jsonl, cuando aplica." },
+          "raw_ref": { "type": "string", "description": "Referencia cruda archivo:línea, cuando aplica." },
+          "description": { "type": "string" }
+        }
+      }
+    }
+  }
+}

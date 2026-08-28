@@ -1,0 +1,28 @@
+<!--
+  Fragmento del standalone.xml del servidor original (SRV-TRAMITES-01).
+  Rescatado por el area de infraestructura; el archivo completo se perdio.
+-->
+<subsystem xmlns="urn:jboss:domain:datasources:4.0">
+    <datasources>
+        <datasource jndi-name="java:jboss/datasources/SolicitudesDS"
+                    pool-name="SolicitudesDS"
+                    enabled="true"
+                    use-java-context="true">
+            <connection-url>jdbc:postgresql://srv-bd-01:5432/solicitudes</connection-url>
+            <driver>postgresql</driver>
+            <pool>
+                <min-pool-size>5</min-pool-size>
+                <max-pool-size>50</max-pool-size>
+            </pool>
+            <security>
+                <user-name>solicitudes_app</user-name>
+                <password>******</password>
+            </security>
+        </datasource>
+        <drivers>
+            <driver name="postgresql" module="org.postgresql">
+                <xa-datasource-class>org.postgresql.xa.PGXADataSource</xa-datasource-class>
+            </driver>
+        </drivers>
+    </datasources>
+</subsystem>
