@@ -32,7 +32,7 @@ Qué esperar de cada agente, cómo validar su output y qué hace el núcleo por 
 
 ## 1. Fase 0: Init
 
-`/pepper-init [ruta]`. Sin subagente. Verifica `python3`, `jsonschema` y Docker; prepara `legacy/`, `evidence/`, `docs/pepper/`; corre `pepper detect` sobre los artefactos y te dice el escalón y el siguiente comando. No mueve tus artefactos: tú los pones en `legacy/`.
+`/pepper-init [ruta]`. Sin subagente. Verifica `python3`, `jsonschema` y Docker; prepara `legacy/`, `evidence/`, `docs/pepper/`; corre `pepper detect` sobre los artefactos y te dice el escalón y el siguiente comando. No mueve tus artefactos: tú los pones en `legacy/` — o, si PEPPER está instalado encima del repo del legacy, los artefactos son el repo mismo y se inspecciona con `/pepper-inspect .`.
 
 ---
 
@@ -174,9 +174,9 @@ Publica: `runtime-discovery.json/.md`, `validation.md`, derivados (`flows.json`,
 
 ### Entrega a stark
 
-| Si existe | PEPPER hace |
+| Cuándo | PEPPER hace |
 |---|---|
-| `docs/analysis/` | copia `runtime-discovery.md` como `docs/analysis/runtime-discovery-<session_id>.md`: input de `arqueologo-codigo` en reingeniería |
+| siempre | copia `runtime-discovery.md` como `docs/analysis/runtime-discovery-<session_id>.md` (creando la carpeta): input de `arqueologo-codigo` cuando stark se instale sobre el repo |
 | `docs/REGLAS_DE_NEGOCIO.md` | **no lo edita**; te lista qué llevar a su sección 11 con el mapeo de confianza |
 
 Mapeo de confianza (skill `evidencia-runtime` §3): `confirmada` y `fuertemente_sustentada` → `inferida` (código **y** runtime la respaldan); `candidata` → `inferida` con nota o pregunta abierta; `contradicha` → `en-duda`; `desconocida` → pregunta abierta. **Nada entra como `confirmada`**: eso exige una persona con nombre.

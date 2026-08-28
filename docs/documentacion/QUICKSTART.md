@@ -6,13 +6,9 @@ El camino feliz, de principio a fin. ¿El porqué de cada decisión? → [`PRINC
 
 ## Arranca
 
-Un workspace por legacy. Clona PEPPER con el nombre del sistema y grábate **la regla de oro**: lo que PEPPER te entrega es la herramienta y se ignora en git; lo que PEPPER produce en `docs/pepper/` y los perfiles nuevos son el producto y se commitean; `legacy/` y `evidence/` nunca se commitean — son datos ajenos.
+Dos modos de instalación (comandos exactos en el [README](../../README.md#instalar)): **workspace** — clonas PEPPER como carpeta del legacy y pones los artefactos en `legacy/` — o **encima del repo** del legacy, copiando la herramienta gitignoreada, igual que stark en mantenimiento; ahí los artefactos son el repo mismo (`/pepper-inspect .`) y, al terminar, borras la herramienta e instalas stark, que encuentra el discovery en `docs/analysis/`.
 
-```bash
-git clone https://github.com/GabrielaStark/pepper.git sistema-nominas
-cd sistema-nominas && rm -rf .git && git init
-pip install -r requirements-dev.txt        # jsonschema (validar contratos) + pyyaml (auto-verificación)
-```
+Grábate **la regla de oro**: lo que PEPPER te entrega es la herramienta y se ignora en git; lo que PEPPER produce (`docs/pepper/`, `docs/analysis/runtime-discovery-*.md`) es el producto y se commitea; `legacy/`, `evidence/` y `pepper-out/` nunca se commitean — son datos ajenos.
 
 Un solo riel: los comandos `/pepper-*` desde Claude Code (con Codex u otro agente: cada comando es un archivo de instrucciones en `.claude/commands/`, ver [`AGENTS.md`](../../AGENTS.md)).
 

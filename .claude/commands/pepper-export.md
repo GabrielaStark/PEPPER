@@ -15,9 +15,9 @@ Si el resultado es **RECHAZADO**, muestra los errores tal cual y NO corrijas la 
 
 ## 2. Entrega a stark
 
-- Si existe `docs/analysis/` (workspace de stark en reingeniería), copia `docs/pepper/discovery/$ARGUMENTS/runtime-discovery.md` como `docs/analysis/runtime-discovery-$ARGUMENTS.md`: es el análisis arqueológico que `arqueologo-codigo` lee al levantar requirements.
+- Copia `docs/pepper/discovery/$ARGUMENTS/runtime-discovery.md` como `docs/analysis/runtime-discovery-$ARGUMENTS.md` (crea `docs/analysis/` si no existe): es el análisis arqueológico que `arqueologo-codigo` lee al levantar requirements cuando stark se instale sobre este repo. Se commitea junto con `docs/pepper/`.
 - Si existe `docs/REGLAS_DE_NEGOCIO.md`, **no lo edites**. Lista para el humano qué reglas candidatas, contradicciones y desconocidos convendría llevar a su sección 11 (Descubrimiento), con el mapeo de confianza del skill `evidencia-runtime` §3: lo más alto que PEPPER entrega es `inferida`; `contradicha` → `en-duda`; `desconocida` → pregunta abierta. Nada entra como `confirmada`.
-- Si no hay stark, la publicación en `docs/pepper/discovery/$ARGUMENTS/` es el entregable final.
+- Aunque stark no vaya a usarse, `docs/pepper/discovery/$ARGUMENTS/` y `docs/analysis/` son el entregable final: es lo único que queda en el repo cuando se borra la herramienta.
 
 ## 3. Gate humano final ✋
 

@@ -1,11 +1,11 @@
 ---
 description: Fase 1 · Inspecciona los artefactos del legacy - identifica el stack con evidencia, detecta dependencias y faltantes, elige perfil o redacta un borrador. Produce docs/pepper/stack-report.md.
-argument-hint: "[ruta-a-los-artefactos, por defecto legacy/]"
+argument-hint: "[ruta-a-los-artefactos: legacy/ en el workspace, . encima del repo del legacy]"
 ---
 
 Lee `docs/documentacion/PRINCIPIOS.md` y aplica sus reglas como restricciones duras antes de actuar.
 
-Use the inspector-legacy subagent to produce `docs/pepper/stack-report.md` from the artifacts in `$ARGUMENTS` (por defecto `legacy/`) y, si ningún perfil validado aplica, un borrador de perfil en `profiles/<id>/` con `status: draft`.
+Use the inspector-legacy subagent to produce `docs/pepper/stack-report.md` from the artifacts in `$ARGUMENTS` (`legacy/` en un workspace; `.` cuando PEPPER está instalado encima del repo del legacy) y, si ningún perfil validado aplica, un borrador de perfil en `profiles/<id>/` con `status: draft`.
 
 Gate humano ✋: antes de avanzar, el humano confirma tres cosas: (1) el stack identificado y sus versiones, con la evidencia citada; (2) el escalón y el veredicto (`READY-candidato` / `PARTIAL` / `BLOCKED`); (3) el borrador de perfil, si lo hubo — que las señales de detección y la receta correspondan a **este** legacy y no a "lo común". Nada avanza sin esa confirmación explícita.
 

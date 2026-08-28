@@ -72,9 +72,9 @@ La visión original completa está en [`VISION.md`](VISION.md); este documento r
 
 ## D12. Un workspace por legacy; la herramienta se ignora, el producto se commitea
 
-- **Decisión**: PEPPER se clona como workspace de un legacy. `legacy/` (artefactos) y `evidence/` (capturas) nunca se versionan; `pepper-out/` tampoco; `docs/pepper/` y los perfiles nuevos sí. Igual que stark, la herramienta (`.claude/`, `pepper/`, `schemas/`, `docs/documentacion/`, `examples/`, `tests/`) se gitignorea en el workspace.
-- **Por qué**: los artefactos y la evidencia son datos ajenos, a menudo sensibles; el producto es el conocimiento estructurado. Y actualizar PEPPER es recopiar la herramienta encima.
-- **Consecuencia aceptada**: un perfil redactado en un workspace hay que llevarlo a mano al repo de PEPPER para que sirva al siguiente legacy. Es una copia de carpeta.
+- **Decisión**: PEPPER se instala de dos formas, igual que stark: como **workspace** (clon con los artefactos en `legacy/`) o **encima del repo** del legacy (la herramienta copiada y gitignoreada; los artefactos son el repo mismo). En ambas, la herramienta (`.claude/`, `pepper/`, `schemas/`, `profiles/`, `docs/documentacion/`, `CLAUDE.md`, `AGENTS.md`) se ignora en git; el producto (`docs/pepper/`, `docs/analysis/runtime-discovery-*.md`) se commitea; `legacy/`, `evidence/` y `pepper-out/` nunca. `pepper detect` y `pepper package` reconocen cuándo están encima de un repo (marcador `.claude/commands/pepper-init.md`) y excluyen su propia herramienta. Al terminar, se borra PEPPER, se instala stark y `arqueologo-codigo` encuentra el discovery en `docs/analysis/`.
+- **Por qué**: el flujo real es secuencial — PEPPER primero, stark después, sobre el mismo repo — y el repo del proyecto debe quedar solo con lo que se produjo, sin herramienta. Los artefactos y la evidencia son datos ajenos, a menudo sensibles; el producto es el conocimiento estructurado.
+- **Consecuencia aceptada**: un perfil redactado en un proyecto queda del lado de la herramienta; hay que llevarlo a mano al repo de PEPPER para que sirva al siguiente legacy. Es una copia de carpeta.
 
 ## D13. PEPPER no sella; stark sella
 

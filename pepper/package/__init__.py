@@ -18,9 +18,24 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from pepper import SCHEMAS_DIR, SKILLS_DIR
+from pepper.workspace import is_tool_path, tool_paths
 
 _EVIDENCE_FILES = ("events.jsonl", "flow.json", "flow.md", "reduction.md")
 _LEGACY_IGNORE = shutil.ignore_patterns("target", ".git", "node_modules", "__pycache__", "*.class", ".DS_Store")
+
+
+def _legacy_ignore(legacy_dir: Path):
+    """Ignora build/VCS y, si PEPPER está instalado encima del repo del legacy, su propia herramienta."""
+    tool = tool_paths(legacy_dir)
+
+    def ignore(directory: str, names: List[str]) -> List[str]:
+        ignored = set(_LEGACY_IGNORE(directory, names))
+        ignored.update(name for name in names if is_tool_path(Path(directory) / name, tool))
+        return sorted(ignored)
+
+    return ignore
+
+
 DISCOVERY_SKILL = SKILLS_DIR / "discovery-runtime" / "SKILL.md"
 
 
@@ -124,10 +139,15 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
 
     legacy_dirs: List[str] = []
     if legacy_dir is not None:
+        ignore = _legacy_ignore(legacy_dir)
+        tool = tool_paths(legacy_dir)
         for child in sorted(legacy_dir.iterdir()):
-            if child.is_dir() and not child.name.startswith("."):
-                shutil.copytree(child, out_dir / "legacy" / child.name, ignore=_LEGACY_IGNORE)
-                legacy_dirs.append(child.name)
+            if not child.is_dir() or child.name.startswith(".") or is_tool_path(child, tool):
+                continue
+            if child.name in ("pepper-out", "evidence", "legacy"):
+                continue
+            shutil.copytree(child, out_dir / "legacy" / child.name, ignore=ignore)
+            legacy_dirs.append(child.name)
     has_source = "source" in legacy_dirs
 
     shutil.copy2(SCHEMAS_DIR / "runtime-discovery.schema.json", out_dir / "schemas" / "runtime-discovery.schema.json")

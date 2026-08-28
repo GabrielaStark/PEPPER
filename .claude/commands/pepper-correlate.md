@@ -21,7 +21,7 @@ Agrega `--profile <id>` si `session.json` no declara `environment.profile_id`. S
 python3 -m pepper package pepper-out/$ARGUMENTS/correlated --legacy legacy/ --out pepper-out/$ARGUMENTS/package
 ```
 
-Omite `--legacy` si no hay artefactos del legacy. Si el paquete ya existe, pregunta al humano antes de borrarlo — puede contener un `output/` de un discovery anterior.
+Usa `--legacy .` si PEPPER está instalado encima del repo del legacy (el núcleo excluye su propia herramienta); omite `--legacy` si no hay artefactos. Si el paquete ya existe, pregunta al humano antes de borrarlo — puede contener un `output/` de un discovery anterior.
 
 ## 3. Presenta
 

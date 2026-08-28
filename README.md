@@ -39,27 +39,49 @@ No es "una IA que lee logs". El agente interpreta; PEPPER prepara la realidad qu
 
 ### Instalar
 
-Un workspace por legacy:
+Dos formas, según dónde viva el legacy:
+
+| Tu situación | Modo | Cómo |
+|---|---|---|
+| Tienes artefactos sueltos (WAR, dump, configs) sin repo | **Workspace** | clonar PEPPER como carpeta del legacy; artefactos en `legacy/` |
+| El legacy tiene su repo y ahí mismo vas a seguir con stark | **Encima del repo** | copiar la herramienta al repo, gitignoreada — igual que stark en mantenimiento |
+
+**Workspace:**
 
 ```bash
 git clone https://github.com/GabrielaStark/pepper.git sistema-nominas
 cd sistema-nominas && rm -rf .git && git init
 pip install -r requirements-dev.txt
+# artefactos → legacy/
 ```
+
+**Encima del repo** (desde la raíz del repo del legacy):
+
+```bash
+git clone --depth 1 https://github.com/GabrielaStark/pepper.git /tmp/pepper && \
+cp -r /tmp/pepper/.claude /tmp/pepper/pepper /tmp/pepper/schemas /tmp/pepper/profiles . && \
+mkdir -p docs/pepper && cp -r /tmp/pepper/docs/documentacion docs/ && \
+[ -f CLAUDE.md ] || cp /tmp/pepper/CLAUDE.md . ; [ -f AGENTS.md ] || cp /tmp/pepper/AGENTS.md . ; \
+cp /tmp/pepper/LICENSE LICENSE.pepper && \
+printf '.claude/\npepper/\nschemas/\nprofiles/\ndocs/documentacion/\nCLAUDE.md\nAGENTS.md\nLICENSE.pepper\npepper-out/\nevidence/\n' >> .gitignore && \
+rm -rf /tmp/pepper
+```
+
+Si el repo ya tenía `.claude/`, `CLAUDE.md` o `AGENTS.md` propios, revisa antes: `cp -r` sobreescribe archivos del mismo nombre (los de PEPPER se llaman `pepper-*`, así que conviven con los de stark; los de la raíz no se pisan gracias al `[ -f … ] ||`). En este modo los artefactos son el repo mismo: `/pepper-inspect .`, y el núcleo excluye su propia herramienta al detectar y al empaquetar.
 
 ### La regla de oro: la herramienta no se commitea; el producto sí; los datos ajenos nunca
 
-| | Qué es | ¿Va al git de tu workspace? |
+| | Qué es | ¿Va al git del proyecto? |
 |---|---|---|
-| **Herramienta** | `.claude/`, `pepper/`, `schemas/`, `profiles/` existentes, `docs/documentacion/`, `examples/`, `tests/`, `scripts/` | ❌ NO — se ignora; vive en tu disco y se actualiza recopiando |
-| **Producto** | `docs/pepper/` (reportes, entorno, discovery) y los perfiles nuevos que redactes | ✅ SÍ — es el conocimiento del legacy |
-| **Datos ajenos** | `legacy/` (artefactos), `evidence/` (capturas), `pepper-out/` (intermedios) | ❌ NUNCA — contienen código y datos que no son tuyos |
+| **Herramienta** | `.claude/`, `pepper/`, `schemas/`, `profiles/`, `docs/documentacion/`, `CLAUDE.md`, `AGENTS.md`, `LICENSE.pepper` (y en el workspace: `examples/`, `tests/`, `scripts/`) | ❌ NO — se ignora; vive en tu disco y se actualiza recopiando |
+| **Producto** | `docs/pepper/` (reportes, entorno, discovery) y `docs/analysis/runtime-discovery-*.md` (la entrega a stark) | ✅ SÍ — es el conocimiento del legacy |
+| **Datos ajenos** | `legacy/` (artefactos, en el workspace), `evidence/` (capturas), `pepper-out/` (intermedios) | ❌ NUNCA — contienen datos que no son tuyos |
 
-```bash
-printf '.claude/\npepper/\nschemas/\ndocs/documentacion/\nexamples/\ntests/\nscripts/\n.github/\nrequirements-dev.txt\npyproject.toml\n' >> .gitignore
-```
+Un perfil nuevo que el agente redacte queda en `profiles/<id>/` — es herramienta: cópialo al repo de PEPPER para que sirva al siguiente legacy.
 
-(`legacy/`, `evidence/` y `pepper-out/` ya vienen ignorados.)
+**Al terminar con PEPPER**, borras la herramienta (`rm -rf .claude pepper schemas profiles docs/documentacion CLAUDE.md AGENTS.md LICENSE.pepper pepper-out evidence`, y quitas sus líneas del `.gitignore`), instalas stark, y su `arqueologo-codigo` encuentra el discovery en `docs/analysis/`. En el repo solo quedó lo que PEPPER produjo.
+
+En el workspace, además: `printf 'examples/\ntests/\nscripts/\n.github/\nrequirements-dev.txt\npyproject.toml\n' >> .gitignore` (lo demás ya viene ignorado).
 
 ### Ejecutar las fases
 
