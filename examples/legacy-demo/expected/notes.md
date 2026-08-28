@@ -4,7 +4,7 @@ Qué debe encontrar PEPPER al procesar este legacy. Sirve como criterio de acept
 
 `runtime-discovery.json` de esta carpeta es la salida de referencia. Está escrita a mano (`engine.agent: "golden-fixture"`), valida contra `schemas/runtime-discovery.schema.json`, todas sus `raw_ref` apuntan a líneas reales de `raw-evidence/` y sus `event_id` son los que `pepper correlate` asigna al procesar el fixture. `pepper export` la acepta tal cual (es uno de los tests).
 
-## Las tres trampas
+## Las tres trampas sembradas
 
 ### 1. Regla de negocio escondida — debe encontrarla
 
@@ -29,6 +29,31 @@ La segunda contradicción es más sutil: el manual §4 dice que el estado del ci
 → Debe aparecer en `unknowns` con la recomendación de observar una ejecución con el ciudadano 1005 (BR). **No** debe describirse como comportamiento observado: el código prueba que la rama existe, no que se ejecutó.
 
 Lo mismo aplica al camino de ciudadano inexistente (404), que tampoco se ejercitó.
+
+## Las trampas accidentales (encontradas, no sembradas)
+
+Al escribir el fixture se colaron tres incoherencias que resultaron ser **legacy realista**. La primera corrida de un agente real (Claude Code / Opus, 2026-08-28) las encontró todas, así que se documentan como parte del fixture: un discovery a fondo debería llegar a ellas.
+
+1. **El folio "consecutivo por año" no se reinicia.** `manual-tecnico.md` §1 afirma que el sistema "asigna un folio consecutivo por año", pero `01-schema.sql:4` crea `folio_seq` como secuencia global sin reinicio; el año solo se interpola del reloj del servidor (`ApplicationDao.java:27`). → contradicción, más pregunta abierta sobre qué pasa en enero.
+
+2. **`application.properties` no lo lee nadie.** El archivo declara `folio.prefijo`, el SMTP y la URL del datasource, pero el prefijo está en duro en `ApplicationDao.java:28` y el datasource se resuelve por JNDI. Configuración fósil. → contradicción; refuerza la del correo, porque `notificaciones.habilitado=true` tampoco significa nada.
+
+3. **El folio va en el consecutivo 42 y la solicitud creada tiene id 87.** Incoherencia de la evidencia sintética, no del código. → debe quedar como **pregunta** (reinicio anual, carga fuera del flujo, migración), nunca como conclusión.
+
+## Cómo se ve una buena corrida
+
+Referencia de la primera corrida real, para calibrar — no es un mínimo obligatorio, es lo que alcanzó un agente aplicando la skill a fondo:
+
+```text
+17 pasos · 9 reglas candidatas · 4 contradicciones · 11 desconocidos · 19 evidencias · 1 dependencia
+```
+
+Señales de calidad que se vieron, más allá de las tres trampas:
+
+- La única dependencia observada fue PostgreSQL. El SMTP se quedó fuera pese a estar en configuración y manual.
+- `confirmada` se usó solo donde runtime, código **y** manual coinciden (consulta al padrón; las dos escrituras). Donde el manual contradecía, la confianza **no** subió: R-001 se quedó en `fuertemente_sustentada` y la divergencia se fue a contradicción.
+- Un desconocido cuestionó la propia base de correlación: *"¿Los pasos internos que se atribuyen a cada petición pertenecen realmente a ella?"* — correcto, porque solo los 4 eventos del proxy traen `correlation_id` y el salto WildFly→PostgreSQL es puramente temporal.
+- Los desconocidos están redactados en comportamiento observable de negocio, contestables por alguien que no lee código.
 
 ## Ruido que debe reducirse
 
