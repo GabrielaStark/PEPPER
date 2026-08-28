@@ -39,6 +39,18 @@ class DetectTest(unittest.TestCase):
             results = detect(root)
             self.assertFalse(any(r["applicable"] for r in results))
 
+    def test_tool_dirs_are_ignored_when_pepper_sits_on_top_of_the_repo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude" / "commands").mkdir(parents=True)
+            (root / ".claude" / "commands" / "pepper-init.md").write_text("---\ndescription: x\n---\n", encoding="utf-8")
+            (root / "examples" / "demo").mkdir(parents=True)
+            (root / "examples" / "demo" / "pom.xml").write_text("<project/>", encoding="utf-8")
+            (root / "examples" / "demo" / "standalone.xml").write_text("urn:jboss:domain", encoding="utf-8")
+            (root / "index.php").write_text("<?php", encoding="utf-8")
+            results = detect(root)
+            self.assertFalse(any(r["applicable"] for r in results), "el fixture de la herramienta no es el legacy")
+
     def test_missing_directory_fails_clearly(self):
         with self.assertRaises(FileNotFoundError):
             detect(Path("/no/existe"))

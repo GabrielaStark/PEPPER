@@ -62,6 +62,25 @@ class ExportTest(unittest.TestCase):
         self.assertTrue((self.package / "output" / "validation.md").is_file())
         self.assertFalse((Path(self.tmp.name) / "export").exists())
 
+    def test_package_excludes_the_tool_when_pepper_sits_on_top_of_the_repo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "proyecto"
+            for rel in (".claude/commands", "pepper", "docs/documentacion", "docs/pepper", "src", "pepper-out"):
+                (project / rel).mkdir(parents=True)
+            (project / ".claude" / "commands" / "pepper-init.md").write_text("---\ndescription: x\n---\n", encoding="utf-8")
+            (project / "src" / "App.java").write_text("class App {}", encoding="utf-8")
+            (project / "docs" / "manual.md").write_text("# manual", encoding="utf-8")
+            (project / "docs" / "documentacion" / "PRINCIPIOS.md").write_text("# tool", encoding="utf-8")
+            (project / "docs" / "pepper" / "stack-report.md").write_text("# report", encoding="utf-8")
+            out = Path(tmp) / "package"
+            summary = assemble(Path(self.tmp.name) / "correlated", out, project)
+            self.assertEqual(summary["legacy"], ["docs", "src"])
+            self.assertTrue((out / "legacy" / "src" / "App.java").is_file())
+            self.assertTrue((out / "legacy" / "docs" / "manual.md").is_file())
+            self.assertFalse((out / "legacy" / "docs" / "documentacion").exists())
+            self.assertFalse((out / "legacy" / "docs" / "pepper").exists())
+            self.assertFalse((out / "legacy" / "pepper").exists())
+
     def test_package_refuses_to_overwrite(self):
         with self.assertRaises(FileExistsError):
             assemble(Path(self.tmp.name) / "correlated", self.package, None)

@@ -46,6 +46,8 @@ Problemas que salen y qué hacer. Si algo no está aquí, el detalle de cada fas
 
 **Tengo un stack sin perfil y sin tiempo de redactarlo** — escalón 2 o 3. Los colectores genéricos (logs de contenedores, log de BD) funcionan sin perfil; lo que pierdes es el parser de los logs de aplicación. Redactar el parser (una regex) suele tardar menos que pelear sin él.
 
+**¿Puedo poner PEPPER encima del repo del legacy en vez de clonar un workspace?** — Sí; es el modo pensado para seguir con stark en el mismo repo: copias la herramienta gitignoreada (comando en el README), inspeccionas con `/pepper-inspect .`, y al terminar borras la herramienta e instalas stark. `pepper detect .` y `pepper package --legacy .` excluyen la herramienta solos.
+
 **¿Se commitea `pepper-out/`?** — No. Ni `legacy/` ni `evidence/`. Solo `docs/pepper/` y los perfiles nuevos. `.gitignore` ya lo trae.
 
 **`verificar.py` marca "nombre citado inexistente"** — escribiste un nombre de comando, agente o skill que no existe en disco (o con errata). Es a propósito: los nombres que se citan en la documentación deben existir.

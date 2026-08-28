@@ -13,15 +13,19 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from pepper.profiles import Profile, iter_profiles
+from pepper.workspace import is_tool_path, tool_paths
 
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", "target"}
 _MAX_CONTENT_BYTES = 5 * 1024 * 1024
 
 
 def _walk(root: Path) -> List[Path]:
+    tool = tool_paths(root)  # PEPPER instalado encima del repo: su herramienta no es el legacy
     found: List[Path] = []
     for path in root.rglob("*"):
         if any(part in _SKIP_DIRS for part in path.relative_to(root).parts):
+            continue
+        if is_tool_path(path, tool):
             continue
         found.append(path)
     return found
