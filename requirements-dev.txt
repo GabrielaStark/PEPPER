@@ -1,0 +1,6 @@
+# Dependencias de desarrollo y validación de PEPPER.
+# El núcleo (python3 -m pepper) corre sin ellas. jsonschema habilita la validación
+# de contratos (validate, export, verificar.py); pyyaml es opcional para
+# verificar.py (sin él usa un parser mínimo de frontmatter).
+jsonschema>=4.17
+pyyaml==6.0.2

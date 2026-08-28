@@ -1,0 +1,20 @@
+[project]
+name = "pepper-discovery"
+version = "0.1.0"
+description = "Descubrimiento dinámico de sistemas legacy: reconstruye, observa, correlaciona y exporta evidencia de ejecución."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "jsonschema>=4",
+]
+
+[project.scripts]
+pepper = "pepper.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["pepper*"]

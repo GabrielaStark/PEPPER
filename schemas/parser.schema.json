@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pepper/parser.schema.json",
+  "title": "PepperParserSpec",
+  "description": "Especificación declarativa de un parser de logs. Un perfil aporta parsers como datos (JSON) y el núcleo los interpreta con PatternParser: una expresión regular con grupos nombrados por línea, más reglas para tipo de evento, continuaciones, fusión de líneas y ruido. Así el núcleo nunca aprende una tecnología.",
+  "type": "object",
+  "required": ["source", "line_pattern"],
+  "additionalProperties": false,
+  "$defs": {
+    "condition": {
+      "type": "object",
+      "required": ["field"],
+      "additionalProperties": false,
+      "description": "Condición sobre un grupo capturado: 'equals' (igualdad exacta) o 'matches' (regex, búsqueda parcial).",
+      "properties": {
+        "field": { "type": "string", "description": "Nombre del grupo capturado por line_pattern." },
+        "equals": { "type": "string" },
+        "matches": { "type": "string" }
+      }
+    },
+    "fieldSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "De dónde sale el valor de un campo del evento: un grupo capturado ('from') o una constante ('value'), con transformación y mapeo opcionales.",
+      "properties": {
+        "from": { "type": "string", "description": "Grupo capturado." },
+        "value": { "description": "Constante." },
+        "transform": { "type": "string", "enum": ["last_segment", "upper", "lower", "strip", "int", "keyed_parameters"] },
+        "map": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Traducción de valores, p. ej. niveles de log del stack → severidad normalizada." },
+        "default": { "description": "Valor si el grupo no capturó nada o el mapeo no tiene el valor." }
+      }
+    }
+  },
+  "properties": {
+    "parser_version": { "type": "string" },
+    "source": { "type": "string", "description": "Fuente que produce este parser (event.source). Debe coincidir con collectors[].source del perfil." },
+    "description": { "type": "string" },
+    "line_pattern": { "type": "string", "description": "Regex (sintaxis Python) que reconoce una línea de log. Los grupos nombrados alimentan 'fields'; debe capturar el grupo del timestamp." },
+    "timestamp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "group": { "type": "string", "default": "timestamp" },
+        "format": { "type": "string", "description": "Formato strptime. Si omite zona, se aplica la de la sesión. Sin 'format', se parsea como ISO 8601." }
+      }
+    },
+    "fields": {
+      "type": "object",
+      "description": "Destinos: component, severity, message, operation, correlation_id, o metadata.<clave>.",
+      "propertyNames": { "pattern": "^(component|severity|message|operation|correlation_id|metadata\\.[A-Za-z0-9_]+)$" },
+      "additionalProperties": { "$ref": "#/$defs/fieldSpec" }
+    },
+    "event_type": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default": { "type": "string", "enum": ["log", "method", "sql", "http_request", "http_response", "exception", "container", "transaction", "custom"] },
+        "rules": {
+          "type": "array",
+          "description": "Primera regla que se cumple gana.",
+          "items": {
+            "type": "object",
+            "required": ["when", "value"],
+            "additionalProperties": false,
+            "properties": {
+              "when": { "$ref": "#/$defs/condition" },
+              "value": { "type": "string", "enum": ["log", "method", "sql", "http_request", "http_response", "exception", "container", "transaction", "custom"] }
+            }
+          }
+        }
+      }
+    },
+    "sql": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Para eventos de tipo sql: cómo aislar la sentencia del mensaje. Operación, tabla y secuencia las deriva el núcleo de forma genérica.",
+      "properties": {
+        "strip_prefix": { "type": "string", "description": "Regex del prefijo a quitar, p. ej. '^(statement|execute [^:]*):\\\\s+'." }
+      }
+    },
+    "continuation": {
+      "type": "object",
+      "required": ["pattern"],
+      "additionalProperties": false,
+      "description": "Líneas que no cumplen line_pattern pero sí este patrón se anexan al mensaje del evento anterior (stack traces).",
+      "properties": {
+        "pattern": { "type": "string" }
+      }
+    },
+    "merge_into_previous": {
+      "type": "object",
+      "required": ["when", "fields"],
+      "additionalProperties": false,
+      "description": "Líneas que sí cumplen line_pattern pero complementan a un evento anterior (p. ej. DETAIL de PostgreSQL con los parámetros): se fusionan en él en vez de crear un evento nuevo.",
+      "properties": {
+        "when": { "$ref": "#/$defs/condition" },
+        "key": { "type": "string", "description": "Grupo que identifica al evento anterior al que fusionarse (p. ej. pid). Sin clave, se fusiona con el último evento." },
+        "fields": { "type": "object", "additionalProperties": { "$ref": "#/$defs/fieldSpec" } }
+      }
+    },
+    "affinity": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Claves de metadata que agrupan eventos de una misma ejecución dentro de la fuente (thread, pid, ...). La correlación las usa para resolver ventanas concurrentes."
+    },
+    "noise": {
+      "type": "array",
+      "description": "Ruido específico de esta fuente. La reducción lo descarta (salvo evidencia protegida) y lo audita con el id.",
+      "items": {
+        "type": "object",
+        "required": ["id", "matches"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "description": { "type": "string" },
+          "matches": { "type": "string", "description": "Regex sobre el mensaje del evento." }
+        }
+      }
+    }
+  }
+}

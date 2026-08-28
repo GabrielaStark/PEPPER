@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pepper/profile.schema.json",
+  "title": "PepperProfile",
+  "description": "Contrato de un perfil: todo el conocimiento específico de un stack, expresado como datos. El núcleo consume perfiles a través de este schema y nunca conoce tecnologías directamente.",
+  "type": "object",
+  "required": ["schema_version", "id", "name", "status", "detection", "rehydrate", "collectors", "validation"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "description": "Versión de este contrato, semver." },
+    "id": { "type": "string", "pattern": "^[a-z0-9-]+$", "description": "Identificador del perfil, p. ej. java-wildfly-postgres." },
+    "name": { "type": "string" },
+    "version": { "type": "string", "description": "Versión del perfil mismo." },
+    "status": {
+      "type": "string",
+      "enum": ["draft", "validated"],
+      "description": "draft: redactado (posiblemente por el agente durante Inspect), aún sin validación humana; nunca corre sin supervisión. validated: probado con un legacy real; habilita el escalón 1."
+    },
+    "stack": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "languages": { "type": "array", "items": { "type": "string" } },
+        "frameworks": { "type": "array", "items": { "type": "string" } },
+        "servers": { "type": "array", "items": { "type": "string" } },
+        "databases": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "detection": {
+      "type": "object",
+      "required": ["signals"],
+      "additionalProperties": false,
+      "description": "Cómo reconocer que un conjunto de artefactos pertenece a este stack.",
+      "properties": {
+        "signals": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["type", "pattern"],
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["file_exists", "file_content", "extension", "directory"],
+                "description": "file_exists: existe un archivo con ese nombre/glob. file_content: un archivo contiene el patrón. extension: hay artefactos con esa extensión. directory: existe el directorio."
+              },
+              "pattern": { "type": "string", "description": "Glob o regex según el tipo, p. ej. 'pom.xml', '*.war', 'standalone*.xml'." },
+              "file": { "type": "string", "description": "Para file_content: en qué archivo buscar." },
+              "weight": { "type": "number", "description": "Peso relativo de la señal para el puntaje de detección. Default 1." }
+            }
+          }
+        },
+        "min_score": { "type": "number", "description": "Puntaje mínimo para considerar el perfil aplicable." }
+      }
+    },
+    "rehydrate": {
+      "type": "object",
+      "required": ["required_inputs"],
+      "additionalProperties": false,
+      "description": "Receta de reconstrucción. Fidelidad primero: reproduce versiones originales, no moderniza.",
+      "properties": {
+        "required_inputs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Insumos sin los cuales el estado es BLOCKED, p. ej. 'artefacto desplegable (.war)', 'respaldo o esquema de BD'."
+        },
+        "optional_inputs": { "type": "array", "items": { "type": "string" } },
+        "compose_template": { "type": "string", "description": "Ruta (relativa al perfil) de la plantilla docker-compose u orquestación equivalente." },
+        "steps": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Pasos de la receta en orden, legibles por humanos y ejecutables por el runner del núcleo."
+        }
+      }
+    },
+    "collectors": {
+      "type": "array",
+      "description": "Fuentes de evidencia específicas del stack y cómo activarlas. Los colectores genéricos (proxy HTTP, contenedores, logs de BD) los aporta el núcleo y no se declaran aquí.",
+      "items": {
+        "type": "object",
+        "required": ["source", "method"],
+        "additionalProperties": false,
+        "properties": {
+          "source": { "type": "string", "description": "Nombre de la fuente tal como aparecerá en event.source, p. ej. wildfly." },
+          "method": {
+            "type": "string",
+            "enum": ["log_file", "container_stdout", "command", "endpoint"],
+            "description": "Cómo se obtiene la evidencia."
+          },
+          "location": { "type": "string", "description": "Ruta del log, comando o endpoint según el método." },
+          "enable": { "type": "string", "description": "Cómo activar/subir el nivel de esta fuente antes del arranque (la ventaja del entorno rehidratado)." },
+          "parser": { "type": "string", "description": "Ruta (relativa al perfil) del parser que normaliza esta fuente a event.schema.json." }
+        }
+      }
+    },
+    "validation": {
+      "type": "array",
+      "description": "Comprobaciones específicas del stack tras el arranque. Alimentan environment.validations.",
+      "items": {
+        "type": "object",
+        "required": ["check"],
+        "additionalProperties": false,
+        "properties": {
+          "check": { "type": "string", "description": "Qué comprobar, p. ej. 'deployment del WAR en estado OK'." },
+          "command": { "type": "string", "description": "Comando o petición que lo verifica, cuando es automatizable." }
+        }
+      }
+    },
+    "notes": { "type": "string" }
+  }
+}

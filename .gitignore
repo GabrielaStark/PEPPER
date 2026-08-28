@@ -1,0 +1,21 @@
+# Datos ajenos: nunca se versionan.
+/legacy/
+/evidence/
+/legacies/
+
+# Salidas intermedias de PEPPER (evidencia correlacionada, paquetes, compose con credenciales).
+pepper-out/
+
+# Build del legacy-demo
+examples/legacy-demo/artifacts/source/target/
+*.war
+*.jar
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+/build/
+/dist/
+
+.DS_Store

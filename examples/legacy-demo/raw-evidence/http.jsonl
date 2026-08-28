@@ -1,0 +1,14 @@
+{"ts":"2026-08-25T13:20:35.002-06:00","direction":"request","method":"GET","path":"/health","correlation_id":"req-8168","client":"10.20.0.14"}
+{"ts":"2026-08-25T13:20:35.019-06:00","direction":"response","method":"GET","path":"/health","status":200,"duration_ms":17,"correlation_id":"req-8168"}
+{"ts":"2026-08-25T13:20:44.118-06:00","direction":"request","method":"POST","path":"/api/applications","correlation_id":"req-8171","client":"10.20.0.51","content_type":"application/json","body":{"citizenId":1003,"tipoTramite":"LICENCIA_FUNCIONAMIENTO"}}
+{"ts":"2026-08-25T13:20:44.655-06:00","direction":"response","method":"POST","path":"/api/applications","status":409,"duration_ms":537,"correlation_id":"req-8171","body":{"error":"El ciudadano no se encuentra activo"}}
+{"ts":"2026-08-25T13:20:50.004-06:00","direction":"request","method":"GET","path":"/health","correlation_id":"req-8173","client":"10.20.0.14"}
+{"ts":"2026-08-25T13:20:50.021-06:00","direction":"response","method":"GET","path":"/health","status":200,"duration_ms":17,"correlation_id":"req-8173"}
+{"ts":"2026-08-25T13:21:01.204-06:00","direction":"request","method":"POST","path":"/api/applications","correlation_id":"req-8172","client":"10.20.0.51","content_type":"application/json","body":{"citizenId":1001,"tipoTramite":"LICENCIA_FUNCIONAMIENTO"}}
+{"ts":"2026-08-25T13:21:02.187-06:00","direction":"response","method":"POST","path":"/api/applications","status":201,"duration_ms":983,"correlation_id":"req-8172","body":{"folio":"SOL-2026-000042"}}
+{"ts":"2026-08-25T13:21:05.003-06:00","direction":"request","method":"GET","path":"/health","correlation_id":"req-8174","client":"10.20.0.14"}
+{"ts":"2026-08-25T13:21:05.018-06:00","direction":"response","method":"GET","path":"/health","status":200,"duration_ms":15,"correlation_id":"req-8174"}
+{"ts":"2026-08-25T13:21:20.002-06:00","direction":"request","method":"GET","path":"/health","correlation_id":"req-8175","client":"10.20.0.14"}
+{"ts":"2026-08-25T13:21:20.020-06:00","direction":"response","method":"GET","path":"/health","status":200,"duration_ms":18,"correlation_id":"req-8175"}
+{"ts":"2026-08-25T13:21:35.004-06:00","direction":"request","method":"GET","path":"/health","correlation_id":"req-8176","client":"10.20.0.14"}
+{"ts":"2026-08-25T13:21:35.022-06:00","direction":"response","method":"GET","path":"/health","status":200,"duration_ms":18,"correlation_id":"req-8176"}

@@ -1,0 +1,86 @@
+"""Herramientas del núcleo para los agentes: `pepper detect` y `pepper validate`."""
+
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from pepper.detect import detect  # noqa: E402
+from pepper.validate import guess_schema, validate_file  # noqa: E402
+
+FIXTURE = ROOT / "examples" / "legacy-demo"
+
+try:
+    import jsonschema  # noqa: F401
+except ImportError:  # pragma: no cover
+    jsonschema = None
+
+
+class DetectTest(unittest.TestCase):
+    def test_fixture_artifacts_match_the_java_profile(self):
+        results = detect(FIXTURE / "artifacts")
+        [java] = [r for r in results if r["profile_id"] == "java-wildfly-postgres"]
+        self.assertTrue(java["applicable"], java)
+        hits = {m["pattern"] for m in java["matches"]}
+        self.assertIn("pom.xml", hits)
+        self.assertIn("standalone*.xml", hits)
+        self.assertIn("jdbc:postgresql", hits)
+        self.assertNotIn("*.war", hits, "el fixture trae código, no un WAR")
+
+    def test_unrelated_artifacts_do_not_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "index.php").write_text("<?php echo 'hola';", encoding="utf-8")
+            (root / "composer.json").write_text("{}", encoding="utf-8")
+            results = detect(root)
+            self.assertFalse(any(r["applicable"] for r in results))
+
+    def test_missing_directory_fails_clearly(self):
+        with self.assertRaises(FileNotFoundError):
+            detect(Path("/no/existe"))
+
+
+class ValidateTest(unittest.TestCase):
+    def setUp(self):
+        if jsonschema is None:
+            self.skipTest("jsonschema no instalado")
+
+    def test_guesses_schema_from_filename(self):
+        self.assertEqual(guess_schema(Path("x/profile.json")), "profile")
+        self.assertEqual(guess_schema(Path("x/parsers/wildfly.json")), "parser")
+        self.assertEqual(guess_schema(Path("x/events.jsonl")), "event")
+        self.assertIsNone(guess_schema(Path("x/cualquier.json")))
+
+    def test_repo_instances_are_valid(self):
+        files = [
+            ROOT / "profiles" / "java-wildfly-postgres" / "profile.json",
+            *sorted((ROOT / "profiles" / "java-wildfly-postgres" / "parsers").glob("*.json")),
+            FIXTURE / "raw-evidence" / "session.json",
+            FIXTURE / "expected" / "runtime-discovery.json",
+        ]
+        for path in files:
+            self.assertEqual(validate_file(path), [], path)
+
+    def test_invalid_profile_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "profile.json"
+            path.write_text(json.dumps({"id": "MAL", "name": "x"}), encoding="utf-8")
+            errors = validate_file(path)
+            self.assertTrue(errors)
+            self.assertTrue(any("required" in e or "pattern" in e for e in errors), errors)
+
+    def test_unknown_filename_requires_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cosa.json"
+            path.write_text("{}", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                validate_file(path)
+            self.assertTrue(validate_file(path, "profile"))
+
+
+if __name__ == "__main__":
+    unittest.main()

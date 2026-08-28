@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pepper/environment.schema.json",
+  "title": "PepperEnvironment",
+  "description": "Resultado de Rehydrate: qué se reconstruyó, con qué stack, en qué estado quedó y qué falta. Agnóstico de tecnología: los componentes son una lista genérica.",
+  "type": "object",
+  "required": ["schema_version", "status", "components"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "description": "Versión de este contrato, semver." },
+    "status": {
+      "type": "string",
+      "enum": ["READY", "PARTIAL", "BLOCKED", "FAILED"],
+      "description": "READY: corre y puede observarse. PARTIAL: parte funciona, hay dependencias faltantes. BLOCKED: evidencia insuficiente para reconstruir. FAILED: era viable pero falló técnicamente."
+    },
+    "profile_id": {
+      "type": ["string", "null"],
+      "description": "Perfil usado para la reconstrucción; null en rehydrate asistido o escalón 2/3."
+    },
+    "support_tier": {
+      "type": "integer",
+      "enum": [1, 2, 3],
+      "description": "Escalón de la escalera de soporte con el que se procesó este legacy."
+    },
+    "components": {
+      "type": "array",
+      "description": "Piezas del entorno reconstruido (o identificadas, si no se pudo levantar).",
+      "items": {
+        "type": "object",
+        "required": ["name", "role"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "role": {
+            "type": "string",
+            "enum": ["frontend", "backend", "database", "proxy", "queue", "cache", "external", "other"]
+          },
+          "engine": { "type": "string", "description": "Tecnología concreta, p. ej. wildfly, postgresql, nginx, iis." },
+          "version": { "type": "string" },
+          "artifact": { "type": "string", "description": "Artefacto desplegado, p. ej. legacy.war, dist/." },
+          "container_image": { "type": "string" },
+          "endpoint": { "type": "string", "description": "URL o host:puerto donde responde." },
+          "status": { "type": "string", "enum": ["running", "degraded", "not_started", "unknown"] },
+          "data_restored": { "type": "boolean", "description": "Solo para role=database: si se restauraron datos." }
+        }
+      }
+    },
+    "validations": {
+      "type": "array",
+      "description": "Comprobaciones ejecutadas tras el arranque. 'running' de un contenedor no implica READY.",
+      "items": {
+        "type": "object",
+        "required": ["check", "result"],
+        "additionalProperties": false,
+        "properties": {
+          "check": { "type": "string", "description": "Qué se comprobó, p. ej. 'endpoint raíz responde 200'." },
+          "result": { "type": "string", "enum": ["pass", "fail", "skipped"] },
+          "detail": { "type": "string" }
+        }
+      }
+    },
+    "missing_evidence": {
+      "type": "array",
+      "description": "Qué falta y qué conseguir. Obligatorio en la práctica cuando status es BLOCKED o PARTIAL.",
+      "items": {
+        "type": "object",
+        "required": ["missing"],
+        "additionalProperties": false,
+        "properties": {
+          "missing": { "type": "string", "description": "Elemento faltante, p. ej. 'configuración del datasource LegacyDS'." },
+          "recommended_evidence": { "type": "string", "description": "Qué artefacto lo resolvería, p. ej. 'standalone.xml del ambiente original'." },
+          "blocking": { "type": "boolean", "description": "Si impide el arranque (true) o solo degrada (false)." }
+        }
+      }
+    },
+    "notes": { "type": "string", "description": "Observaciones libres del proceso de reconstrucción." }
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "session_id": "flow-001",
+  "flow_name": "Registrar solicitud",
+  "observed_start": "2026-08-25T13:20:30.000-06:00",
+  "observed_end": "2026-08-25T13:22:14.000-06:00",
+  "timezone": "-06:00",
+  "synthetic": true,
+  "synthetic_note": "Evidencia SINTÉTICA construida a mano para pruebas de PEPPER. Reproduce lo que el legacy-demo emitiría durante el flujo, con el formato real de cada fuente. No proviene de una captura real.",
+  "operator_note": "El operador intentó primero con el ciudadano 1003 (rechazado) y después con el 1001 (exitoso).",
+  "environment": {
+    "profile_id": "java-wildfly-postgres",
+    "support_tier": 1
+  },
+  "collectors": [
+    {
+      "source": "http-proxy",
+      "kind": "generic",
+      "file": "http.jsonl",
+      "note": "Proxy inverso de PEPPER. Inyecta el header X-Pepper-Correlation-Id en cada petición; es el origen de correlation_id."
+    },
+    {
+      "source": "wildfly",
+      "kind": "profile",
+      "file": "application/server.log",
+      "note": "Log del servidor de aplicaciones. Hora local sin offset, milisegundos con coma; el parser debe aplicar el timezone de la sesión."
+    },
+    {
+      "source": "postgresql",
+      "kind": "generic",
+      "file": "database/postgresql.log",
+      "note": "Log de sentencias con log_statement=all y log_line_prefix='%m [%p] %u@%d '. Los parámetros llegan en la línea DETAIL siguiente."
+    }
+  ]
+}

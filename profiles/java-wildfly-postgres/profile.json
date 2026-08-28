@@ -1,0 +1,72 @@
+{
+  "schema_version": "0.1.0",
+  "id": "java-wildfly-postgres",
+  "name": "Java EE sobre WildFly con PostgreSQL",
+  "version": "0.1.0",
+  "status": "draft",
+  "stack": {
+    "languages": ["java"],
+    "frameworks": ["java-ee"],
+    "servers": ["wildfly"],
+    "databases": ["postgresql"]
+  },
+  "detection": {
+    "signals": [
+      { "type": "extension", "pattern": "*.war", "weight": 2 },
+      { "type": "file_exists", "pattern": "pom.xml", "weight": 1 },
+      { "type": "file_exists", "pattern": "standalone*.xml", "weight": 3 },
+      { "type": "file_content", "file": "standalone*.xml", "pattern": "urn:jboss:domain", "weight": 3 },
+      { "type": "file_content", "file": "**/*.properties", "pattern": "jdbc:postgresql", "weight": 2 },
+      { "type": "extension", "pattern": "*.dump", "weight": 1 }
+    ],
+    "min_score": 4
+  },
+  "rehydrate": {
+    "required_inputs": [
+      "artefacto desplegable (.war o código fuente compilable con pom.xml)",
+      "respaldo o esquema de la base de datos (.dump/.sql)",
+      "configuración de datasource (standalone.xml o properties)"
+    ],
+    "optional_inputs": [
+      "properties del ambiente original",
+      "certificados",
+      "scripts de arranque del servidor original"
+    ],
+    "compose_template": "compose.template.yml",
+    "steps": [
+      "determinar versiones de Java, WildFly y PostgreSQL a partir de los artefactos (fidelidad: reproducir, no modernizar)",
+      "levantar contenedor PostgreSQL con la versión detectada y log_statement=all",
+      "restaurar el respaldo o ejecutar los scripts de esquema",
+      "levantar contenedor WildFly con la versión detectada y el driver JDBC de PostgreSQL",
+      "configurar el datasource según standalone.xml/properties",
+      "desplegar el WAR en el directorio deployments",
+      "levantar el proxy HTTP de PEPPER delante del puerto de la aplicación",
+      "ejecutar validaciones"
+    ]
+  },
+  "collectors": [
+    {
+      "source": "wildfly",
+      "method": "log_file",
+      "location": "/opt/jboss/wildfly/standalone/log/server.log",
+      "enable": "subir nivel de log a DEBUG para los paquetes de la aplicación en standalone.xml antes del arranque",
+      "parser": "parsers/wildfly-server-log.json"
+    },
+    {
+      "source": "postgresql",
+      "method": "log_file",
+      "location": "/var/lib/postgresql/data/log/",
+      "enable": "log_statement=all y log_line_prefix con timestamp, pid y aplicación, configurados en el compose antes del arranque",
+      "parser": "parsers/postgresql-log.json"
+    }
+  ],
+  "validation": [
+    { "check": "contenedores de WildFly y PostgreSQL en ejecución" },
+    { "check": "deployment del WAR en estado OK (sin *.failed en deployments)" },
+    { "check": "base de datos restaurada y aceptando conexiones" },
+    { "check": "datasource operativo (test-connection-in-pool exitoso)" },
+    { "check": "endpoint raíz de la aplicación responde a través del proxy" },
+    { "check": "sin ERROR/FATAL en server.log durante el arranque" }
+  ],
+  "notes": "Parsers probados contra la evidencia sintética de examples/legacy-demo. Falta: compose.template.yml y ejecutar la receta de rehydrate contra el legacy-demo real. Al validarse, cambiar status a validated."
+}
