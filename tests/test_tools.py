@@ -51,6 +51,23 @@ class DetectTest(unittest.TestCase):
             results = detect(root)
             self.assertFalse(any(r["applicable"] for r in results), "el fixture de la herramienta no es el legacy")
 
+    def test_signals_are_found_inside_deployable_archives(self):
+        import zipfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with zipfile.ZipFile(root / "app.war", "w") as war:
+                war.writestr("META-INF/maven/gob/app/pom.xml", "<parent><artifactId>spring-boot-starter-parent</artifactId></parent>")
+                war.writestr("WEB-INF/classes/application-prod.yml", "spring:\n  datasource:\n    url: jdbc:postgresql://db:5432/x\n")
+                war.writestr("WEB-INF/jboss-web.xml", "<jboss-web/>")
+            (root / "respaldo.dump").write_bytes(b"PGDMP")
+            results = detect(root)
+            [spring] = [r for r in results if r["profile_id"] == "java-springboot-jsf-postgres"]
+            self.assertTrue(spring["applicable"], spring)
+            hits = {m["hit"] for m in spring["matches"]}
+            self.assertIn("app.war!META-INF/maven/gob/app/pom.xml", hits)
+            self.assertIn("app.war!WEB-INF/classes/application-prod.yml", hits)
+            self.assertIn("app.war!WEB-INF/jboss-web.xml", hits)
+
     def test_missing_directory_fails_clearly(self):
         with self.assertRaises(FileNotFoundError):
             detect(Path("/no/existe"))

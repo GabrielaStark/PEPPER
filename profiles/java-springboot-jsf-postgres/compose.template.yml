@@ -1,0 +1,105 @@
+# Plantilla de orquestación — perfil java-springboot-jsf-postgres.
+# Rehydrate sustituye las variables {{...}} con lo que el artefacto trae hardcodeado
+# (el artefacto dicta el ambiente, D17) y con NOTAS.md (servidor y versiones, D18).
+#
+# Reglas que esta plantilla hace cumplir por construcción:
+#   - Red INTERNA (D19): sin salida a internet ni a la VPN de la máquina. El puerto del
+#     app se publica por el proxy `ingress` (ahí irá el proxy HTTP de PEPPER).
+#   - Todo host externo del artefacto se resuelve por alias DNS al `stub`, que responde
+#     503 y registra cada petición (evidencia de dependencias).
+#   - Si el WAR trae jboss-web.xml, se despliega en WildFly (D20), NO con java -jar.
+#   - Observabilidad de antemano: log_statement=all en la base, DEBUG en la app.
+
+name: {{stack_name}}-rehydrate
+
+networks:
+  legacy:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: {{subnet}}            # el /24 de las IPs que el artefacto espera
+  edge:
+    driver: bridge
+
+volumes:
+  db-data:
+  app-files:
+
+services:
+  db:
+    image: postgres:{{postgres_version}}   # NOTAS.md, o la cabecera del respaldo
+    environment:
+      POSTGRES_DB: {{db_name}}             # el nombre que el artefacto espera (no el del respaldo)
+      POSTGRES_USER: {{db_user}}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}    # en .env (pepper-out/, no se versiona)
+    command: ["postgres", "-c", "log_statement=all", "-c", "log_line_prefix=%m [%p] %u@%d ", "-c", "log_destination=stderr"]
+    networks:
+      legacy:
+        ipv4_address: {{db_ip}}            # la IP del datasource del artefacto
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U {{db_user}} -d {{db_name}}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # Restaura el respaldo con un cliente de la versión del pg_dump que lo generó, y
+  # re-apunta todo pg_foreign_server al stub (un respaldo puede traer credenciales
+  # de producción en sus USER MAPPING). Una vez: docker compose --profile restore run --rm restore
+  restore:
+    image: postgres:{{pg_restore_version}}
+    profiles: ["restore"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${DB_PASSWORD}
+      PGHOST: {{db_ip}}
+      PGUSER: {{db_user}}
+      PGDATABASE: {{db_name}}
+    networks: [legacy]
+    volumes:
+      - {{dump_path}}:/dump/backup.dump:ro
+      - ./restore.sh:/restore.sh:ro
+    entrypoint: ["/bin/sh", "/restore.sh"]
+
+  stub:
+    image: python:3-alpine
+    command: ["python3", "-u", "/stub/stub.py"]
+    networks:
+      legacy:
+        ipv4_address: {{stub_ip}}          # la IP de los servicios externos que el artefacto espera
+        aliases: {{external_hosts}}        # cada host externo del artefacto: buses, SMTP, APIs
+    volumes:
+      - ./stub:/stub:ro
+
+  app:
+    image: {{server_image}}                # jboss/wildfly:<versión de NOTAS.md> si hay jboss-web.xml
+    depends_on:
+      db:
+        condition: service_healthy
+      stub:
+        condition: service_started
+    environment:
+      SPRING_PROFILES_ACTIVE: {{spring_profile}}   # el perfil de configuración completo dentro del WAR
+      LOGGING_LEVEL_{{app_package_env}}: DEBUG
+      LOGGING_LEVEL_ORG_HIBERNATE_SQL: DEBUG
+    command: ["/opt/jboss/wildfly/bin/standalone.sh", "-b", "0.0.0.0"]
+    networks:
+      legacy:
+        ipv4_address: {{app_ip}}
+    volumes:
+      - {{war_path}}:/opt/jboss/wildfly/standalone/deployments/{{war_name}}:ro   # el WAR ORIGINAL, sin modificar
+      - app-files:{{files_root}}          # p. ej. la ruta de archivos que declara la configuración
+
+  ingress:
+    image: alpine/socat
+    command: ["TCP-LISTEN:8080,fork,reuseaddr", "TCP:{{app_ip}}:8080"]
+    depends_on:
+      app:
+        condition: service_started
+    networks: [legacy, edge]
+    ports:
+      - "{{host_port}}:8080"

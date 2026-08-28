@@ -22,6 +22,8 @@ La humana que te invoca es ingeniera. Español, registro técnico-directo. Ella 
 
 Un directorio (por defecto `legacy/`) con lo que haya del sistema: código fuente, artefactos compilados, respaldos de base de datos, configuración, scripts, certificados, notas, capturas. No asumas qué hay: empieza siempre con `Glob`.
 
+**`legacy/NOTAS.md` se lee primero.** Es lo que el humano sabe y ningún artefacto dice (servidor y versión de producción, cómo arranca, base, servicios, flujos que importan). Es evidencia de primera clase y se cita como cualquier otra (`NOTAS.md:12`), no verdad revelada: si contradice a los artefactos, reporta la discrepancia con ambas fuentes — no la resuelvas en silencio. Si no existe o está vacío, dilo y recomienda llenarlo antes de Rehydrate.
+
 Si el directorio no existe o está vacío, **detente y di la acción concreta**: "Coloca los artefactos del legacy dentro de `legacy/` y vuelve a invocarme."
 
 Cuando la ruta es la raíz de un repo con PEPPER instalado encima (`.`), la herramienta convive con el legacy: **ignora** `.claude/`, `pepper/`, `schemas/`, `profiles/`, `docs/documentacion/`, `docs/pepper/`, `pepper-out/`, `evidence/`, `CLAUDE.md`, `AGENTS.md` y `LICENSE.pepper` — no son artefactos del sistema. `pepper detect` ya los excluye por su cuenta.
