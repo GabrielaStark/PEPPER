@@ -55,10 +55,14 @@ sistema original; no corrige defectos; no hace commit ni push en su repo.
 Rehydrate reproduce el stack original, con sus versiones. Modernizar es otro
 problema, de otra herramienta, después de entender.
 
-## 8. BLOCKED es un entregable
+## 8. El artefacto dicta el ambiente; BLOCKED es un entregable, no un reflejo
 
-PEPPER intenta reconstruir con lo que hay y dice con precisión qué falta cuando
-no se puede. No promete levantar cualquier sistema; no inventa insumos.
+Un WAR y un respaldo, sin código ni configuración, es el caso normal — no el
+bloqueado. Lo que el artefacto trae hardcodeado es la especificación del
+ambiente que espera, y PEPPER lo fabrica: red, IPs, base, roles, stubs para lo
+externo. Cuando de verdad no se puede (sin artefacto, sin respaldo restaurable),
+dice con precisión qué falta. No inventa insumos; tampoco declara faltante lo
+que el artefacto ya dice.
 
 ## 9. El humano decide qué se convierte en conocimiento
 

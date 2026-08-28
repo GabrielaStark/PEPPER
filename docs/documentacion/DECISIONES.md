@@ -99,3 +99,9 @@ La visión original completa está en [`VISION.md`](VISION.md); este documento r
 - **Decisión**: el núcleo corre con el Python que trae macOS, sin dependencias; `jsonschema` (opcional) habilita la validación de contratos; `pyyaml` solo para `verificar.py`.
 - **Por qué**: "sin instalar nada" es lo que hace que otro dev lo pruebe en cinco minutos. Y stark ya exige Python 3.9+.
 - **Consecuencia aceptada**: sin `jsonschema`, Export avisa que no validó la forma del JSON. Se instala con `pip install -r requirements-dev.txt`.
+
+## D17. El artefacto dicta el ambiente (corrección tras el primer legacy real)
+
+- **Decisión**: Rehydrate fabrica el ambiente que el artefacto espera a partir de lo que trae hardcodeado (perfiles de configuración embebidos, descriptores, MANIFEST): red con el subnet de las IPs, base en esa IP con ese nombre y ese rol, respaldo restaurado ahí, artefacto arrancado con el perfil completo. Los hosts externos se resuelven a un stub que registra peticiones. `BLOCKED` queda solo para "sin artefacto", "sin respaldo restaurable" o "el artefacto no dice a qué conectarse".
+- **Por qué**: en el primer legacy real (un WAR de Spring Boot y un dump, sin más) el inspector encontró seis perfiles de configuración dentro del WAR — uno completo, con host, base, usuario y contraseña — y aun así declaró `BLOCKED` porque "faltaba la configuración de producción". La regla "no inventar insumos" se había aplicado a *reproducir lo que el artefacto ya dice*. Ese caso — WAR + dump y nada más — es el propósito de PEPPER, no su excepción.
+- **Consecuencia aceptada**: el entorno reproduce la configuración de un perfil que puede no ser el de producción (p. ej. `genesi` en vez de `prod`); se declara cuál se usó y qué difiere. Y el stub convierte cada llamada externa en un error rápido: los flujos que dependen de esos servicios se observan solo hasta ese punto.

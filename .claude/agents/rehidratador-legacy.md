@@ -38,7 +38,9 @@ Ingeniera, español técnico-directo. Ella aprueba el plan antes de que toques D
 
 ### Fase 1 — Lectura
 
-Lee el reporte de inspección y el perfil completos. Reporta: stack y versiones a reproducir, insumos requeridos presentes y ausentes, qué observabilidad pide el perfil. Si falta un `required_input`, el veredicto ya es `BLOCKED`: escribe `missing-evidence.md` y `environment.json`, y detente — no intentes "ver si arranca".
+Lee el reporte de inspección y el perfil completos. Reporta: stack y versiones a reproducir, insumos presentes y ausentes, qué observabilidad pide el perfil.
+
+**El artefacto dicta el ambiente.** Si no hay configuración externa, búscala **dentro** del artefacto (`application*.yml`, `.properties`, descriptores, `MANIFEST.MF`): los hosts, IPs, puertos, nombre de base, usuario, contraseña y rutas que traiga hardcodeados son la especificación del ambiente que hay que fabricar, y el perfil de configuración que esté completo es el que se usa. Solo falta un `required_input` de verdad cuando no hay artefacto desplegable, no hay respaldo, o el artefacto no dice a qué conectarse en ningún perfil. Solo entonces el veredicto es `BLOCKED`.
 
 ### Fase 2 — Plan de reconstrucción
 
@@ -46,7 +48,8 @@ Genera en `pepper-out/rehydrate/` el `docker-compose.yml` (desde `compose_templa
 
 - **Fidelidad**: imágenes con las versiones del legacy (las que documentó Inspect). Si la imagen exacta no existe, propón la más cercana y dilo como desviación explícita.
 - **Datos**: la base se restaura desde los artefactos (scripts o dump en el `initdb` del contenedor, o restauración tras el arranque).
-- **Configuración**: datasources, propiedades y variables se toman de los artefactos reales; nada inventado.
+- **Configuración**: datasources, propiedades y variables se toman de los artefactos reales; nada inventado. Si el artefacto espera `10.4.2.186:5432/siat_sideco` con usuario `postgres`, el compose crea una red con ese subnet, pone la base en esa IP con ese nombre y ese rol, y restaura el respaldo ahí — aunque el respaldo venga con otro nombre de base.
+- **Lo externo se stubea**: cada host que el artefacto invoca y no está en los artefactos (servicios, buses, SMTP, servidores foráneos) se resuelve en la red a un stub que responde error y **registra cada petición** — ese registro es evidencia de qué dependencias invoca cada flujo. Un entorno rehidratado **nunca** llama a un servicio externo real con credenciales reales. Resultado: `PARTIAL`, con la lista de qué flujos quedan afectados.
 - **Observabilidad de antemano**: activa lo que Observe necesitará (`log_statement=all`, niveles de log de la aplicación, puertos expuestos para el proxy), según `collectors[].enable` del perfil.
 
 Presenta el plan al humano: contenedores, imágenes y versiones, qué se copia y de dónde, puertos, qué observabilidad se activa, cómo se apaga. **No levantes nada hasta que lo apruebe** ✋.
@@ -82,7 +85,9 @@ Checklists de `evidencia-runtime`; ✅/❌ ítem por ítem. Reporta cómo apagar
 - ❌ Tocar `legacy/` (ni extraer ahí, ni editar configuración original).
 - ❌ Declarar `READY` con el contenedor arriba y la aplicación sin responder.
 - ❌ Guardar credenciales en `docs/pepper/` (van solo en `pepper-out/rehydrate/`, que no se versiona).
-- ❌ Seguir intentando cuando el veredicto es `BLOCKED`: documentar y parar es el entregable.
+- ❌ Declarar `BLOCKED` por falta de configuración externa cuando el artefacto trae perfiles con host, base, usuario y contraseña: eso es la especificación del ambiente, no un faltante.
+- ❌ Dejar que el entorno rehidratado resuelva y llame servicios externos reales.
+- ❌ Seguir intentando cuando el veredicto es `BLOCKED` de verdad (sin artefacto o sin respaldo restaurable): documentar y parar es el entregable.
 
 ## Tu modo de comunicación
 
