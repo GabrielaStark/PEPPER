@@ -83,7 +83,9 @@ Escribe `docs/pepper/stack-report.md` desde el primer borrador. Veredicto:
 
 - `READY-candidato`: los insumos requeridos están; la reconstrucción parece viable.
 - `PARTIAL`: falta algo que degrada (un servicio externo, un certificado) pero el núcleo del sistema puede levantarse.
-- `BLOCKED`: falta algo sin lo cual no arranca (el artefacto desplegable, la base de datos, el datasource). Es un entregable, no un fracaso.
+- `BLOCKED`: no hay artefacto desplegable, no hay respaldo, o el artefacto no dice a qué conectarse en ningún perfil ni variable. Es un entregable, no un fracaso.
+
+**La configuración externa ausente no bloquea.** Si el artefacto trae hardcodeados (en `application*.yml`, `.properties`, descriptores) el host, la base, el usuario y la contraseña de algún perfil, eso es la especificación del ambiente que Rehydrate va a fabricar: veredicto `READY-candidato` (o `PARTIAL` si además invoca servicios externos que habrá que stubear). Reporta qué perfil está completo y qué hosts externos aparecen.
 
 ### Fase 7 — Auto-validación y cierre
 

@@ -35,9 +35,15 @@ artefactos → inspección → identificación del stack → detección de depen
 - **Con perfil** (escalón 1): la receta del perfil genera el plan (compose, imágenes, datasources, orden de arranque). Determinístico y repetible.
 - **Sin perfil** (rehydrate asistido): el agente inspecciona los artefactos y **redacta un plan borrador**. Un humano lo revisa y ejecuta. Si funciona, el plan validado se guarda como perfil nuevo (ver [profiles.md](../PERFILES.md)) — así crece la librería.
 
-## Cuando faltan insumos
+## El artefacto dicta el ambiente
 
-PEPPER **no inventa** lo que falta (datasources, certificados, servicios externos, variables). Produce un reporte `BLOCKED` que enumera: qué se detectó, qué falta y qué evidencia conseguir a continuación. Ese reporte es un entregable de primera clase (`missing-evidence.md`).
+El caso típico es un WAR/JAR/dist y un respaldo, sin código ni configuración externa. Rehydrate busca la configuración **dentro** del artefacto y fabrica el ambiente que espera: una red Docker con el subnet de las IPs hardcodeadas, la base en esa IP con el nombre y el rol que el artefacto pide (aunque el respaldo traiga otro nombre), el respaldo restaurado ahí, y el artefacto arrancado con el perfil de configuración que esté completo. Reproducir lo que el artefacto dice no es inventar.
+
+Los hosts externos que el artefacto invoca (servicios, buses, SMTP, servidores foráneos) se resuelven en esa red a un **stub** que responde error y registra cada petición — evidencia de qué dependencias invoca cada flujo. Un entorno rehidratado nunca llama a un servicio externo real.
+
+## Cuando faltan insumos de verdad
+
+`BLOCKED` es solo para cuando no hay artefacto desplegable, el respaldo no se puede restaurar, o el artefacto no dice a qué conectarse en ningún perfil. PEPPER **no inventa** eso. Produce `missing-evidence.md`: qué se detectó, qué falta y qué evidencia conseguir. Es un entregable de primera clase.
 
 ## Validación
 
