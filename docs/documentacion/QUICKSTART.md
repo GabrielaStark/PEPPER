@@ -39,7 +39,7 @@ Una sola secuencia, de arriba a abajo. ✋ = gate humano.
 ### Escalón 1 · con perfil (o 3 · sin perfil, con inspección)
 
 1. `/pepper-init` — verifica herramientas, prepara `legacy/`, `evidence/`, `docs/pepper/`.
-2. **Pon tus artefactos** en `legacy/` — lo que tengas, como esté. Ordenar el desorden es trabajo de PEPPER.
+2. **Pon tus artefactos** en `legacy/` — lo que tengas, como esté. Ordenar el desorden es trabajo de PEPPER. Y **llena `legacy/NOTAS.md`** (init lo deja listo desde `templates/NOTAS-LEGACY.md`) con lo que sepas: servidor y versión de producción, base, cómo arranca, flujos que importan. Una línea tuya ahorra horas.
 3. `/pepper-inspect` — stack con evidencia, dependencias, faltantes, perfil (o borrador) → `docs/pepper/stack-report.md`. ✋
 4. `/pepper-rehydrate` — plan de reconstrucción ✋ → contenedores → validación → `docs/pepper/environment.json`. ✋ (`BLOCKED` y `FAILED` son entregables: paras ahí, con la lista de qué falta.)
 5. `/pepper-observe <flujo>` — colectores listos → **tú ejecutas el flujo** → `evidence/<session_id>/`. ✋

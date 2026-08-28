@@ -59,11 +59,11 @@ pip install -r requirements-dev.txt
 
 ```bash
 git clone --depth 1 https://github.com/GabrielaStark/pepper.git /tmp/pepper && \
-cp -r /tmp/pepper/.claude /tmp/pepper/pepper /tmp/pepper/schemas /tmp/pepper/profiles . && \
+cp -r /tmp/pepper/.claude /tmp/pepper/pepper /tmp/pepper/schemas /tmp/pepper/profiles /tmp/pepper/templates . && \
 mkdir -p docs/pepper && cp -r /tmp/pepper/docs/documentacion docs/ && \
 [ -f CLAUDE.md ] || cp /tmp/pepper/CLAUDE.md . ; [ -f AGENTS.md ] || cp /tmp/pepper/AGENTS.md . ; \
 cp /tmp/pepper/LICENSE LICENSE.pepper && \
-printf '.claude/\npepper/\nschemas/\nprofiles/\ndocs/documentacion/\nCLAUDE.md\nAGENTS.md\nLICENSE.pepper\npepper-out/\nevidence/\n' >> .gitignore && \
+printf '.claude/\npepper/\nschemas/\nprofiles/\ntemplates/\ndocs/documentacion/\nCLAUDE.md\nAGENTS.md\nLICENSE.pepper\npepper-out/\nevidence/\n' >> .gitignore && \
 rm -rf /tmp/pepper
 ```
 
@@ -73,7 +73,7 @@ Si el repo ya tenía `.claude/`, `CLAUDE.md` o `AGENTS.md` propios, revisa antes
 
 | | Qué es | ¿Va al git del proyecto? |
 |---|---|---|
-| **Herramienta** | `.claude/`, `pepper/`, `schemas/`, `profiles/`, `docs/documentacion/`, `CLAUDE.md`, `AGENTS.md`, `LICENSE.pepper` (y en el workspace: `examples/`, `tests/`, `scripts/`) | ❌ NO — se ignora; vive en tu disco y se actualiza recopiando |
+| **Herramienta** | `.claude/`, `pepper/`, `schemas/`, `profiles/`, `templates/`, `docs/documentacion/`, `CLAUDE.md`, `AGENTS.md`, `LICENSE.pepper` (y en el workspace: `examples/`, `tests/`, `scripts/`) | ❌ NO — se ignora; vive en tu disco y se actualiza recopiando |
 | **Producto** | `docs/pepper/` (reportes, entorno, discovery) y `docs/analysis/runtime-discovery-*.md` (la entrega a stark) | ✅ SÍ — es el conocimiento del legacy |
 | **Datos ajenos** | `legacy/` (artefactos, en el workspace), `evidence/` (capturas), `pepper-out/` (intermedios) | ❌ NUNCA — contienen datos que no son tuyos |
 
@@ -153,6 +153,7 @@ pepper/
 ├── docs/
 │   ├── pepper/                        ← OUTPUT en tu workspace: stack-report, environment, discovery/
 │   └── documentacion/                 ← este manual + ARQUITECTURA, PERFILES, VISION, fases/
+├── templates/NOTAS-LEGACY.md          ← lo que el humano sabe del legacy; init lo copia a legacy/NOTAS.md
 ├── examples/legacy-demo/              ← legacy de juguete: artefactos, evidencia, clave de respuestas
 ├── tests/                             ← 29 tests del núcleo
 ├── scripts/verificar.py               ← auto-verificación del framework (CI)

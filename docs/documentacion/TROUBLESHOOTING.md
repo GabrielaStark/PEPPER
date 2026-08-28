@@ -30,6 +30,12 @@ Problemas que salen y qué hacer. Si algo no está aquí, el detalle de cada fas
 
 **Rehydrate termina en `FAILED`** — era viable pero algo falló técnicamente (imagen inexistente para esa versión, script de restauración roto). El agente debe decir qué. Frecuente: la versión exacta no existe como imagen — decide con el humano la más cercana y regístrala como desviación.
 
+**`ClassFormatError: Absent Code attribute in method that is not native or abstract`** — el artefacto trae en `WEB-INF/lib` un jar de API de compilación sin código (`javaee-api-*.jar`, `jsf-api-*.jar`) que sombrea a la implementación real; cuál gana depende del orden del zip. En un servidor de aplicaciones real no importa (sus APIs ganan): despliega ahí (D20). Si de verdad corre con `java -jar` en producción, la copia de trabajo del WAR — nunca `legacy/` — se reordena o se le quitan los stubs, y se documenta como hallazgo del legacy.
+
+**`ReflectionsException: could not create Vfs.Dir from url … [war:file:…]`** — JoinFaces (o cualquier escáner basado en Reflections) no sabe leer un WAR ejecutable con `java -jar`. Ese artefacto se despliega en su servidor (D20).
+
+**Una vista o función alcanzó una base de producción** — el respaldo trae `pg_foreign_server` / `USER MAPPING` con host y contraseña reales, y la máquina tiene VPN. La receta re-apunta los servidores foráneos al stub y la red es `internal` (D19); si lo ves en un compose viejo, `docker compose down` y regenera.
+
 **Contenedor `running`, aplicación sin responder** — por eso `READY` exige validaciones, no solo `docker ps`. Mira los logs de arranque: deployment fallido, datasource sin driver, puerto equivocado.
 
 **El agente de discovery listó el SMTP como dependencia** — lo leyó en la configuración, no lo vio ejecutarse. Es la trampa clásica y viola el skill `discovery-runtime` regla 6. Pídele que lo mueva a contradicción (si la documentación lo afirma) o a desconocido.
