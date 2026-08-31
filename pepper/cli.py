@@ -1,4 +1,4 @@
-"""Línea de comandos: `pepper correlate | package | export | detect | validate | demo`."""
+"""Línea de comandos: `pepper correlate | package | export | detect | validate | isolate | demo`."""
 
 from __future__ import annotations
 
@@ -133,6 +133,42 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def _cmd_isolate(args: argparse.Namespace) -> int:
+    from pepper.isolate import check_live, check_static, render, resolve_compose
+
+    hosts = [h.strip() for h in (args.hosts or "").split(",") if h.strip()]
+    try:
+        compose = resolve_compose(args.compose)
+    except (RuntimeError, ValueError) as error:
+        print(f"pepper isolate: {error}", file=sys.stderr)
+        return 2
+    report = check_static(compose, hosts, args.ingress)
+    title = f"Aislamiento — {args.compose}"
+    if args.live:
+        live = check_live(args.compose, hosts, args.ingress)
+        report.findings.extend(live.findings)
+        title += " (compose + contenedores)"
+
+    for finding in report.errors:
+        print(f"  ✗ {finding.check}" + (f"\n      {finding.detail}" if finding.detail else ""))
+    for finding in report.warnings:
+        print(f"  ! {finding.check}" + (f"\n      {finding.detail}" if finding.detail else ""))
+    if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(render(report, title) + "\n", encoding="utf-8")
+
+    checked = len([f for f in report.findings if f.level == "ok"])
+    if report.isolated:
+        print(f"isolate · AISLADO · {checked} comprobaciones en verde, {len(report.warnings)} aviso(s)")
+        print("  ningún contenedor del legacy puede alcanzar nada fuera de su red")
+    else:
+        print(f"isolate · NO AISLADO · {len(report.errors)} fuga(s)")
+        print("  el entorno puede alcanzar producción: no lo levantes ni observes hasta corregir")
+    if args.out:
+        print(f"  reporte: {args.out}")
+    return 0 if report.isolated else 1
+
+
 def _cmd_demo(args: argparse.Namespace) -> int:
     from pepper.correlate import run
     from pepper.package import assemble
@@ -165,6 +201,7 @@ COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
     "export": _cmd_export,
     "detect": _cmd_detect,
     "validate": _cmd_validate,
+    "isolate": _cmd_isolate,
     "demo": _cmd_demo,
 }
 
@@ -201,6 +238,13 @@ def build_parser() -> argparse.ArgumentParser:
     validate = commands.add_parser("validate", help="valida archivos contra los contratos de schemas/")
     validate.add_argument("files", type=Path, nargs="+", help="profile.json, parsers/*.json, session.json, environment.json, flow.json, events.jsonl, runtime-discovery.json")
     validate.add_argument("--schema", choices=("event", "environment", "flow", "parser", "profile", "runtime-discovery", "session"), help="fuerza el schema (si el nombre del archivo no lo delata)")
+
+    isolate = commands.add_parser("isolate", help="verifica que un entorno rehidratado no pueda alcanzar nada externo")
+    isolate.add_argument("compose", type=Path, help="docker-compose.yml del entorno rehidratado")
+    isolate.add_argument("--hosts", help="hosts externos que el artefacto invoca, separados por coma: cada uno debe resolver al stub")
+    isolate.add_argument("--live", action="store_true", help="además, verifica los contenedores en ejecución (según Docker, no según el archivo)")
+    isolate.add_argument("--ingress", default="ingress", help="servicio que publica el puerto al host: el único con salida permitida (default: ingress)")
+    isolate.add_argument("--out", type=Path, help="escribe el reporte legible en este archivo")
 
     demo = commands.add_parser("demo", help="correlate + package sobre examples/legacy-demo")
     demo.add_argument("--out", type=Path, default=Path("pepper-out/legacy-demo"), help="directorio de trabajo (default pepper-out/legacy-demo)")

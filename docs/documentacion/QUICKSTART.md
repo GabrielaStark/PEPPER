@@ -41,7 +41,7 @@ Una sola secuencia, de arriba a abajo. ✋ = gate humano.
 1. `/pepper-init` — verifica herramientas, prepara `legacy/`, `evidence/`, `docs/pepper/`.
 2. **Pon tus artefactos** en `legacy/` — lo que tengas, como esté. Ordenar el desorden es trabajo de PEPPER. Y **llena `legacy/NOTAS.md`** (init lo deja listo desde `templates/NOTAS-LEGACY.md`) con lo que sepas: servidor y versión de producción, base, cómo arranca, flujos que importan. Una línea tuya ahorra horas.
 3. `/pepper-inspect` — stack con evidencia, dependencias, faltantes, perfil (o borrador) → `docs/pepper/stack-report.md`. ✋
-4. `/pepper-rehydrate` — plan de reconstrucción ✋ → contenedores → validación → `docs/pepper/environment.json`. ✋ (`BLOCKED` y `FAILED` son entregables: paras ahí, con la lista de qué falta.)
+4. `/pepper-rehydrate` — plan de reconstrucción ✋ → **aislamiento verificado** (`pepper isolate`) → contenedores → validación → `docs/pepper/environment.json`. ✋ (`BLOCKED` y `FAILED` son entregables: paras ahí, con la lista de qué falta.)
 5. `/pepper-observe <flujo>` — colectores listos → **tú ejecutas el flujo** → `evidence/<session_id>/`. ✋
 6. `/pepper-correlate <session_id>` — el núcleo normaliza, reduce y correlaciona; arma el paquete. Revisas `flow.md`. ✋
 7. `/pepper-discover <session_id>` — el agente analiza el paquete → `runtime-discovery.json/md`. Lo lees completo. ✋
@@ -73,13 +73,13 @@ Después `/pepper-discover legacy-demo` (el paquete quedó en `pepper-out/legacy
 |---|---|---|
 | 0. Init | `/pepper-init` | workspace listo, escalón |
 | 1. Inspect | `/pepper-inspect` | `docs/pepper/stack-report.md`, borrador de perfil |
-| 2. Rehydrate | `/pepper-rehydrate` | `docs/pepper/environment.json` |
+| 2. Rehydrate | `/pepper-rehydrate` | `docs/pepper/environment.json`, `docs/pepper/isolation.md` |
 | 3. Observe | `/pepper-observe <flujo>` | `evidence/<session_id>/` |
 | 4. Correlate | `/pepper-correlate <session_id>` | `pepper-out/<session_id>/{correlated,package}` |
 | 5. Discover | `/pepper-discover <session_id>` | `…/package/output/runtime-discovery.*` |
 | 6. Export | `/pepper-export <session_id>` | `docs/pepper/discovery/<session_id>/` |
 
-Bajo los comandos está el núcleo, usable a mano: `python3 -m pepper {detect,validate,correlate,package,export,demo}`.
+Bajo los comandos está el núcleo, usable a mano: `python3 -m pepper {detect,validate,isolate,correlate,package,export,demo}`.
 
 ---
 

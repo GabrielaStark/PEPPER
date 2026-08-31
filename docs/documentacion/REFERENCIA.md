@@ -77,8 +77,8 @@ from legacy/, docs/pepper/stack-report.md and the profile it names
 | Fase del agente | Qué hace | Tu trabajo |
 |---|---|---|
 | 1. Lectura | Reporte + perfil; insumos presentes y ausentes. Si falta un `required_input` → `BLOCKED` directo. | Confirmar. |
-| 2. Plan | `pepper-out/rehydrate/docker-compose.yml` con versiones fieles, datos, configuración real y observabilidad activada. | **Aprobar el plan antes de que levante nada.** ✋ |
-| 3. Ejecución | `docker compose up -d`, logs de arranque, diagnóstico. | Esperar. |
+| 2. Plan | `pepper-out/rehydrate/docker-compose.yml` con versiones fieles, datos, configuración real y observabilidad activada. **Verifica el aislamiento con `pepper isolate` antes de presentarlo.** | **Aprobar el plan antes de que levante nada.** ✋ |
+| 3. Ejecución | `docker compose up -d`, logs de arranque, diagnóstico, y `pepper isolate --live` contra los contenedores reales. | Esperar. |
 | 4. Validación | Checks del perfil + genéricos; `pass`/`fail`/`skipped` con detalle. | Revisar los `fail`. |
 | 5. Estado | `environment.json` (`READY`/`PARTIAL`/`BLOCKED`/`FAILED`), `validation.md`, `missing-evidence.md`. | Decidir sobre `PARTIAL`. |
 | 6. Cierre | Cómo apagar; el entorno es desechable. | Aprobar el estado. |
@@ -89,6 +89,7 @@ from legacy/, docs/pepper/stack-report.md and the profile it names
 - [ ] Nada inventado: cada datasource, usuario y puerto viene de un artefacto.
 - [ ] `READY` solo si la aplicación responde, no solo si el contenedor está `running`.
 - [ ] `python3 -m pepper validate docs/pepper/environment.json` pasa.
+- [ ] `python3 -m pepper isolate <compose> --hosts <hosts> --live` dice **AISLADO**. Sin eso no se observa nada: el entorno corre con las credenciales de producción del legacy.
 - [ ] Sin credenciales en `docs/pepper/`.
 
 ---
@@ -188,6 +189,7 @@ Mapeo de confianza (skill `evidencia-runtime` §3): `confirmada` y `fuertemente_
 ```bash
 python3 -m pepper detect <artefactos>/                       # qué perfil aplica, con qué señales
 python3 -m pepper validate <archivo>... [--schema NOMBRE]     # contratos: profile, parser, session, environment, flow, event, runtime-discovery
+python3 -m pepper isolate <compose> [--hosts a,b] [--live]    # ¿el entorno rehidratado puede alcanzar algo externo?
 python3 -m pepper correlate <evidencia>/ --out <dir> [--profile <id>] [--tolerance-ms 500]
 python3 -m pepper package <correlated>/ --legacy <artefactos>/ --out <dir>
 python3 -m pepper export <paquete>/ --check                   # solo validar

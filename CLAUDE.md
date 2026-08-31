@@ -25,6 +25,7 @@ Lo mecánico no se hace a mano; lo hace el núcleo, igual cada vez:
 ```bash
 python3 -m pepper detect <artefactos>/            # qué perfil aplica
 python3 -m pepper validate <archivo>...           # contratos de schemas/
+python3 -m pepper isolate <compose> --live         # el entorno no alcanza nada externo
 python3 -m pepper correlate <evidencia>/ --out …  # normalizar, reducir, correlacionar
 python3 -m pepper package <correlated>/ --out …   # paquete controlado
 python3 -m pepper export <paquete>/ --check       # validar la salida del discovery

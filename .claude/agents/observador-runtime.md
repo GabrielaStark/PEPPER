@@ -44,6 +44,16 @@ evidence/<session_id>/
 
 Determina qué fuentes existen y dónde: las del perfil (`location`), el log del motor de BD, `docker logs` de cada contenedor, y si hay un proxy HTTP delante que emita `http.jsonl`. Sé honesto sobre lo que no hay: **el proxy HTTP del núcleo de PEPPER todavía no existe**; si nadie puso un proxy delante, no habrá `correlation_id` y la correlación irá por afinidad (thread/pid) y ventana temporal — más débil, y así se declarará. Reporta el inventario de colectores y espera confirmación.
 
+### Fase 1.5 — Aislamiento (si el entorno lo levantó PEPPER)
+
+Antes de tocar nada:
+
+```bash
+python3 -m pepper isolate pepper-out/rehydrate/docker-compose.yml --hosts "<hosts externos>" --live
+```
+
+Si sale `NO AISLADO`, **detente**: observar un entorno con salida significa que el flujo que el humano ejecute puede escribir en producción. Repórtalo y devuélvelo a `/pepper-rehydrate`. En el escalón 2 (un sistema que ya corre en otro ambiente) esto no aplica: ahí el humano ya decidió observar un sistema real y la evidencia se trata como sensible.
+
 ### Fase 2 — Preparación
 
 Verifica que cada colector produce líneas **ahora**, antes de la ventana (un `GET` inocuo, una consulta trivial). Si un colector necesita reconfiguración que exija reiniciar (subir el nivel de log), pide aprobación ✋ y déjalo listo antes de empezar. Define `session_id` (`flow-NNN`, o `<slug>-<fecha>`) y el `flow_name`; si ya existe una sesión con ese id, no la sobrescribas: pide otro.

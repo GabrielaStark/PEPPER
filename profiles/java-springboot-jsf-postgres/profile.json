@@ -93,6 +93,7 @@
       "extraer a un directorio temporal (nunca en legacy/) la configuración embebida del WAR: META-INF/maven/*/pom.xml y WEB-INF/classes/application*.yml; elegir el perfil de Spring completo (url, username, password del datasource)",
       "derivar el ambiente que el artefacto espera: subnet y IP del datasource, nombre de la base, usuario, IPs/hosts de servicios externos, puerto, rutas de archivos (D17)",
       "generar docker-compose.yml desde compose.template.yml: red interna, base en la IP esperada con el nombre esperado, stub con alias para cada host externo, ingress publicando el puerto (D19)",
+      "verificar el aislamiento con `python3 -m pepper isolate <compose> --hosts <hosts>` ANTES de levantar nada; si no está en verde, corregir el compose (D19)",
       "si el WAR trae WEB-INF/jboss-web.xml → imagen jboss/wildfly de la versión de NOTAS.md y despliegue del WAR original en standalone/deployments (D20); solo sin descriptores → java -jar",
       "levantar db y stub; restaurar el respaldo dentro de la base con el nombre esperado usando un pg_restore >= versión del pg_dump (cabecera), sin dueños ni privilegios; crear vacíos los roles que el respaldo referencie; re-apuntar todo pg_foreign_server al stub",
       "levantar app e ingress; esperar WFLYSRV0010 (WildFly) o 'Started Application' (java -jar)",
@@ -117,6 +118,10 @@
     }
   ],
   "validation": [
+    {
+      "check": "aislamiento verificado por el núcleo antes y después de levantar",
+      "command": "python3 -m pepper isolate <compose> --hosts <hosts externos del artefacto> --live"
+    },
     {
       "check": "WildFly desplegó el WAR (WFLYSRV0010) o Spring Boot arrancó (Started Application)"
     },
