@@ -34,6 +34,10 @@ Problemas que salen y qué hacer. Si algo no está aquí, el detalle de cada fas
 
 **`ReflectionsException: could not create Vfs.Dir from url … [war:file:…]`** — JoinFaces (o cualquier escáner basado en Reflections) no sabe leer un WAR ejecutable con `java -jar`. Ese artefacto se despliega en su servidor (D20).
 
+**`isolate · NO AISLADO`** — el reporte dice qué servicio y por qué red. Lo típico: una red sin `internal: true`, un servicio sin `networks:` (cae en `default`, que tiene salida), un `extra_hosts` apuntando a una IP real, o un host externo del artefacto sin alias al stub. Corrige el compose y repite; no levantes nada mientras esté en rojo.
+
+**`isolate` no puede resolver el compose** — necesita `docker compose config` (o `pyyaml` como respaldo). Verifica que Docker esté instalado; el daemon no hace falta para la comprobación estática, solo para `--live`.
+
 **Una vista o función alcanzó una base de producción** — el respaldo trae `pg_foreign_server` / `USER MAPPING` con host y contraseña reales, y la máquina tiene VPN. La receta re-apunta los servidores foráneos al stub y la red es `internal` (D19); si lo ves en un compose viejo, `docker compose down` y regenera.
 
 **Contenedor `running`, aplicación sin responder** — por eso `READY` exige validaciones, no solo `docker ps`. Mira los logs de arranque: deployment fallido, datasource sin driver, puerto equivocado.

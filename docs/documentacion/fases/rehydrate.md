@@ -41,6 +41,17 @@ El caso típico es un WAR/JAR/dist y un respaldo, sin código ni configuración 
 
 Los hosts externos que el artefacto invoca (servicios, buses, SMTP, servidores foráneos) se resuelven en esa red a un **stub** que responde error y registra cada petición — evidencia de qué dependencias invoca cada flujo. Un entorno rehidratado nunca llama a un servicio externo real.
 
+## El aislamiento lo verifica el núcleo, no el agente
+
+El entorno corre con la configuración real del legacy: sus IPs, sus hosts, sus credenciales de producción. Si tiene salida — y la máquina del ingeniero suele tener VPN a la red institucional — **el legacy alcanza producción**. Por eso el aislamiento no depende de que el agente se acuerde de escribirlo:
+
+```bash
+python3 -m pepper isolate <compose> --hosts "<hosts externos>"          # antes de levantar nada
+python3 -m pepper isolate <compose> --hosts "<hosts>" --live            # después, contra los contenedores
+```
+
+Qué comprueba: que toda red sea `internal` (salvo la del ingress, un reenviador puro), que ningún servicio use `network_mode: host` ni una red no declarada, que ningún `extra_hosts` apunte fuera de las subredes internas, que cada host externo del artefacto esté aliaseado al stub, y —con `--live`— que Docker confirme lo mismo sobre los contenedores en ejecución. Sale con código 1 si hay fuga; el agente tiene prohibido levantar el entorno en rojo.
+
 ## Cuando faltan insumos de verdad
 
 `BLOCKED` es solo para cuando no hay artefacto desplegable, el respaldo no se puede restaurar, o el artefacto no dice a qué conectarse en ningún perfil. PEPPER **no inventa** eso. Produce `missing-evidence.md`: qué se detectó, qué falta y qué evidencia conseguir. Es un entregable de primera clase.

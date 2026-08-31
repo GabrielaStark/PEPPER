@@ -8,6 +8,8 @@
 #   - Todo host externo del artefacto se resuelve por alias DNS al `stub`, que responde
 #     503 y registra cada petición (evidencia de dependencias).
 #   - Si el WAR trae jboss-web.xml, se despliega en WildFly (D20), NO con java -jar.
+#   - `pepper isolate <compose> --hosts <hosts>` debe salir en verde ANTES de levantar,
+#     y con --live después: el aislamiento lo verifica el núcleo, no el agente.
 #   - Observabilidad de antemano: log_statement=all en la base, DEBUG en la app.
 
 name: {{stack_name}}-rehydrate

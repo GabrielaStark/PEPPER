@@ -191,11 +191,12 @@ pepper/
 
 1. **Toda conclusión referencia evidencia.** IDs que resuelven a un evento o a una línea cruda. `pepper export` rechaza lo que no resuelve — no publica, no corrige.
 2. **El legacy es solo lectura.** PEPPER descubre; no repara, no moderniza, no hace commit en el repo del legacy.
-3. **Lo determinístico lo hace el núcleo.** Misma evidencia → mismos bytes. La reducción se audita en `reduction.md`; el SQL nunca se deduplica; los errores y las escrituras nunca se descartan.
-4. **Lo observado no se mezcla con lo inferido.** `correlation_id` es lo que la fuente emitió; lo inferido va aparte con su base.
-5. **Cada fase termina en gate humano.** El plan de rehydrate se aprueba antes de ejecutarse; el flujo lo ejecuta el humano; el discovery se lee completo antes de publicarse.
-6. **Nada entra a stark como `confirmada`.** Lo más alto que PEPPER entrega es `inferida` (código **y** runtime); las contradicciones van a `en-duda`; los desconocidos, a preguntas abiertas. Solo una persona con nombre promueve una regla.
-7. **BLOCKED es un entregable.** Nunca se inventan insumos faltantes.
+3. **El entorno rehidratado no alcanza nada externo.** Red interna, stub para cada host del artefacto, servidores foráneos re-apuntados — y `pepper isolate` lo verifica antes de levantar y contra los contenedores. El legacy corre con credenciales de producción; la salida de red no es negociable.
+4. **Lo determinístico lo hace el núcleo.** Misma evidencia → mismos bytes. La reducción se audita en `reduction.md`; el SQL nunca se deduplica; los errores y las escrituras nunca se descartan.
+5. **Lo observado no se mezcla con lo inferido.** `correlation_id` es lo que la fuente emitió; lo inferido va aparte con su base.
+6. **Cada fase termina en gate humano.** El plan de rehydrate se aprueba antes de ejecutarse; el flujo lo ejecuta el humano; el discovery se lee completo antes de publicarse.
+7. **Nada entra a stark como `confirmada`.** Lo más alto que PEPPER entrega es `inferida` (código **y** runtime); las contradicciones van a `en-duda`; los desconocidos, a preguntas abiertas. Solo una persona con nombre promueve una regla.
+8. **BLOCKED es un entregable.** Nunca se inventan insumos faltantes.
 
 ---
 
