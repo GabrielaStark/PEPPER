@@ -96,12 +96,18 @@ services:
       - {{war_path}}:/opt/jboss/wildfly/standalone/deployments/{{war_name}}:ro   # el WAR ORIGINAL, sin modificar
       - app-files:{{files_root}}          # p. ej. la ruta de archivos que declara la configuración
 
+  # El ingress ES el proxy HTTP de PEPPER (pepper/proxy.py, copiado por Rehydrate a
+  # ./proxy/): reenvía al app, inyecta X-Pepper-Correlation-Id y emite http.jsonl por
+  # stdout — `docker logs` de este contenedor es la fuente `http-proxy` de Observe.
+  # No registra headers de credenciales y redacta campos que parezcan contraseñas.
   ingress:
-    image: alpine/socat
-    command: ["TCP-LISTEN:8080,fork,reuseaddr", "TCP:{{app_ip}}:8080"]
+    image: python:3-alpine
+    command: ["python3", "-u", "/pepper-proxy.py", "--listen", "0.0.0.0:8080", "--upstream", "{{app_ip}}:8080"]
     depends_on:
       app:
         condition: service_started
     networks: [legacy, edge]
     ports:
       - "{{host_port}}:8080"
+    volumes:
+      - ./proxy/proxy.py:/pepper-proxy.py:ro   # la única excepción de montaje en el ingress

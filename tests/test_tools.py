@@ -68,6 +68,27 @@ class DetectTest(unittest.TestCase):
             self.assertIn("app.war!WEB-INF/classes/application-prod.yml", hits)
             self.assertIn("app.war!WEB-INF/jboss-web.xml", hits)
 
+    def test_signals_are_found_inside_tarballs(self):
+        # La herramienta es para CUALQUIER legacy: un dist entregado como tar.gz
+        # (PHP, Node, binarios sueltos) se inspecciona igual que un WAR.
+        import tarfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = root / "_payload"
+            payload.mkdir()
+            inner = payload / "META-INF/maven/gob/app"
+            inner.mkdir(parents=True)
+            (inner / "pom.xml").write_text(
+                "<parent><artifactId>spring-boot-starter-parent</artifactId></parent>", encoding="utf-8")
+            with tarfile.open(root / "dist.tar.gz", "w:gz") as tar:
+                tar.add(inner / "pom.xml", arcname="META-INF/maven/gob/app/pom.xml")
+            import shutil
+            shutil.rmtree(payload)
+            results = detect(root)
+            [spring] = [r for r in results if r["profile_id"] == "java-springboot-jsf-postgres"]
+            hits = {m["hit"] for m in spring["matches"]}
+            self.assertIn("dist.tar.gz!META-INF/maven/gob/app/pom.xml", hits)
+
     def test_missing_directory_fails_clearly(self):
         with self.assertRaises(FileNotFoundError):
             detect(Path("/no/existe"))

@@ -96,6 +96,13 @@ class AvisoTest(unittest.TestCase):
         report = leak(lambda c: c["services"]["ingress"].__setitem__("volumes", ["../../legacy:/legacy:ro"]))
         self.assertTrue(any("ingress monta volúmenes" in f.check for f in report.warnings))
 
+    def test_ingress_con_el_proxy_de_pepper_no_es_aviso(self):
+        report = leak(lambda c: c["services"]["ingress"].__setitem__(
+            "volumes", ["./proxy/proxy.py:/pepper-proxy.py:ro"]))
+        self.assertFalse(any("volúmenes" in f.check for f in report.warnings))
+        self.assertTrue(any("proxy de PEPPER" in f.check for f in report.findings if f.level == "ok"))
+        self.assertTrue(report.isolated)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -123,6 +123,25 @@ def _is_internal_ip(ip: str, subnets: Iterable[ipaddress.IPv4Network]) -> bool:
     return any(address in subnet for subnet in subnets)
 
 
+def _volume_is_proxy_mount(volume: Any) -> bool:
+    """True solo para el montaje legítimo del ingress: el proxy de PEPPER, de solo lectura.
+
+    Cualquier otra cosa montada ahí es sospechosa aunque sea :ro — el ingress es el
+    único contenedor con salida, y lo que vive dentro queda del lado expuesto.
+    """
+    if isinstance(volume, str):
+        parts = volume.split(":")
+        readonly = len(parts) >= 3 and "ro" in parts[-1].split(",")
+        source = parts[0]
+    elif isinstance(volume, dict):
+        readonly = bool(volume.get("read_only"))
+        source = str(volume.get("source", ""))
+    else:
+        return False
+    name = source.rstrip("/").rsplit("/", 1)[-1]
+    return readonly and name in ("proxy.py", "proxy")
+
+
 def check_static(compose: Dict[str, Any], external_hosts: Optional[List[str]] = None,
                  ingress: str = DEFAULT_INGRESS) -> Report:
     """Verifica los invariantes de aislamiento sobre el compose resuelto."""
@@ -180,8 +199,14 @@ def check_static(compose: Dict[str, Any], external_hosts: Optional[List[str]] = 
                        "expone datos del legacy al host y a su LAN; publica solo por el ingress o bindea a 127.0.0.1")
 
         if is_ingress and service.get("volumes"):
-            report.add("warn", "el ingress monta volúmenes",
-                       "debe ser un reenviador puro: sin artefactos ni datos del legacy")
+            # El proxy de PEPPER se monta :ro en el ingress; eso es la herramienta,
+            # no datos del legacy. Todo lo demás queda del lado con salida: aviso.
+            foreign = [v for v in service["volumes"] if not _volume_is_proxy_mount(v)]
+            if foreign:
+                report.add("warn", "el ingress monta volúmenes ajenos al proxy de PEPPER",
+                           "debe ser un reenviador puro: sin artefactos ni datos del legacy")
+            else:
+                report.add("ok", "el ingress solo monta el proxy de PEPPER (:ro)")
 
     for host in (external_hosts or []):
         key = host.strip().lower()
