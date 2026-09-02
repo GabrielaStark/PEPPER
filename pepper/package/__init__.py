@@ -13,6 +13,7 @@ Contenido:
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -118,6 +119,36 @@ def _readme(session: Dict[str, Any], flow: Dict[str, Any], legacy_dirs: List[str
     return "\n".join(lines)
 
 
+
+_CREDENTIAL_LINE_RE = re.compile(r"(?im)^(\s*(?:pass\w*|contrase\w*|clave|secret\w*|token|pwd)\s*[:=]\s*)(\S.*)$")
+
+
+def _redact_notes(package_legacy: Path) -> List[str]:
+    """Redacta valores tipo credencial en las notas del humano copiadas al paquete.
+
+    NOTAS.md dice \"sin credenciales aquí\", pero si el humano las puso, no pueden
+    viajar a un agente externo en claro (auditoría C-03). Se redacta en la COPIA;
+    el original en legacy/ no se toca. Devuelve los archivos donde redactó.
+    """
+    touched: List[str] = []
+    if not package_legacy.is_dir():
+        return touched
+    for path in package_legacy.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in (".md", ".txt", ""):
+            continue
+        if path.stat().st_size > 1_000_000:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeError, OSError):
+            continue
+        redacted, n = _CREDENTIAL_LINE_RE.subn(r"\1[REDACTADO POR PEPPER]", text)
+        if n:
+            path.write_text(redacted, encoding="utf-8")
+            touched.append(path.name)
+    return touched
+
+
 def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = None) -> Dict[str, Any]:
     for name in ("session.json", "events.jsonl", "flow.json"):
         if not (correlated_dir / name).is_file():
@@ -191,6 +222,7 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
         if actual != digest:
             raise ValueError(f"la copia de {original_rel} no coincide con el manifest de Correlate: {package_rel}")
         package_files[package_rel] = digest
+    redacted_notes = _redact_notes(out_dir / "legacy")
     for path in sorted((out_dir / "legacy").rglob("*")) if (out_dir / "legacy").is_dir() else []:
         if path.is_file() and not path.is_symlink():
             package_files[path.relative_to(out_dir).as_posix()] = evidence_manifest.sha256_file(path)
@@ -200,6 +232,7 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
 
     return {
         "session_id": session.get("session_id"),
+        "redacted_notes": redacted_notes,
         "events": flow.get("stats", {}).get("events", 0),
         "traces": len(flow.get("traces", [])),
         "legacy": legacy_dirs,

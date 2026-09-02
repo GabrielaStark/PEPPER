@@ -107,6 +107,27 @@ class ExportIntegrityTest(unittest.TestCase):
         report = export_check(self.package)
         self.assertTrue(any("legacy/sistema.war" in e for e in report.errors), report.errors)
 
+    def test_credenciales_en_notas_se_redactan_en_el_paquete(self):
+        # NOTAS.md con una contraseña en claro no puede viajar al agente (C-03)
+        notas = Path(self._tmp.name) / "legacy" / "NOTAS.md"
+        # regenerar un paquete con NOTAS que trae credencial
+        import shutil as _sh
+        pkg2 = Path(self._tmp.name) / "package2"
+        legacy2 = Path(self._tmp.name) / "legacy2"
+        legacy2.mkdir()
+        (legacy2 / "NOTAS.md").write_text("PASSWORD: SuperSecreta123\nusuario: ana\n", encoding="utf-8")
+        from pepper.correlate import run as _run
+        from pepper.package import assemble as _assemble
+        corr = Path(self._tmp.name) / "corr2"
+        _run(FIXTURE / "raw-evidence", corr)
+        summary = _assemble(corr, pkg2, legacy2)
+        self.assertIn("NOTAS.md", summary["redacted_notes"])
+        content = (pkg2 / "legacy" / "NOTAS.md").read_text(encoding="utf-8")
+        self.assertNotIn("SuperSecreta123", content)
+        self.assertIn("[REDACTADO POR PEPPER]", content)
+        # el original intacto
+        self.assertIn("SuperSecreta123", (legacy2 / "NOTAS.md").read_text(encoding="utf-8"))
+
     def test_sin_manifest_no_hay_export(self):
         (self.package / evidence_manifest.MANIFEST_NAME).unlink()
         report = export_check(self.package)
