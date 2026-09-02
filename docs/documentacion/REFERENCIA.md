@@ -191,6 +191,7 @@ python3 -m pepper detect <artefactos>/                       # qué perfil aplic
 python3 -m pepper validate <archivo>... [--schema NOMBRE]     # contratos: profile, parser, session, environment, flow, event, runtime-discovery
 python3 -m pepper isolate <compose> [--hosts a,b] [--live]    # ¿el entorno rehidratado puede alcanzar algo externo?
 python3 -m pepper proxy --upstream <host:puerto> [--listen h:p] [--out f]  # el ingress: inyecta correlation_id, emite http.jsonl
+python3 -m pepper collect <compose> <session_id> --start <ISO> --end <ISO> [--margin 30]  # la ventana, desde los contenedores
 python3 -m pepper correlate <evidencia>/ --out <dir> [--profile <id>] [--tolerance-ms 500]
 python3 -m pepper package <correlated>/ --legacy <artefactos>/ --out <dir>
 python3 -m pepper export <paquete>/ --check                   # solo validar

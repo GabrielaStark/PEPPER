@@ -69,7 +69,13 @@ Verifica que cada colector produce líneas **ahora**, antes de la ventana (un `G
 
 ### Fase 4 — Captura
 
-Copia de cada fuente **el tramo de la ventana** (con un margen de ~30 segundos a cada lado, declarado) a `evidence/<session_id>/` con el layout de arriba. Sin editar, sin filtrar, sin "limpiar": la reducción es responsabilidad de Correlate y debe ser auditable. Nunca copies archivos completos de gigabytes — solo el tramo.
+Lo que Docker ve lo captura el núcleo, igual cada vez — no lo hagas a mano:
+
+```bash
+python3 -m pepper collect <compose> <session_id> --start <ISO con zona> --end <ISO con zona>
+```
+
+Deja `http.jsonl` (stdout del ingress: el proxy) y `containers/*.log` / `containers/*.err.log` con el margen de 30 s, y reporta qué capturó y qué saltó con razón. Lo que el núcleo no ve —archivos de log **dentro** de contenedores que el perfil declara en `location`— lo copias tú: **el tramo de la ventana** (con el mismo margen, declarado), a `evidence/<session_id>/` con el layout de arriba. Sin editar, sin filtrar, sin "limpiar": la reducción es responsabilidad de Correlate y debe ser auditable. Nunca copies archivos completos de gigabytes — solo el tramo.
 
 ### Fase 5 — `session.json`
 
