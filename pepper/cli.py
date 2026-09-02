@@ -175,6 +175,36 @@ def _cmd_proxy(args: argparse.Namespace) -> int:
     return proxy.run(args)
 
 
+def _cmd_collect(args: argparse.Namespace) -> int:
+    from datetime import datetime
+
+    from pepper.isolate import resolve_compose
+    from pepper.observe import collect
+
+    def _moment(raw: str, label: str) -> datetime:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError(f"--{label} sin zona horaria ({raw!r}); usa ISO con offset, p. ej. 2026-09-02T10:00:00-06:00")
+        return parsed
+
+    try:
+        compose = resolve_compose(args.compose)
+        summary = collect(compose, args.session_id, _moment(args.start, "start"), _moment(args.end, "end"),
+                          args.out, margin_s=args.margin, ingress=args.ingress)
+    except (RuntimeError, ValueError, FileExistsError) as error:
+        print(f"pepper collect: {error}", file=sys.stderr)
+        return 2
+    captured = [item for item in summary if "file" in item]
+    for item in captured:
+        print(f"  ✓ {item['service']:<12} → {item['file']} ({item['lines']} líneas)")
+    for item in summary:
+        if "skipped" in item:
+            print(f"  – {item['service']:<12} {item['skipped']}")
+    print(f"collect · {len(captured)} archivo(s) en {args.out / args.session_id}")
+    print("  faltan: session.json y las fuentes del perfil (archivos dentro de contenedores) — los declara el observador")
+    return 0 if captured else 1
+
+
 def _cmd_demo(args: argparse.Namespace) -> int:
     from pepper.correlate import run
     from pepper.package import assemble
@@ -209,6 +239,7 @@ COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
     "validate": _cmd_validate,
     "isolate": _cmd_isolate,
     "proxy": _cmd_proxy,
+    "collect": _cmd_collect,
     "demo": _cmd_demo,
 }
 
@@ -259,6 +290,15 @@ def build_parser() -> argparse.ArgumentParser:
     proxy_cmd.add_argument("--upstream", type=_host_port, required=True, help="host:puerto del app rehidratado")
     proxy_cmd.add_argument("--out", default=None, help="además de stdout, escribir el http.jsonl a este archivo")
     proxy_cmd.add_argument("--timeout", type=float, default=120.0, help="segundos de espera por respuesta del app (default 120)")
+
+    collect_cmd = commands.add_parser("collect", help="copia la ventana observada desde los contenedores a evidence/<session_id>/")
+    collect_cmd.add_argument("compose", type=Path, help="docker-compose.yml del entorno rehidratado")
+    collect_cmd.add_argument("session_id", help="sesión de observación (p. ej. flow-001)")
+    collect_cmd.add_argument("--start", required=True, help="inicio de la ventana, ISO con zona (2026-09-02T10:00:00-06:00)")
+    collect_cmd.add_argument("--end", required=True, help="fin de la ventana, ISO con zona")
+    collect_cmd.add_argument("--margin", type=int, default=30, help="segundos de margen a cada lado (default 30)")
+    collect_cmd.add_argument("--out", type=Path, default=Path("evidence"), help="raíz de la evidencia (default evidence/)")
+    collect_cmd.add_argument("--ingress", default="ingress", help="servicio cuyo stdout es el http.jsonl del proxy (default: ingress)")
 
     demo = commands.add_parser("demo", help="correlate + package sobre examples/legacy-demo")
     demo.add_argument("--out", type=Path, default=Path("pepper-out/legacy-demo"), help="directorio de trabajo (default pepper-out/legacy-demo)")

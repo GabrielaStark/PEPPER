@@ -12,7 +12,7 @@ python3 -m unittest discover -s tests       # la suite
 |---|---|---|---|
 | [inspect/](inspect/) | agente `inspector-legacy` | `pepper detect` (señales de perfil), `pepper validate` | herramientas listas |
 | [rehydrate/](rehydrate/) | agente `rehidratador-legacy` | `pepper isolate` (verifica que el entorno no alcance nada externo), `pepper validate` para `environment.json` | **isolate implementado**; runner de recetas pendiente |
-| [observe/](observe/) | agente `observador-runtime` | `pepper proxy` ([proxy.py](proxy.py)): el ingress que inyecta `correlation_id` y emite `http.jsonl` | **proxy implementado**; colector de contenedores pendiente |
+| [observe/](observe/) | agente `observador-runtime` | `pepper proxy` ([proxy.py](proxy.py)): el ingress que inyecta `correlation_id` y emite `http.jsonl`; `pepper collect` ([observe/collect.py](observe/collect.py)): la ventana desde los contenedores | **implementados**; las fuentes del perfil las copia el agente |
 | [correlate/](correlate/) | el núcleo | parsers declarativos, reducción auditada, correlación → `events.jsonl`, `flow.json` | **implementado** |
 | [package/](package/) | el núcleo | el paquete controlado con `prompt.md`, `CLAUDE.md`, `AGENTS.md` | **implementado** |
 | [discover/](discover/) | agente `descubridor-runtime` | `pepper export --check` para auto-verificarse | lo hace el agente |

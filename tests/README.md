@@ -42,9 +42,15 @@ Solo biblioteca estándar (`unittest`); `jsonschema` habilita las comprobaciones
 
 **`test_tools.py`** — `pepper detect` y `pepper validate`: señales dentro de WARs **y de tarballs** (la herramienta no asume stack), modo encima-del-repo, errores claros.
 
+**`test_collect.py`** — el colector genérico de contenedores, con un `docker` fingido que devuelve logs enlatados y anota sus invocaciones:
+
+- layout de salida (`http.jsonl` del ingress sin contaminar por su stderr; `containers/*.log` y `*.err.log`);
+- `--since`/`--until` llevan el margen declarado; `container_name` explícito gana al nombre `<proyecto>-<servicio>-1`;
+- servicios bajo demanda (`profiles`) y contenedores inexistentes quedan **saltados con razón**, nunca en silencio;
+- no sobrescribe una sesión; ventana sin zona horaria falla claro.
+
 ## Lo que falta probar (cuando exista)
 
 - Parsers de más stacks: cada perfil nuevo trae sus líneas de log como fixture.
 - Ventanas concurrentes: dos peticiones traslapadas resueltas por afinidad, y el caso ambiguo que debe quedar sin asignar.
-- El colector genérico de contenedores, cuando se implemente.
 - La integración completa contra el legacy-demo **levantado de verdad**, comparando evidencia real contra la sintética.
