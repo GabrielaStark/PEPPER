@@ -1,0 +1,68 @@
+{
+  "parser_version": "0.1.0",
+  "source": "wildfly",
+  "description": "Consola de WildFly capturada con `pepper collect` (docker logs --timestamps). WildFly loggea sin fecha (18:36:30,213 ERROR ...) y con c\u00f3digos ANSI; el timestamp autoritativo es el prefijo RFC3339 UTC de Docker. Las l\u00edneas de stack trace se anexan al evento anterior como continuaci\u00f3n.",
+  "line_pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z)\\s+(?:\u001b\\[[0-9;]*m)*(?P<time>\\d{2}:\\d{2}:\\d{2},\\d{3})\\s+(?P<severity>[A-Z]+)\\s+\\[(?P<category>[^\\]]+)\\]\\s+\\((?P<thread>[^)]+)\\)\\s?(?P<message>.*)$",
+  "timestamp": {
+    "group": "timestamp"
+  },
+  "fields": {
+    "component": {
+      "from": "category",
+      "transform": "last_segment"
+    },
+    "message": {
+      "from": "message"
+    },
+    "severity": {
+      "from": "severity",
+      "map": {
+        "TRACE": "debug",
+        "DEBUG": "debug",
+        "INFO": "info",
+        "WARN": "warn",
+        "ERROR": "error",
+        "FATAL": "fatal"
+      },
+      "default": "info"
+    },
+    "metadata.thread": {
+      "from": "thread"
+    },
+    "metadata.category": {
+      "from": "category"
+    }
+  },
+  "event_type": {
+    "default": "log",
+    "rules": [
+      {
+        "when": {
+          "field": "category",
+          "matches": "org\\.hibernate\\.SQL"
+        },
+        "value": "sql"
+      },
+      {
+        "when": {
+          "field": "message",
+          "matches": "Exception|Caused by"
+        },
+        "value": "exception"
+      },
+      {
+        "when": {
+          "field": "severity",
+          "matches": "^(ERROR|FATAL)$"
+        },
+        "value": "exception"
+      }
+    ]
+  },
+  "continuation": {
+    "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\S+Z\\s+(?:\u001b\\[[0-9;]*m)*(?:\\s+at\\s|Caused by:|\\.\\.\\.\\s\\d+ more|\\t)|^\\d{4}-\\d{2}-\\d{2}T\\S+Z\\s*$"
+  },
+  "affinity": [
+    "thread"
+  ]
+}

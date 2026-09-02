@@ -108,6 +108,30 @@ class CollectTest(unittest.TestCase):
         self.assertIn("demo-ingress-1", names)     # <proyecto>-<servicio>-1
         self.assertIn("db-real", names)            # container_name explícito gana
 
+    def test_timestamps_de_docker_salvo_el_ingress(self):
+        # los legacies loggean sin fecha (WildFly); el prefijo RFC3339 de Docker se lo da.
+        # El ingress queda puro: su stdout ES http.jsonl y ya trae ts propio.
+        self._collect()
+        calls = [json.loads(line) for line in self.calls_log.read_text().splitlines()]
+        by_name = {call[-1]: call for call in calls}
+        self.assertNotIn("--timestamps", by_name["demo-ingress-1"])
+        self.assertIn("--timestamps", by_name["db-real"])
+        self.assertIn("--timestamps", by_name["demo-app-1"])
+
+    def test_avisa_si_la_ventana_aun_no_termina(self):
+        # docker logs solo devuelve lo ya emitido: correr antes de end+margen deja
+        # la captura incompleta en silencio (pasó en la primera corrida real).
+        future_end = datetime.now(TZ) + timedelta(seconds=45)
+        summary = collect(COMPOSE, "flow-futuro", START, future_end, self.out,
+                          docker_bin=str(self.docker))
+        warnings = [item["warning"] for item in summary if "warning" in item]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("vuelve a correr collect", warnings[0])
+
+    def test_sin_aviso_cuando_la_ventana_ya_paso(self):
+        summary = self._collect()
+        self.assertFalse(any("warning" in item for item in summary))
+
     def test_no_sobrescribe_una_sesion(self):
         self._collect()
         with self.assertRaises(FileExistsError):

@@ -61,19 +61,30 @@ def collect(compose: Dict[str, Any], session_id: str, start: datetime, end: date
         )
 
     since = (start - timedelta(seconds=margin_s)).isoformat()
-    until = (end + timedelta(seconds=margin_s)).isoformat()
+    until_moment = end + timedelta(seconds=margin_s)
+    until = until_moment.isoformat()
 
     summary: List[Dict[str, Any]] = []
+    now = datetime.now(start.tzinfo)
+    if now < until_moment:
+        # docker logs solo devuelve lo ya emitido: correr antes de end+margen deja
+        # la captura incompleta sin que nadie lo note (pasó en la primera corrida real).
+        summary.append({"warning": f"la ventana + margen termina en {until} y aún no llega: "
+                                   "la captura queda incompleta; vuelve a correr collect después de esa hora"})
     for service, spec in services.items():
         spec = spec or {}
         if spec.get("profiles"):
             summary.append({"service": service, "skipped": "servicio bajo demanda (profiles); no corre en la ventana"})
             continue
         name = container_name(project, service, spec)
-        result = subprocess.run(
-            [docker_bin, "logs", "--since", since, "--until", until, name],
-            capture_output=True, text=True,
-        )
+        # --timestamps para todo lo que no sea el ingress: muchos legacies loggean sin
+        # fecha (WildFly: "18:36:30,213 ERROR …"); el prefijo RFC3339 de Docker da a
+        # cada línea un timestamp completo en UTC, venga como venga el formato del app.
+        # El ingress queda puro: su stdout ES http.jsonl y ya trae ts propio.
+        command = [docker_bin, "logs", "--since", since, "--until", until]
+        if service != ingress:
+            command.insert(2, "--timestamps")
+        result = subprocess.run(command + [name], capture_output=True, text=True)
         if result.returncode != 0:
             summary.append({"service": service, "skipped": f"docker logs falló: {result.stderr.strip()[:200]}"})
             continue

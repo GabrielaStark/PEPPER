@@ -24,9 +24,14 @@ def parse_timezone(value: str) -> timezone:
 
 
 def parse_datetime(value: str, default_tz: timezone) -> datetime:
-    """ISO 8601 → datetime con zona. Si el valor no trae zona, se asume la de la sesión."""
+    """ISO 8601 → datetime con zona. Si el valor no trae zona, se asume la de la sesión.
+
+    Acepta fracciones de más de 6 dígitos (docker logs --timestamps emite
+    nanosegundos) truncando a microsegundos: fromisoformat no las soporta.
+    """
     if value.endswith("Z"):
         value = value[:-1] + "+00:00"
+    value = re.sub(r"(\.\d{6})\d+", r"\1", value)
     parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=default_tz)

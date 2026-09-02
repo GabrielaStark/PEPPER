@@ -67,9 +67,11 @@ services:
       - ./restore.sh:/restore.sh:ro
     entrypoint: ["/bin/sh", "/restore.sh"]
 
+  # ./stub/stub.py es copia de pepper/stub.py (autocontenido; Rehydrate lo copia,
+  # igual que el proxy). Los puertos son los que el artefacto espera de sus externos.
   stub:
     image: python:3-alpine
-    command: ["python3", "-u", "/stub/stub.py"]
+    command: ["python3", "-u", "/stub/stub.py", "--ports", "{{stub_ports}}"]
     networks:
       legacy:
         ipv4_address: {{stub_ip}}          # la IP de los servicios externos que el artefacto espera

@@ -195,6 +195,9 @@ def _cmd_collect(args: argparse.Namespace) -> int:
         print(f"pepper collect: {error}", file=sys.stderr)
         return 2
     captured = [item for item in summary if "file" in item]
+    for item in summary:
+        if "warning" in item:
+            print(f"  ! {item['warning']}")
     for item in captured:
         print(f"  ✓ {item['service']:<12} → {item['file']} ({item['lines']} líneas)")
     for item in summary:

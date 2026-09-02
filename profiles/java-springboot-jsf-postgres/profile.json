@@ -77,53 +77,60 @@
   },
   "rehydrate": {
     "required_inputs": [
-      "artefacto desplegable (*.war de Spring Boot; ejecutable o no) o código fuente compilable con JDK 8 y Maven",
+      "artefacto desplegable (*.war de Spring Boot; ejecutable o no) o c\u00f3digo fuente compilable con JDK 8 y Maven",
       "respaldo de la base PostgreSQL (formato custom de pg_dump o script SQL)",
-      "al menos un perfil de Spring completo dentro del WAR (spring.datasource url/username/password) — o la configuración externa del ambiente; sin ninguno de los dos el artefacto no dice a qué conectarse"
+      "al menos un perfil de Spring completo dentro del WAR (spring.datasource url/username/password) \u2014 o la configuraci\u00f3n externa del ambiente; sin ninguno de los dos el artefacto no dice a qu\u00e9 conectarse"
     ],
     "optional_inputs": [
-      "legacy/NOTAS.md con servidor de aplicaciones y versión, Java y versión de PostgreSQL de producción (decide WildFly vs java -jar y las imágenes)",
-      "pg_dumpall --globals-only del servidor original (roles); si no, se crean vacíos",
-      "artefactos de los servicios externos (SIDECO, buses) si algún flujo observado los necesita de verdad; si no, se stubean",
-      "contenido del directorio de archivos que declara la configuración (rutaArchivos)"
+      "legacy/NOTAS.md con servidor de aplicaciones y versi\u00f3n, Java y versi\u00f3n de PostgreSQL de producci\u00f3n (decide WildFly vs java -jar y las im\u00e1genes)",
+      "pg_dumpall --globals-only del servidor original (roles); si no, se crean vac\u00edos",
+      "artefactos de los servicios externos (SIDECO, buses) si alg\u00fan flujo observado los necesita de verdad; si no, se stubean",
+      "contenido del directorio de archivos que declara la configuraci\u00f3n (rutaArchivos)"
     ],
     "compose_template": "compose.template.yml",
     "steps": [
-      "leer legacy/NOTAS.md: servidor de aplicaciones y versión, Java, motor y versión de la base (D18); contrastar con la cabecera del respaldo y los descriptores del WAR, y registrar discrepancias",
-      "extraer a un directorio temporal (nunca en legacy/) la configuración embebida del WAR: META-INF/maven/*/pom.xml y WEB-INF/classes/application*.yml; elegir el perfil de Spring completo (url, username, password del datasource)",
+      "leer legacy/NOTAS.md: servidor de aplicaciones y versi\u00f3n, Java, motor y versi\u00f3n de la base (D18); contrastar con la cabecera del respaldo y los descriptores del WAR, y registrar discrepancias",
+      "extraer a un directorio temporal (nunca en legacy/) la configuraci\u00f3n embebida del WAR: META-INF/maven/*/pom.xml y WEB-INF/classes/application*.yml; elegir el perfil de Spring completo (url, username, password del datasource)",
       "derivar el ambiente que el artefacto espera: subnet y IP del datasource, nombre de la base, usuario, IPs/hosts de servicios externos, puerto, rutas de archivos (D17)",
       "generar docker-compose.yml desde compose.template.yml: red interna, base en la IP esperada con el nombre esperado, stub con alias para cada host externo, ingress publicando el puerto (D19)",
-      "verificar el aislamiento con `python3 -m pepper isolate <compose> --hosts <hosts>` ANTES de levantar nada; si no está en verde, corregir el compose (D19)",
-      "si el WAR trae WEB-INF/jboss-web.xml → imagen jboss/wildfly de la versión de NOTAS.md y despliegue del WAR original en standalone/deployments (D20); solo sin descriptores → java -jar",
-      "levantar db y stub; restaurar el respaldo dentro de la base con el nombre esperado usando un pg_restore >= versión del pg_dump (cabecera), sin dueños ni privilegios; crear vacíos los roles que el respaldo referencie; re-apuntar todo pg_foreign_server al stub",
+      "verificar el aislamiento con `python3 -m pepper isolate <compose> --hosts <hosts>` ANTES de levantar nada; si no est\u00e1 en verde, corregir el compose (D19)",
+      "si el WAR trae WEB-INF/jboss-web.xml \u2192 imagen jboss/wildfly de la versi\u00f3n de NOTAS.md y despliegue del WAR original en standalone/deployments (D20); solo sin descriptores \u2192 java -jar",
+      "levantar db y stub; restaurar el respaldo dentro de la base con el nombre esperado usando un pg_restore >= versi\u00f3n del pg_dump (cabecera), sin due\u00f1os ni privilegios; crear vac\u00edos los roles que el respaldo referencie; re-apuntar todo pg_foreign_server al stub",
       "levantar app e ingress; esperar WFLYSRV0010 (WildFly) o 'Started Application' (java -jar)",
-      "validar: despliegue sin ERROR, 'profiles are active' con el perfil elegido, JSF inicializado, raíz y login responden, sentencias JDBC de la app en el log de la base, stub sin peticiones al arrancar, el contenedor db NO alcanza los hosts foráneos originales",
-      "escribir environment.json (PARTIAL si algo externo quedó stubeado) y validation.md con las desviaciones: perfil de Spring usado, versiones, discrepancias con NOTAS.md, hallazgos del artefacto"
+      "validar: despliegue sin ERROR, 'profiles are active' con el perfil elegido, JSF inicializado, ra\u00edz y login responden, sentencias JDBC de la app en el log de la base, stub sin peticiones al arrancar, el contenedor db NO alcanza los hosts for\u00e1neos originales",
+      "escribir environment.json (PARTIAL si algo externo qued\u00f3 stubeado) y validation.md con las desviaciones: perfil de Spring usado, versiones, discrepancias con NOTAS.md, hallazgos del artefacto"
     ]
   },
   "collectors": [
     {
-      "source": "springboot",
-      "method": "log_file",
-      "location": "/var/log/pepper/app.log",
-      "enable": "arrancar con --logging.file=/var/log/pepper/app.log --logging.level.<paquete-de-la-app>=DEBUG --logging.level.org.hibernate.SQL=DEBUG; sin logging.file Spring Boot 1.5 solo escribe a consola",
-      "parser": "parsers/springboot-app.json"
+      "source": "wildfly",
+      "method": "container_stdout",
+      "location": "evidence/<session_id>/containers/app.log (via `pepper collect`)",
+      "enable": "el WAR desplegado en WildFly loggea a consola; `pepper collect` lo captura con docker logs --timestamps",
+      "parser": "parsers/wildfly-server.json"
     },
     {
       "source": "postgresql",
-      "method": "log_file",
-      "location": "/var/lib/postgresql/data/log/",
+      "method": "container_stdout",
+      "location": "evidence/<session_id>/containers/db.err.log (via `pepper collect`; el motor loggea a stderr)",
       "enable": "log_statement=all y log_line_prefix='%m [%p] %u@%d ' configurados en el compose antes del arranque",
       "parser": "parsers/postgresql-log.json"
+    },
+    {
+      "source": "springboot",
+      "method": "log_file",
+      "location": "/var/log/pepper/app.log",
+      "enable": "solo en modo java -jar: arrancar con --logging.file=/var/log/pepper/app.log --logging.level.<paquete>=DEBUG --logging.level.org.hibernate.SQL=DEBUG",
+      "parser": "parsers/springboot-app.json"
     }
   ],
   "validation": [
     {
-      "check": "aislamiento verificado por el núcleo antes y después de levantar",
+      "check": "aislamiento verificado por el n\u00facleo antes y despu\u00e9s de levantar",
       "command": "python3 -m pepper isolate <compose> --hosts <hosts externos del artefacto> --live"
     },
     {
-      "check": "WildFly desplegó el WAR (WFLYSRV0010) o Spring Boot arrancó (Started Application)"
+      "check": "WildFly despleg\u00f3 el WAR (WFLYSRV0010) o Spring Boot arranc\u00f3 (Started Application)"
     },
     {
       "check": "'The following profiles are active' muestra el perfil de Spring elegido"
@@ -132,20 +139,20 @@
       "check": "JSF inicializado (Initializing Mojarra / WFLYJSF0007)"
     },
     {
-      "check": "sin líneas ERROR en el arranque"
+      "check": "sin l\u00edneas ERROR en el arranque"
     },
     {
-      "check": "raíz responde (302 a login con Spring Security) y la página de login renderiza como JSF (marcadores javax.faces / ViewState)"
+      "check": "ra\u00edz responde (302 a login con Spring Security) y la p\u00e1gina de login renderiza como JSF (marcadores javax.faces / ViewState)"
     },
     {
       "check": "la base tiene las tablas del respaldo y el log de PostgreSQL muestra conexiones 'PostgreSQL JDBC Driver' y sentencias de Hibernate"
     },
     {
-      "check": "el stub no registró peticiones durante el arranque; los hosts externos del WAR resuelven al stub (getent hosts)"
+      "check": "el stub no registr\u00f3 peticiones durante el arranque; los hosts externos del WAR resuelven al stub (getent hosts)"
     },
     {
-      "check": "pg_foreign_server apunta al stub; el contenedor db no alcanza los hosts foráneos originales (pg_isready → no response)"
+      "check": "pg_foreign_server apunta al stub; el contenedor db no alcanza los hosts for\u00e1neos originales (pg_isready \u2192 no response)"
     }
   ],
-  "notes": "Borrador redactado durante Inspect de un legacy real y refinado tras su Rehydrate: WAR ejecutable de Spring Boot 1.5 + JoinFaces + PrimeFaces + Hibernate, respaldo custom de PostgreSQL, desplegado en WildFly en producción. Lecciones incorporadas: con java -jar este tipo de WAR no arranca (JoinFaces no escanea war:file:, Tomcat embebido viejo con NPE JASPIC, jars de API stub en WEB-INF/lib); en WildFly arranca con el WAR original. Las señales de detección que apuntan a pom.xml y application*.yml se encuentran dentro del WAR: pepper detect ya mira dentro de archivos comprimidos. Falta: ejecutar la receta de punta a punta desde la plantilla (la primera corrida se hizo a mano) para pasar a validated."
+  "notes": "Borrador redactado durante Inspect de un legacy real y refinado tras su Rehydrate: WAR ejecutable de Spring Boot 1.5 + JoinFaces + PrimeFaces + Hibernate, respaldo custom de PostgreSQL, desplegado en WildFly en producci\u00f3n. Lecciones incorporadas: con java -jar este tipo de WAR no arranca (JoinFaces no escanea war:file:, Tomcat embebido viejo con NPE JASPIC, jars de API stub en WEB-INF/lib); en WildFly arranca con el WAR original. Las se\u00f1ales de detecci\u00f3n que apuntan a pom.xml y application*.yml se encuentran dentro del WAR: pepper detect ya mira dentro de archivos comprimidos. Falta: ejecutar la receta de punta a punta desde la plantilla (la primera corrida se hizo a mano) para pasar a validated."
 }
