@@ -51,7 +51,7 @@ Repite 5–8 por cada flujo que quieras entender.
 
 ### Escalón 2 · el sistema ya corre
 
-Igual, sin 3 y 4: `/pepper-init` → `/pepper-observe <flujo>` → `/pepper-correlate` → `/pepper-discover` → `/pepper-export`. Sin proxy delante no habrá `correlation_id`: la correlación va por afinidad y ventana temporal, y el discovery fija confianzas más bajas. Si quieres parsers para sus logs, `/pepper-inspect` sobre lo que tengas del sistema te deja un borrador de perfil.
+Igual, sin 3 y 4: `/pepper-init` → `/pepper-observe <flujo>` → `/pepper-correlate` → `/pepper-discover` → `/pepper-export`. Si puedes, pon el proxy de PEPPER delante de la aplicación (`python3 -m pepper proxy --upstream <host:puerto> --out http.jsonl`): tendrás `correlation_id` igual que en un entorno rehidratado. Sin proxy delante, la correlación va por afinidad y ventana temporal, y el discovery fija confianzas más bajas. Si quieres parsers para sus logs, `/pepper-inspect` sobre lo que tengas del sistema te deja un borrador de perfil.
 
 ---
 

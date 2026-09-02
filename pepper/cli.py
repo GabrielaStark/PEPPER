@@ -169,6 +169,12 @@ def _cmd_isolate(args: argparse.Namespace) -> int:
     return 0 if report.isolated else 1
 
 
+def _cmd_proxy(args: argparse.Namespace) -> int:
+    from pepper import proxy
+
+    return proxy.run(args)
+
+
 def _cmd_demo(args: argparse.Namespace) -> int:
     from pepper.correlate import run
     from pepper.package import assemble
@@ -202,6 +208,7 @@ COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
     "detect": _cmd_detect,
     "validate": _cmd_validate,
     "isolate": _cmd_isolate,
+    "proxy": _cmd_proxy,
     "demo": _cmd_demo,
 }
 
@@ -245,6 +252,13 @@ def build_parser() -> argparse.ArgumentParser:
     isolate.add_argument("--live", action="store_true", help="además, verifica los contenedores en ejecución (según Docker, no según el archivo)")
     isolate.add_argument("--ingress", default="ingress", help="servicio que publica el puerto al host: el único con salida permitida (default: ingress)")
     isolate.add_argument("--out", type=Path, help="escribe el reporte legible en este archivo")
+
+    proxy_cmd = commands.add_parser("proxy", help="proxy HTTP del ingress: inyecta correlation_id y emite http.jsonl")
+    from pepper.proxy import _host_port
+    proxy_cmd.add_argument("--listen", type=_host_port, default=("0.0.0.0", 8080), help="host:puerto donde escuchar (default 0.0.0.0:8080)")
+    proxy_cmd.add_argument("--upstream", type=_host_port, required=True, help="host:puerto del app rehidratado")
+    proxy_cmd.add_argument("--out", default=None, help="además de stdout, escribir el http.jsonl a este archivo")
+    proxy_cmd.add_argument("--timeout", type=float, default=120.0, help="segundos de espera por respuesta del app (default 120)")
 
     demo = commands.add_parser("demo", help="correlate + package sobre examples/legacy-demo")
     demo.add_argument("--out", type=Path, default=Path("pepper-out/legacy-demo"), help="directorio de trabajo (default pepper-out/legacy-demo)")

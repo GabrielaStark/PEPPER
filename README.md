@@ -155,7 +155,7 @@ pepper/
 │   └── documentacion/                 ← este manual + ARQUITECTURA, PERFILES, VISION, fases/
 ├── templates/NOTAS-LEGACY.md          ← lo que el humano sabe del legacy; init lo copia a legacy/NOTAS.md
 ├── examples/legacy-demo/              ← legacy de juguete: artefactos, evidencia, clave de respuestas
-├── tests/                             ← 29 tests del núcleo
+├── tests/                             ← 56 tests del núcleo
 ├── scripts/verificar.py               ← auto-verificación del framework (CI)
 ├── AGENTS.md · CLAUDE.md              ← la misma guía para Codex y para Claude Code
 ├── legacy/ · evidence/ · pepper-out/  ← en tu workspace: artefactos, capturas, intermedios (ignorados)
@@ -219,8 +219,9 @@ pepper/
 | Pieza | Estado |
 |---|---|
 | Comandos, agentes y skills (`.claude/`) | escritos; sin probar aún sobre un legacy real |
-| Núcleo — Correlate, Package, Export, detect, validate | **implementados y probados** (29 tests) |
-| Núcleo — proxy HTTP con `correlation_id`, colector genérico de contenedores | pendientes: Observe funciona con los logs que el perfil declare |
+| Núcleo — Correlate, Package, Export, detect, validate, isolate, proxy | **implementados y probados** (56 tests) |
+| Núcleo — proxy HTTP con `correlation_id` (`pepper proxy`, el ingress) | **implementado y probado**; emite `http.jsonl` por stdout y redacta credenciales |
+| Núcleo — colector genérico de contenedores | pendiente: Observe usa `docker logs` a mano |
 | Contratos (`schemas/`) | 7, definidos y validados |
 | Perfil `java-wildfly-postgres` | `draft`: parsers probados; receta de rehydrate sin ejecutar |
 | Fixture `examples/legacy-demo` | listo; evidencia **sintética** marcada como tal; entorno Docker de referencia sin verificar |

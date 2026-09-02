@@ -10,7 +10,7 @@ Problemas que salen y qué hacer. Si algo no está aquí, el detalle de cada fas
 
 **Eventos "sin asignar: ambiguo, N peticiones concurrentes"** — dos peticiones se traslaparon y la fuente no tiene afinidad (`thread`, `pid`) que las separe. Opciones: declarar `affinity` en el parser si la fuente sí trae un identificador; o repetir la observación ejecutando una acción a la vez. Nunca asignes a mano.
 
-**0 peticiones en `flow.json`** — no hubo colector HTTP con `correlation_id`. La correlación se hizo solo por afinidad y ventana temporal; es válida pero más débil, y el discovery debe reflejarlo en confianzas más bajas. La solución de fondo es un proxy delante de la aplicación (pendiente en el núcleo; mientras tanto, un `http.jsonl` generado desde el access log del servidor con un parser).
+**0 peticiones en `flow.json`** — no hubo colector HTTP con `correlation_id`. La correlación se hizo solo por afinidad y ventana temporal; es válida pero más débil, y el discovery debe reflejarlo en confianzas más bajas. En un entorno levantado por PEPPER esto no debería pasar: el ingress es `pepper proxy` y `docker logs` del ingress es el `http.jsonl` — verifica que Observe lo haya copiado a `evidence/<session_id>/` y declarado con `source: http-proxy`. En un entorno ajeno (escalón 2), pon `python3 -m pepper proxy --upstream <app>` delante de la aplicación, o genera un `http.jsonl` desde el access log del servidor con un parser.
 
 **Las fuentes no se alinean en el tiempo** — una fuente trae hora local sin zona y `session.json` declara otra `timezone`. Corrige `timezone` (es la que se aplica a las fuentes que no traen zona) y repite Correlate. Si dos fuentes están en zonas distintas, la que difiere necesita `%z` en su `timestamp.format`.
 

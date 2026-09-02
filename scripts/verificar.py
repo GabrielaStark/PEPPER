@@ -65,7 +65,7 @@ sys.path.insert(0, str(RAIZ))
 ERRORES = []
 IGNORAR = {".git", "pepper-out", "__pycache__", "node_modules"}
 # Tokens con forma de nombre que no son comandos/agentes/skills.
-TOLERADOS = {"pepper-out", "pepper-discovery"}
+TOLERADOS = {"pepper-out", "pepper-discovery", "pepper-proxy"}
 
 
 def error(msg):
