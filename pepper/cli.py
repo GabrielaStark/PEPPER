@@ -38,6 +38,8 @@ def _cmd_package(args: argparse.Namespace) -> int:
     print(f"  evidencia: {summary['events']} eventos, {summary['traces']} peticiones")
     print(f"  legacy: {', '.join(summary['legacy']) if summary['legacy'] else 'sin artefactos (usa --legacy)'}")
     print(f"  paquete: {args.out}")
+    if summary.get("redacted_notes"):
+        print(f"  ⚠ redacté credenciales en: {', '.join(summary['redacted_notes'])} (estaban en claro; el original en legacy/ no se tocó)")
     print()
     print("Siguiente paso — Discover, con el agente que prefieras:")
     print(f"  cd {args.out} && claude    # o codex")
