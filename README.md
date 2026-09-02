@@ -6,6 +6,8 @@
 
 **PEPPER es descubrimiento dinámico de sistemas legacy: toma lo que quede de un sistema, intenta volverlo a poner vivo en contenedores, observa una ejecución real, correlaciona la evidencia y la convierte en conocimiento estructurado — flujos observados, reglas candidatas, contradicciones y desconocidos, cada uno con su evidencia.**
 
+**¿Por qué PEPPER?** **P**lataforma de **E**videncia y **P**rocesamiento para **P**atrones de **E**jecución y **R**eingeniería. Y sí: Pepper organiza la realidad antes de que Stark actúe.
+
 Donde stark lee el manual del coche, PEPPER lo enciende, lo maneja y te dice qué hace de verdad. Sirve para cualquier legacy: lo que la herramienta sabe de cada tecnología entra como datos (perfiles), nunca como código del núcleo.
 
 Clonas, corres `/pepper-init`, y la herramienta te lleva fase por fase: [empieza aquí →](docs/documentacion/QUICKSTART.md)
@@ -266,4 +268,4 @@ El repo se auto-verifica: `python3 scripts/verificar.py` valida frontmatters, fe
 
 PEPPER — herramienta creada por [iamgabstark_](https://github.com/GabrielaStark). Licencia **MIT**.
 
-Complemento independiente de **stark**, de la misma autora. Nombre: Plataforma de Evidencia y Procesamiento para Patrones de Ejecución y Reingeniería — y sí, Pepper organiza la realidad antes de que Stark actúe.
+Complemento independiente de **stark**, de la misma autora.
