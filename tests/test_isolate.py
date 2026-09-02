@@ -18,7 +18,7 @@ AISLADO = {
         "db": {"image": "postgres:16", "networks": {"legacy": {"ipv4_address": "10.4.2.186"}}},
         "stub": {"image": "python:3-alpine",
                  "networks": {"legacy": {"ipv4_address": "10.4.2.185",
-                                         "aliases": ["bus.edomex.gob.mx", "smtp.gmail.com"]}}},
+                                         "aliases": ["bus.institucion.example", "smtp.gmail.com"]}}},
         "app": {"image": "jboss/wildfly:21.0.2.Final", "networks": {"legacy": {"ipv4_address": "10.4.2.10"}}},
         "ingress": {"image": "alpine/socat", "networks": {"legacy": {}, "edge": {}},
                     "ports": [{"published": "18080", "target": 8080}]},
@@ -39,7 +39,7 @@ def leak(mutate):
 
 class AisladoTest(unittest.TestCase):
     def test_el_entorno_de_referencia_esta_aislado(self):
-        report = check_static(AISLADO, external_hosts=["bus.edomex.gob.mx", "smtp.gmail.com"])
+        report = check_static(AISLADO, external_hosts=["bus.institucion.example", "smtp.gmail.com"])
         self.assertTrue(report.isolated, [f.check for f in report.errors])
         self.assertIn("AISLADO", render(report, "prueba"))
 
@@ -81,7 +81,7 @@ class FugaTest(unittest.TestCase):
         self.assertTrue(report.isolated, [f.check for f in report.errors])
 
     def test_host_externo_sin_alias_al_stub_es_fuga(self):
-        report = check_static(AISLADO, external_hosts=["desabus.edomex.gob.mx"])
+        report = check_static(AISLADO, external_hosts=["desabus.institucion.example"])
         self.assertFalse(report.isolated)
         self.assertTrue(any("no está declarado como alias" in f.check for f in report.errors))
 

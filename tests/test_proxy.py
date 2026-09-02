@@ -127,8 +127,8 @@ class ProxyTest(unittest.TestCase):
         self.assertIn("duration_ms", response)
 
     def test_preserva_host_del_cliente(self):
-        _, _, payload = self._request("GET", "/echo-headers", headers={"Host": "siat.local:18080"})
-        self.assertEqual(json.loads(payload)["host"], "siat.local:18080")
+        _, _, payload = self._request("GET", "/echo-headers", headers={"Host": "legado.local:18080"})
+        self.assertEqual(json.loads(payload)["host"], "legado.local:18080")
 
     def test_correlation_ids_unicos(self):
         for _ in range(3):
@@ -146,11 +146,11 @@ class ProxyTest(unittest.TestCase):
         self.assertEqual(response["body"], {"error": "El ciudadano no se encuentra activo"})
 
     def test_redacta_credenciales_en_formularios_y_json(self):
-        form = "usuario=gcarmona&password=SuperSecreta1&recordar=on"
+        form = "usuario=operadora1&password=SuperSecreta1&recordar=on"
         self._request("POST", "/login", body=form,
                       headers={"Content-Type": "application/x-www-form-urlencoded"})
         request, _ = self._pair()
-        self.assertEqual(request["body"]["usuario"], "gcarmona")
+        self.assertEqual(request["body"]["usuario"], "operadora1")
         self.assertEqual(request["body"]["password"], "[REDACTADO]")
         self.assertEqual(request["body"]["recordar"], "on")
 

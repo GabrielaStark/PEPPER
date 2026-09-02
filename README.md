@@ -39,26 +39,44 @@ No es "una IA que lee logs". El agente interpreta; PEPPER prepara la realidad qu
 
 ### Instalar
 
-Dos formas, según dónde viva el legacy:
+Paso a paso, empezando de cero.
 
-| Tu situación | Modo | Cómo |
-|---|---|---|
-| Tienes artefactos sueltos (WAR, dump, configs) sin repo | **Workspace** | clonar PEPPER como carpeta del legacy; artefactos en `legacy/` |
-| El legacy tiene su repo y ahí mismo vas a seguir con stark | **Encima del repo** | copiar la herramienta al repo, gitignoreada — igual que stark en mantenimiento |
+**Requisitos**: `git`, `python3` (3.9+; el que trae macOS sirve), **Docker** (para levantar el legacy) y [Claude Code](https://claude.com/claude-code) o Codex — los comandos `/pepper-*` corren ahí.
+
+Dos formas, según dónde viva tu legacy:
+
+| Tu situación | Modo |
+|---|---|
+| Tienes artefactos sueltos (WAR, EXE, dist, dump, configs) sin repo | **Workspace** (lo que sigue) |
+| El legacy tiene su repo y ahí mismo vas a seguir con stark | **Encima del repo** (más abajo) |
 
 **Workspace:**
 
 ```bash
-git clone https://github.com/GabrielaStark/pepper.git sistema-nominas
-cd sistema-nominas && rm -rf .git && git init
+# 1. Descarga la herramienta con el nombre de TU proyecto
+git clone https://github.com/GabrielaStark/PEPPER.git sistema-nominas
+cd sistema-nominas
+
+# 2. IMPORTANTE — desconéctate del repo de la herramienta.
+#    Sin este paso, un `git push` distraído mandaría TU legacy al repo público de PEPPER.
+git remote remove origin
+
+#    (¿prefieres empezar sin historia? en su lugar: rm -rf .git && git init)
+#    (¿tu proyecto tiene su propio remoto? git remote add origin <tu-repo>)
+
+# 3. Opcional, recomendado: validación de contratos y resolución de compose sin Docker
 pip install -r requirements-dev.txt
-# artefactos → legacy/
+
+# 4. Pon TODO lo que tengas del legacy en legacy/
+cp /ruta/a/lo-que-tengas/* legacy/
 ```
+
+Verifica antes del primer push a tu propio remoto: `git remote -v` no debe mencionar `GabrielaStark/PEPPER`.
 
 **Encima del repo** (desde la raíz del repo del legacy):
 
 ```bash
-git clone --depth 1 https://github.com/GabrielaStark/pepper.git /tmp/pepper && \
+git clone --depth 1 https://github.com/GabrielaStark/PEPPER.git /tmp/pepper && \
 cp -r /tmp/pepper/.claude /tmp/pepper/pepper /tmp/pepper/schemas /tmp/pepper/profiles /tmp/pepper/templates . && \
 mkdir -p docs/pepper && cp -r /tmp/pepper/docs/documentacion docs/ && \
 [ -f CLAUDE.md ] || cp /tmp/pepper/CLAUDE.md . ; [ -f AGENTS.md ] || cp /tmp/pepper/AGENTS.md . ; \
@@ -67,7 +85,24 @@ printf '.claude/\npepper/\nschemas/\nprofiles/\ntemplates/\ndocs/documentacion/\
 rm -rf /tmp/pepper
 ```
 
-Si el repo ya tenía `.claude/`, `CLAUDE.md` o `AGENTS.md` propios, revisa antes: `cp -r` sobreescribe archivos del mismo nombre (los de PEPPER se llaman `pepper-*`, así que conviven con los de stark; los de la raíz no se pisan gracias al `[ -f … ] ||`). En este modo los artefactos son el repo mismo: `/pepper-inspect .`, y el núcleo excluye su propia herramienta al detectar y al empaquetar.
+Aquí no hay remote que quitar: la herramienta llega copiada (no clonada) y gitignoreada; tu repo sigue apuntando a donde siempre. Si el repo ya tenía `.claude/`, `CLAUDE.md` o `AGENTS.md` propios, revisa antes: `cp -r` sobreescribe archivos del mismo nombre (los de PEPPER se llaman `pepper-*`, así que conviven con los de stark; los de la raíz no se pisan gracias al `[ -f … ] ||`). En este modo los artefactos son el repo mismo: `/pepper-inspect .`, y el núcleo excluye su propia herramienta al detectar y al empaquetar.
+
+### Usarlo: tú mandas en cada gate
+
+```bash
+claude          # (o codex) desde la raíz del workspace
+```
+
+y adentro:
+
+1. **`/pepper-init`** — verifica herramientas, prepara carpetas, detecta qué perfil aplica y te deja `legacy/NOTAS.md`: **escribe ahí lo que sepas** (qué servidor corre en producción, versiones, cómo se levanta, servicios externos, flujos que importan). Tu nota manda sobre lo que la herramienta infiera.
+2. **`/pepper-inspect`** — el análisis del stack detectado, con cada afirmación citando evidencia.
+3. **`/pepper-rehydrate`** — te presenta el **plan** para levantarlo en local y se detiene ✋. Este gate es tuyo: si el plan dice WildFly y tú sabes que producción es Tomcat, aquí lo dices y se corrige. Nada se levanta hasta que apruebes. Ya aprobado: contenedores con las IPs y hostnames que el artefacto espera, respaldo restaurado, todo lo externo stubeado, y `pepper isolate --live` en verde — **aislado o no se sigue**.
+4. **`/pepper-observe <flujo>`** — tú usas la aplicación (un flujo a la vez); PEPPER captura todo con `correlation_id`.
+5. **`/pepper-correlate <session_id>`** — el núcleo amarra petición → SQL → log, reduce y empaqueta.
+6. **`/pepper-discover <session_id>`** → **`/pepper-export <session_id>`** — el entregable: flujos observados, reglas de negocio candidatas, contradicciones y desconocidos, cada uno con su evidencia, publicado en `docs/pepper/discovery/` y `docs/analysis/` (listo para stark).
+
+**Si truena** (va a pasar: cada legacy enseña algo): [`docs/documentacion/TROUBLESHOOTING.md`](docs/documentacion/TROUBLESHOOTING.md) primero; si es la herramienta, abre un issue en el repo de PEPPER con el reporte del error — **sin datos de tu legacy**.
 
 ### La regla de oro: la herramienta no se commitea; el producto sí; los datos ajenos nunca
 
@@ -82,20 +117,6 @@ Un perfil nuevo que el agente redacte queda en `profiles/<id>/` — es herramien
 **Al terminar con PEPPER**, borras la herramienta (`rm -rf .claude pepper schemas profiles docs/documentacion CLAUDE.md AGENTS.md LICENSE.pepper pepper-out evidence`, y quitas sus líneas del `.gitignore`), instalas stark, y su `arqueologo-codigo` encuentra el discovery en `docs/analysis/`. En el repo solo quedó lo que PEPPER produjo.
 
 En el workspace, además: `printf 'examples/\ntests/\nscripts/\n.github/\nrequirements-dev.txt\npyproject.toml\n' >> .gitignore` (lo demás ya viene ignorado).
-
-### Ejecutar las fases
-
-```text
-0  /pepper-init                    ← arranca: herramientas, carpetas, escalón de soporte
-1  /pepper-inspect                 ← artefactos → stack con evidencia, faltantes, perfil
-2  /pepper-rehydrate               ← receta → contenedores fieles → environment.json
-3  /pepper-observe <flujo>         ← tú ejecutas el flujo; PEPPER captura
-4  /pepper-correlate <session_id>  ← núcleo: normaliza, reduce, correlaciona, empaqueta
-5  /pepper-discover <session_id>   ← agente: secuencia, reglas candidatas, contradicciones, desconocidos
-6  /pepper-export <session_id>     ← valida contra el contrato, publica, entrega a stark
-```
-
-Cada fase termina en un **gate humano** ✋. El flujo observado lo ejecutas tú; el plan de reconstrucción lo apruebas antes de que se levante un contenedor; el discovery lo lees completo antes de publicarlo.
 
 ### Prueba en 5 minutos
 
