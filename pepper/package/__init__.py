@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from pepper import SCHEMAS_DIR, SKILLS_DIR
+from pepper import manifest as evidence_manifest
 from pepper.workspace import is_tool_path, tool_paths
 
 _EVIDENCE_FILES = ("events.jsonl", "flow.json", "flow.md", "reduction.md")
@@ -78,6 +79,11 @@ def _readme(session: Dict[str, Any], flow: Dict[str, Any], legacy_dirs: List[str
         "",
         "Empieza por `prompt.md` (`CLAUDE.md` y `AGENTS.md` llevan ahí).",
         "",
+        "> ⚠️ **Frontera de datos**: este paquete contiene evidencia y artefactos del legacy",
+        "> (potencialmente datos personales y credenciales por ubicación). Analizarlo con un",
+        "> agente en la nube (Claude Code/Codex con modelo remoto) implica **procesamiento",
+        "> externo**. Esa decisión es del humano responsable del dato, no del agente.",
+        "",
         "## Evidencia",
         "",
         "- `evidence/flow.md` — la secuencia correlacionada, legible; **empieza por aquí**",
@@ -122,6 +128,11 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
         raise FileNotFoundError(f"directorio del legacy inexistente: {legacy_dir}")
     if not DISCOVERY_SKILL.is_file():
         raise FileNotFoundError(f"falta la skill de discovery: {DISCOVERY_SKILL}")
+    source_manifest_path = correlated_dir / evidence_manifest.MANIFEST_NAME
+    if not source_manifest_path.is_file():
+        raise FileNotFoundError(
+            f"{correlated_dir} no tiene {evidence_manifest.MANIFEST_NAME}: sin manifest no hay integridad de evidencia — vuelve a correr `pepper correlate`")
+    source_manifest = evidence_manifest.load(source_manifest_path)
 
     session = json.loads((correlated_dir / "session.json").read_text(encoding="utf-8"))
     flow = json.loads((correlated_dir / "flow.json").read_text(encoding="utf-8"))
@@ -142,12 +153,20 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
         ignore = _legacy_ignore(legacy_dir)
         tool = tool_paths(legacy_dir)
         for child in sorted(legacy_dir.iterdir()):
-            if not child.is_dir() or child.name.startswith(".") or is_tool_path(child, tool):
+            if child.name.startswith(".") or is_tool_path(child, tool):
                 continue
             if child.name in ("pepper-out", "evidence", "legacy"):
                 continue
-            shutil.copytree(child, out_dir / "legacy" / child.name, ignore=ignore)
-            legacy_dirs.append(child.name)
+            if child.is_symlink():
+                continue  # un symlink puede apuntar fuera del legacy: no se sigue (auditoría H-02)
+            if child.is_dir():
+                shutil.copytree(child, out_dir / "legacy" / child.name, ignore=ignore, symlinks=True)
+                legacy_dirs.append(child.name)
+            elif child.is_file():
+                # el caso de uso central es "me queda un WAR y un dump" sueltos (auditoría H-03)
+                (out_dir / "legacy").mkdir(exist_ok=True)
+                shutil.copy2(child, out_dir / "legacy" / child.name)
+                legacy_dirs.append(child.name)
     has_source = "source" in legacy_dirs
 
     shutil.copy2(SCHEMAS_DIR / "runtime-discovery.schema.json", out_dir / "schemas" / "runtime-discovery.schema.json")
@@ -158,6 +177,26 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
     (out_dir / "CLAUDE.md").write_text(adapter, encoding="utf-8")
     (out_dir / "AGENTS.md").write_text(adapter, encoding="utf-8")
     (out_dir / "README.md").write_text(_readme(session, flow, legacy_dirs), encoding="utf-8")
+
+    # El manifest viaja con el paquete, re-mapeado a su layout, y cada copia se
+    # verifica contra el hash original: la evidencia del paquete queda amarrada a
+    # la salida de Correlate (auditoría C-02). El agente solo escribe en output/.
+    package_files: Dict[str, str] = {}
+    for original_rel, digest in source_manifest.get("files", {}).items():
+        package_rel = original_rel if original_rel == "session.json" else f"evidence/{original_rel}"
+        copied = out_dir / package_rel
+        if not copied.is_file():
+            continue  # flow.md/reduction.md pueden no existir; lo copiado es lo que se amarra
+        actual = evidence_manifest.sha256_file(copied)
+        if actual != digest:
+            raise ValueError(f"la copia de {original_rel} no coincide con el manifest de Correlate: {package_rel}")
+        package_files[package_rel] = digest
+    for path in sorted((out_dir / "legacy").rglob("*")) if (out_dir / "legacy").is_dir() else []:
+        if path.is_file() and not path.is_symlink():
+            package_files[path.relative_to(out_dir).as_posix()] = evidence_manifest.sha256_file(path)
+    manifest = dict(source_manifest)
+    manifest["files"] = package_files
+    evidence_manifest.write(out_dir, manifest)
 
     return {
         "session_id": session.get("session_id"),

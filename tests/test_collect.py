@@ -137,6 +137,12 @@ class CollectTest(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             self._collect()
 
+    def test_session_id_con_ruta_falla(self):
+        # "../escape" escribía fuera de evidence/ (auditoría H-02)
+        for malo in ("../escape", "a/b", "/abs", ".oculto"):
+            with self.assertRaises(ValueError, msg=malo):
+                collect(COMPOSE, malo, START, END, self.out, docker_bin=str(self.docker))
+
     def test_ventana_sin_zona_horaria_falla_claro(self):
         naive = datetime(2026, 9, 2, 10, 0, 0)
         with self.assertRaises(ValueError):

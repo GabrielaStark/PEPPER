@@ -168,6 +168,26 @@ class ProxyTest(unittest.TestCase):
         self.assertNotIn("secreto-xyz", serialized)
         self.assertNotIn("abc123", serialized)
 
+    def test_query_string_se_separa_y_redacta(self):
+        # /reset?token=… llevaba el secreto completo dentro de "path" (auditoría H-05)
+        self._request("GET", "/reset?token=super-secreto-123&usuario=ana&modo=web")
+        request, response = self._pair()
+        self.assertEqual(request["path"], "/reset")
+        self.assertEqual(response["path"], "/reset")
+        self.assertEqual(request["query"]["token"], "[REDACTADO]")
+        self.assertEqual(request["query"]["usuario"], "ana")
+        self.assertEqual(request["query"]["modo"], "web")
+        self.assertNotIn("super-secreto-123", json.dumps(self.recorder.entries))
+
+    def test_json_malformado_no_se_registra_crudo(self):
+        # antes, {"password":"SECRETO",} se registraba como texto crudo (auditoría H-05)
+        self._request("POST", "/api", body='{"password":"SECRETO-A-MEDIAS",}',
+                      headers={"Content-Type": "application/json"})
+        request, _ = self._pair()
+        self.assertNotIn("body", request)
+        self.assertIn("body_bytes", request)
+        self.assertNotIn("SECRETO-A-MEDIAS", json.dumps(self.recorder.entries))
+
     def test_html_no_se_captura_solo_se_reenvia(self):
         status, headers, payload = self._request("GET", "/pagina")
         self.assertEqual(status, 200)

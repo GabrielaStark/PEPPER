@@ -59,12 +59,12 @@ Dos formas, según dónde viva tu legacy:
 git clone https://github.com/GabrielaStark/PEPPER.git sistema-nominas
 cd sistema-nominas
 
-# 2. IMPORTANTE — desconéctate del repo de la herramienta.
-#    Sin este paso, un `git push` distraído mandaría TU legacy al repo público de PEPPER.
-git remote remove origin
+# 2. IMPORTANTE — desconéctate del repo de la herramienta EMPEZANDO DE CERO.
+#    (quitar solo el remote NO basta: los archivos de PEPPER seguirían rastreados
+#    y un push a tu propio remoto versionaría toda la herramienta — regla de oro)
+rm -rf .git && git init
 
-#    (¿prefieres empezar sin historia? en su lugar: rm -rf .git && git init)
-#    (¿tu proyecto tiene su propio remoto? git remote add origin <tu-repo>)
+#    (¿tu proyecto tiene remoto propio? git remote add origin <tu-repo>)
 
 # 3. Opcional, recomendado: validación de contratos y resolución de compose sin Docker
 pip install -r requirements-dev.txt
@@ -75,7 +75,7 @@ mkdir -p legacy
 cp /ruta/a/lo-que-tengas/* legacy/
 ```
 
-Verifica antes del primer push a tu propio remoto: `git remote -v` no debe mencionar `GabrielaStark/PEPPER`.
+Verifica antes del primer push a tu propio remoto: `git remote -v` no debe mencionar `GabrielaStark/PEPPER`, y `git ls-files | head` no debe listar archivos de la herramienta (con `rm -rf .git && git init` quedan sin rastrear hasta que el `.gitignore` decide).
 
 **Encima del repo** (desde la raíz del repo del legacy):
 
