@@ -70,6 +70,8 @@ git remote remove origin
 pip install -r requirements-dev.txt
 
 # 4. Pon TODO lo que tengas del legacy en legacy/
+#    (la carpeta no viene en el clon: git no versiona carpetas vacías)
+mkdir -p legacy
 cp /ruta/a/lo-que-tengas/* legacy/
 ```
 
@@ -178,7 +180,7 @@ pepper/
 │   └── documentacion/                 ← este manual + ARQUITECTURA, PERFILES, VISION, fases/
 ├── templates/NOTAS-LEGACY.md          ← lo que el humano sabe del legacy; init lo copia a legacy/NOTAS.md
 ├── examples/legacy-demo/              ← legacy de juguete: artefactos, evidencia, clave de respuestas
-├── tests/                             ← 62 tests del núcleo
+├── tests/                             ← 72 tests del núcleo
 ├── scripts/verificar.py               ← auto-verificación del framework (CI)
 ├── AGENTS.md · CLAUDE.md              ← la misma guía para Codex y para Claude Code
 ├── legacy/ · evidence/ · pepper-out/  ← en tu workspace: artefactos, capturas, intermedios (ignorados)
@@ -241,12 +243,13 @@ pepper/
 
 | Pieza | Estado |
 |---|---|
-| Comandos, agentes y skills (`.claude/`) | escritos; sin probar aún sobre un legacy real |
-| Núcleo — Correlate, Package, Export, detect, validate, isolate, proxy | **implementados y probados** (62 tests) |
+| Comandos, agentes y skills (`.claude/`) | escritos; ejercitados sobre un legacy real |
+| Núcleo — Correlate, Package, Export, detect, validate, isolate, proxy | **implementados y probados** (72 tests) |
 | Núcleo — proxy HTTP con `correlation_id` (`pepper proxy`, el ingress) | **implementado y probado**; emite `http.jsonl` por stdout y redacta credenciales |
 | Núcleo — colector genérico de contenedores (`pepper collect`) | **implementado y probado**; las fuentes del perfil (archivos dentro de contenedores) las copia el agente |
 | Contratos (`schemas/`) | 7, definidos y validados |
 | Perfil `java-wildfly-postgres` | `draft`: parsers probados; receta de rehydrate sin ejecutar |
+| **Pipeline completo contra un legacy real** | **ejecutado (2026-09-02)**: init → inspect → rehydrate (AISLADO --live) → observe (proxy + collect) → correlate → discover → export publicado |
 | Fixture `examples/legacy-demo` | listo; evidencia **sintética** marcada como tal; entorno Docker de referencia sin verificar |
 
 Roadmap en [`VISION.md` §35](docs/documentacion/VISION.md).

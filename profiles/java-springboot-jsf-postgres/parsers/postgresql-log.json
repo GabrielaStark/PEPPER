@@ -1,36 +1,82 @@
 {
   "parser_version": "0.1.0",
   "source": "postgresql",
-  "description": "Log de PostgreSQL con log_statement=all y log_line_prefix='%m [%p] %u@%d '. Los parámetros de una sentencia preparada llegan en una línea DETAIL posterior del mismo backend (pid) y se fusionan en el evento de la sentencia.",
-  "line_pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}) (?P<tz>\\S+) \\[(?P<pid>\\d+)\\] (?P<user>[^@\\s]+)@(?P<database>\\S+) (?P<kind>[A-Z]+):\\s+(?P<message>.*)$",
-  "timestamp": { "group": "timestamp", "format": "%Y-%m-%d %H:%M:%S.%f" },
+  "description": "Log de PostgreSQL (log_statement=all, log_line_prefix='%m [%p] %u@%d ') capturado con `pepper collect` (docker logs --timestamps). El timestamp autoritativo es el prefijo RFC3339 UTC de Docker; el %m del propio log queda en metadata. Los par\u00e1metros de una sentencia preparada llegan en una l\u00ednea DETAIL posterior del mismo backend (pid) y se fusionan en el evento de la sentencia.",
+  "line_pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z)\\s+(?P<pg_ts>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}) (?P<tz>\\S+) \\[(?P<pid>\\d+)\\] (?P<user>[^@\\s]+)@(?P<database>\\S+) (?P<kind>[A-Z]+):\\s+(?P<message>.*)$",
+  "timestamp": {
+    "group": "timestamp"
+  },
   "fields": {
-    "component": { "value": "database" },
-    "message": { "from": "message" },
+    "component": {
+      "value": "database"
+    },
+    "message": {
+      "from": "message"
+    },
     "severity": {
       "from": "kind",
-      "map": { "LOG": "info", "NOTICE": "info", "WARNING": "warn", "ERROR": "error", "FATAL": "fatal", "PANIC": "fatal" },
+      "map": {
+        "LOG": "info",
+        "NOTICE": "info",
+        "WARNING": "warn",
+        "ERROR": "error",
+        "FATAL": "fatal",
+        "PANIC": "fatal"
+      },
       "default": "info"
     },
-    "metadata.pid": { "from": "pid" },
-    "metadata.user": { "from": "user" },
-    "metadata.database": { "from": "database" }
+    "metadata.pid": {
+      "from": "pid"
+    },
+    "metadata.user": {
+      "from": "user"
+    },
+    "metadata.database": {
+      "from": "database"
+    },
+    "metadata.pg_ts": {
+      "from": "pg_ts"
+    }
   },
   "event_type": {
     "default": "log",
     "rules": [
-      { "when": { "field": "message", "matches": "^(statement|execute [^:]*):\\s" }, "value": "sql" },
-      { "when": { "field": "kind", "matches": "^(ERROR|FATAL|PANIC)$" }, "value": "exception" }
+      {
+        "when": {
+          "field": "message",
+          "matches": "^(statement|execute [^:]*):\\s"
+        },
+        "value": "sql"
+      },
+      {
+        "when": {
+          "field": "kind",
+          "matches": "^(ERROR|FATAL|PANIC)$"
+        },
+        "value": "exception"
+      }
     ]
   },
-  "sql": { "strip_prefix": "^(statement|execute [^:]*):\\s+" },
+  "sql": {
+    "strip_prefix": "^(statement|execute [^:]*):\\s+"
+  },
   "merge_into_previous": {
-    "when": { "field": "kind", "equals": "DETAIL" },
+    "when": {
+      "field": "kind",
+      "equals": "DETAIL"
+    },
     "key": "pid",
     "fields": {
-      "metadata.detail": { "from": "message" },
-      "metadata.parameters": { "from": "message", "transform": "keyed_parameters" }
+      "metadata.detail": {
+        "from": "message"
+      },
+      "metadata.parameters": {
+        "from": "message",
+        "transform": "keyed_parameters"
+      }
     }
   },
-  "affinity": ["pid"]
+  "affinity": [
+    "pid"
+  ]
 }
