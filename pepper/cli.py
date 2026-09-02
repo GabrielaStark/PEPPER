@@ -57,7 +57,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
     from pepper.export import check, publish
 
     if args.check:
-        report = check(args.package)
+        report = check(args.package, args.manifest)
         _print_report(report, "corrige y vuelve a comprobar")
         if report.errors:
             return 1
@@ -72,7 +72,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
     if args.out is None:
         print("pepper export: indica --out <dir> (o usa --check para solo validar)", file=sys.stderr)
         return 2
-    report = publish(args.package, args.out)
+    report = publish(args.package, args.out, args.manifest)
     _print_report(report, "no se publicó nada")
     if report.errors:
         print(f"  detalle: {args.package / 'output' / 'validation.md'}")
@@ -138,11 +138,12 @@ def _cmd_isolate(args: argparse.Namespace) -> int:
 
     hosts = [h.strip() for h in (args.hosts or "").split(",") if h.strip()]
     try:
-        compose = resolve_compose(args.compose)
+        compose, resolved = resolve_compose(args.compose)
     except (RuntimeError, ValueError) as error:
         print(f"pepper isolate: {error}", file=sys.stderr)
         return 2
-    report = check_static(compose, hosts, args.ingress)
+    report = check_static(compose, hosts, args.ingress, resolved=resolved,
+                          compose_dir=args.compose.resolve().parent)
     title = f"Aislamiento — {args.compose}"
     if args.live:
         live = check_live(args.compose, hosts, args.ingress)
@@ -151,6 +152,8 @@ def _cmd_isolate(args: argparse.Namespace) -> int:
 
     for finding in report.errors:
         print(f"  ✗ {finding.check}" + (f"\n      {finding.detail}" if finding.detail else ""))
+    for finding in report.unknowns:
+        print(f"  ? {finding.check}" + (f"\n      {finding.detail}" if finding.detail else ""))
     for finding in report.warnings:
         print(f"  ! {finding.check}" + (f"\n      {finding.detail}" if finding.detail else ""))
     if args.out:
@@ -158,15 +161,18 @@ def _cmd_isolate(args: argparse.Namespace) -> int:
         args.out.write_text(render(report, title) + "\n", encoding="utf-8")
 
     checked = len([f for f in report.findings if f.level == "ok"])
-    if report.isolated:
-        print(f"isolate · AISLADO · {checked} comprobaciones en verde, {len(report.warnings)} aviso(s)")
+    if report.verdict == "VERIFIED":
+        print(f"isolate · AISLADO (verificado) · {checked} comprobaciones en verde, {len(report.warnings)} aviso(s)")
         print("  ningún contenedor del legacy puede alcanzar nada fuera de su red")
-    else:
+    elif report.verdict == "FAILED":
         print(f"isolate · NO AISLADO · {len(report.errors)} fuga(s)")
         print("  el entorno puede alcanzar producción: no lo levantes ni observes hasta corregir")
+    else:
+        print(f"isolate · NO VERIFICADO · {len(report.unknowns)} comprobación(es) pendiente(s)")
+        print("  lo no verificado bloquea igual que una fuga (fail-closed): resuélvelo y repite")
     if args.out:
         print(f"  reporte: {args.out}")
-    return 0 if report.isolated else 1
+    return {"VERIFIED": 0, "FAILED": 1, "UNKNOWN": 2}[report.verdict]
 
 
 def _cmd_proxy(args: argparse.Namespace) -> int:
@@ -188,7 +194,7 @@ def _cmd_collect(args: argparse.Namespace) -> int:
         return parsed
 
     try:
-        compose = resolve_compose(args.compose)
+        compose, _ = resolve_compose(args.compose)
         summary = collect(compose, args.session_id, _moment(args.start, "start"), _moment(args.end, "end"),
                           args.out, margin_s=args.margin, ingress=args.ingress)
     except (RuntimeError, ValueError, FileExistsError) as error:
@@ -271,6 +277,7 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("package", type=Path, help="paquete controlado con output/runtime-discovery.json")
     export.add_argument("--out", type=Path, help="directorio de publicación")
     export.add_argument("--check", action="store_true", help="solo validar (deja output/validation.md), sin publicar")
+    export.add_argument("--manifest", type=Path, help="evidence-manifest.json conservado FUERA del paquete (protege contra la edición del manifest interno)")
 
     detect = commands.add_parser("detect", help="evalúa qué perfil aplica a un directorio de artefactos")
     detect.add_argument("artifacts", type=Path, help="directorio con los artefactos del legacy")

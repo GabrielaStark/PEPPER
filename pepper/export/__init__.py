@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from pepper import SCHEMAS_DIR
+from pepper import manifest as evidence_manifest
 from pepper.correlate.events import read_jsonl
 
 _EVIDENCE_LISTS = ("steps", "candidate_rules", "queries", "dependencies", "errors", "contradictions")
@@ -41,7 +42,9 @@ def _schema_errors(discovery: Dict[str, Any]) -> Tuple[List[str], Optional[str]]
     try:
         import jsonschema
     except ImportError:
-        return [], "jsonschema no está instalado: no se validó la forma del JSON contra el schema (pip install jsonschema)"
+        # Fail-closed (auditoría H-01): sin validación de forma no hay publicación.
+        # D10 ("Export nunca publica inválidos") manda sobre D16 ("sin dependencias").
+        return ["jsonschema es obligatorio para Export: pip install jsonschema — sin él no se valida la forma y no se publica"], None
     schema = json.loads((SCHEMAS_DIR / "runtime-discovery.schema.json").read_text(encoding="utf-8"))
     validator = jsonschema.Draft202012Validator(schema)
     errors = sorted(validator.iter_errors(discovery), key=lambda e: list(e.absolute_path))
@@ -64,8 +67,36 @@ def _raw_line_counts(raw_dir: Path) -> Dict[str, int]:
     return counts
 
 
-def validate(package_dir: Path) -> Tuple[Optional[Dict[str, Any]], Report]:
+def _verify_manifest(package_dir: Path, report: Report, external: Optional[Path]) -> None:
+    """La evidencia del paquete debe ser bit a bit la que Correlate produjo (C-02).
+
+    El manifest interno detecta modificación y fabricación dentro del paquete;
+    uno externo (--manifest, conservado fuera del alcance del agente) protege
+    además contra la edición del manifest mismo.
+    """
+    internal = package_dir / evidence_manifest.MANIFEST_NAME
+    if not internal.is_file():
+        report.errors.append(
+            f"el paquete no tiene {evidence_manifest.MANIFEST_NAME}: sin manifest no hay integridad de evidencia — re-empaqueta con `pepper package`")
+        return
+    try:
+        manifests = [("manifest del paquete", evidence_manifest.load(internal))]
+    except ValueError as error:
+        report.errors.append(str(error))
+        return
+    if external is not None:
+        try:
+            manifests.append((f"manifest externo ({external})", evidence_manifest.load(external)))
+        except (OSError, ValueError) as error:
+            report.errors.append(f"manifest externo ilegible: {error}")
+    for label, manifest in manifests:
+        for error in evidence_manifest.verify(package_dir, manifest, scopes=["evidence", "legacy"]):
+            report.errors.append(f"{error} [{label}]")
+
+
+def validate(package_dir: Path, external_manifest: Optional[Path] = None) -> Tuple[Optional[Dict[str, Any]], Report]:
     report = Report()
+    _verify_manifest(package_dir, report, external_manifest)
     output = package_dir / "output" / "runtime-discovery.json"
     if not output.is_file():
         report.errors.append(f"no existe {output}")
@@ -174,17 +205,17 @@ def render_report(report: Report, package_dir: Path, published: bool = True) -> 
     return "\n".join(lines)
 
 
-def check(package_dir: Path) -> Report:
+def check(package_dir: Path, external_manifest: Optional[Path] = None) -> Report:
     """Solo valida (y deja output/validation.md); no publica. Para que el agente se auto-verifique."""
-    _, report = validate(package_dir)
+    _, report = validate(package_dir, external_manifest)
     output_dir = package_dir / "output"
     if output_dir.is_dir():
         (output_dir / "validation.md").write_text(render_report(report, package_dir, published=False), encoding="utf-8")
     return report
 
 
-def publish(package_dir: Path, out_dir: Path) -> Report:
-    discovery, report = validate(package_dir)
+def publish(package_dir: Path, out_dir: Path, external_manifest: Optional[Path] = None) -> Report:
+    discovery, report = validate(package_dir, external_manifest)
     output_dir = package_dir / "output"
     if output_dir.is_dir():
         (output_dir / "validation.md").write_text(render_report(report, package_dir), encoding="utf-8")

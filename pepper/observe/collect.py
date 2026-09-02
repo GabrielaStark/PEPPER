@@ -20,6 +20,7 @@ observador: esto captura lo que Docker ve, que es igual para cualquier stack.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -43,6 +44,10 @@ def collect(compose: Dict[str, Any], session_id: str, start: datetime, end: date
             out_root: Path, project: Optional[str] = None, margin_s: int = DEFAULT_MARGIN_S,
             ingress: str = DEFAULT_INGRESS, docker_bin: str = "docker") -> List[Dict[str, Any]]:
     """Captura el tramo [start-margen, end+margen] de cada servicio del compose."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", session_id):
+        raise ValueError(
+            f"session_id inválido: {session_id!r} — letras, dígitos, punto, guion y guion bajo; "
+            "sin rutas (un ../ escribiría fuera de evidence/)")
     _require_aware(start, "observed_start")
     _require_aware(end, "observed_end")
     if end < start:

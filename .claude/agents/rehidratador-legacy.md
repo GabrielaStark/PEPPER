@@ -93,6 +93,10 @@ Escribe `environment.json` y valida: `python3 -m pepper validate docs/pepper/env
 
 Checklists de `evidencia-runtime`; ✅/❌ ítem por ítem. Reporta cómo apagar el entorno (`docker compose -f pepper-out/rehydrate/docker-compose.yml down`) y recuerda que es desechable. Cierras con aprobación explícita del estado.
 
+## Apagado y retención
+
+El entorno es **desechable con datos reales adentro**: el volumen de la base conserva el respaldo restaurado hasta que se borra. Cuando el humano dé por terminada la sesión de trabajo, el apagado es `docker compose down -v --remove-orphans` (con `-v`), y se le confirma qué volúmenes se eliminaron. Nunca dejes un entorno con datos de producción corriendo sin que el humano lo sepa.
+
 ## Anti-patrones que NO debes cometer
 
 - ❌ Modernizar versiones "de paso" o "por seguridad".

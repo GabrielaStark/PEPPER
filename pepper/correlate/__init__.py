@@ -15,6 +15,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from pepper import manifest as evidence_manifest
 from pepper.correlate.correlate import correlate
 from pepper.correlate.events import Event, write_jsonl
 from pepper.correlate.parsers import BUILTIN_PARSERS, PatternParser
@@ -26,6 +27,21 @@ from pepper.session import Session
 
 class MissingParsers(ValueError):
     pass
+
+
+def _safe_evidence_path(evidence_dir: Path, declared: str, source: str) -> Path:
+    """El archivo de un colector vive DENTRO de la evidencia: ni absoluto, ni `..`, ni symlink fuera.
+
+    Un session.json manipulado podía leer archivos arbitrarios de la máquina y
+    copiarlos a raw/ (auditoría H-02).
+    """
+    candidate = Path(declared)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise ValueError(f"colector {source}: ruta fuera de la evidencia: {declared!r}")
+    resolved = (evidence_dir / candidate).resolve()
+    if not resolved.is_relative_to(evidence_dir.resolve()):
+        raise ValueError(f"colector {source}: {declared!r} resuelve fuera de {evidence_dir}")
+    return resolved
 
 
 def resolve_parsers(session: Session, profile: Optional[Profile]) -> Dict[str, Any]:
@@ -75,7 +91,7 @@ def run(evidence_dir: Path, out_dir: Path, profile_ref: Optional[str] = None, to
     affinity_keys: List[str] = []
     raw_lines = 0
     for collector in session.collectors:
-        path = evidence_dir / collector.file
+        path = _safe_evidence_path(evidence_dir, collector.file, collector.source)
         if not path.is_file():
             raise FileNotFoundError(f"el colector {collector.source} apunta a un archivo inexistente: {path}")
         raw_lines += sum(1 for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip())
@@ -111,7 +127,9 @@ def run(evidence_dir: Path, out_dir: Path, profile_ref: Optional[str] = None, to
     for collector in session.collectors:
         target = raw_dir / collector.file
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(evidence_dir / collector.file, target)
+        shutil.copy2(_safe_evidence_path(evidence_dir, collector.file, collector.source), target)
+
+    evidence_manifest.write(out_dir, evidence_manifest.build(out_dir))
 
     return {
         "session_id": session.session_id,

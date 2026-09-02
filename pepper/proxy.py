@@ -34,7 +34,7 @@ from datetime import datetime
 from http.client import HTTPConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 # Headers hop-by-hop (RFC 7230 §6.1): son del tramo, no del mensaje; no se reenvían.
 _HOP_BY_HOP = {
@@ -82,7 +82,9 @@ def _capture_body(content_type: str, data: bytes) -> Tuple[Optional[Any], Option
         try:
             return _redact(json.loads(data.decode("utf-8", errors="replace"))), None
         except ValueError:
-            return data.decode("utf-8", errors="replace")[:_MAX_TEXT_CHARS], None
+            # JSON malformado: la redacción por claves no aplica y el texto crudo
+            # puede llevar el secreto entero (auditoría H-05). No se registra.
+            return None, len(data)
     return None, len(data)
 
 
@@ -159,14 +161,21 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
             connection.close()
 
     def _record_request(self, correlation_id: str, body: bytes) -> None:
+        # El query string viaja aparte y redactado: /reset?token=… llevaba el
+        # secreto completo dentro de "path" (auditoría H-05).
+        path_only, _, _ = self.path.partition("?")
+        query_raw = urlsplit(self.path).query
         entry: Dict[str, Any] = {
             "ts": _now_iso(),
             "direction": "request",
             "method": self.command,
-            "path": self.path,
+            "path": path_only,
             "correlation_id": correlation_id,
             "client": self.client_address[0],
         }
+        if query_raw:
+            pairs = parse_qs(query_raw, keep_blank_values=True)
+            entry["query"] = _redact({k: v[0] if len(v) == 1 else v for k, v in pairs.items()})
         content_type = self.headers.get("Content-Type")
         if content_type:
             entry["content_type"] = content_type
@@ -183,7 +192,7 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
             "ts": _now_iso(),
             "direction": "response",
             "method": self.command,
-            "path": self.path,
+            "path": self.path.partition("?")[0],
             "status": status,
             "duration_ms": duration_ms,
             "correlation_id": correlation_id,

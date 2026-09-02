@@ -217,7 +217,7 @@ class HttpProxyParser:
         operation = f"{record['method']} {record['path']}"
         direction = record.get("direction", "request")
         metadata: Dict[str, Any] = {"method": record["method"], "path": record["path"]}
-        for key in ("client", "content_type", "body", "duration_ms"):
+        for key in ("client", "content_type", "body", "duration_ms", "query"):
             if key in record:
                 metadata[key] = record[key]
 
