@@ -73,7 +73,8 @@ class ExportIntegrityTest(unittest.TestCase):
         (legacy / "respaldo.dump").write_bytes(b"PGDMP falso")
         shutil.copytree(FIXTURE / "artifacts" / "configuration", legacy / "configuration")
         self.package = base / "package"
-        assemble(correlated, self.package, legacy)
+        summary = assemble(correlated, self.package, legacy)
+        self.external_manifest = Path(summary["external_manifest"])
         shutil.copy2(FIXTURE / "expected" / "runtime-discovery.json",
                      self.package / "output" / "runtime-discovery.json")
 
@@ -81,7 +82,7 @@ class ExportIntegrityTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_paquete_intacto_pasa(self):
-        report = export_check(self.package)
+        report = export_check(self.package, self.external_manifest)
         self.assertEqual(report.errors, [], report.errors)
 
     def test_artefactos_sueltos_entran_al_paquete(self):
@@ -94,17 +95,17 @@ class ExportIntegrityTest(unittest.TestCase):
             handle.write(json.dumps({"event_id": "E-FABRICADA", "timestamp": "2026-08-25T13:21:00-06:00",
                                      "session_id": "flow-001", "source": "http-proxy",
                                      "event_type": "log", "message": "inventado"}) + "\n")
-        report = export_check(self.package)
+        report = export_check(self.package, self.external_manifest)
         self.assertTrue(any("modificado" in e for e in report.errors), report.errors)
 
     def test_archivo_de_evidencia_colado_se_rechaza(self):
         (self.package / "evidence" / "raw" / "colado.log").write_text("x", encoding="utf-8")
-        report = export_check(self.package)
+        report = export_check(self.package, self.external_manifest)
         self.assertTrue(any("ajeno" in e for e in report.errors), report.errors)
 
     def test_artefacto_del_legacy_alterado_se_rechaza(self):
         (self.package / "legacy" / "sistema.war").write_bytes(b"otro contenido")
-        report = export_check(self.package)
+        report = export_check(self.package, self.external_manifest)
         self.assertTrue(any("legacy/sistema.war" in e for e in report.errors), report.errors)
 
     def test_credenciales_en_notas_se_redactan_en_el_paquete(self):
@@ -130,21 +131,36 @@ class ExportIntegrityTest(unittest.TestCase):
 
     def test_sin_manifest_no_hay_export(self):
         (self.package / evidence_manifest.MANIFEST_NAME).unlink()
-        report = export_check(self.package)
+        report = export_check(self.package, self.external_manifest)
         self.assertTrue(any("manifest" in e for e in report.errors), report.errors)
 
     def test_manifest_externo_detecta_manifest_interno_editado(self):
-        external = Path(self._tmp.name) / "fuera.json"
-        shutil.copy2(self.package / evidence_manifest.MANIFEST_NAME, external)
+        external = self.external_manifest
         # el atacante edita evidencia Y el manifest interno para taparlo
         events = self.package / "evidence" / "events.jsonl"
         events.write_text(events.read_text(encoding="utf-8") + "\n", encoding="utf-8")
         internal = json.loads((self.package / evidence_manifest.MANIFEST_NAME).read_text())
         internal["files"]["evidence/events.jsonl"] = evidence_manifest.sha256_file(events)
         (self.package / evidence_manifest.MANIFEST_NAME).write_text(json.dumps(internal), encoding="utf-8")
-        self.assertEqual(export_check(self.package).errors, [])  # el interno ya no lo ve…
+        self.assertTrue(export_check(self.package).errors, "el manifest externo ahora es obligatorio")
         report = export_check(self.package, external_manifest=external)
         self.assertTrue(any("manifest externo" in e for e in report.errors), report.errors)
+
+    def test_symlink_anidado_se_rechaza_sin_tocar_el_destino(self):
+        outside = Path(self._tmp.name) / "fuera.md"
+        outside.write_text("PASSWORD: no-debe-cambiar\n", encoding="utf-8")
+        legacy = Path(self._tmp.name) / "legacy-symlink"
+        (legacy / "docs").mkdir(parents=True)
+        (legacy / "docs" / "nota.md").symlink_to(outside)
+        correlated = Path(self._tmp.name) / "corr-symlink"
+        correlate_run(FIXTURE / "raw-evidence", correlated)
+        package = Path(self._tmp.name) / "package-symlink"
+
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            assemble(correlated, package, legacy)
+
+        self.assertEqual(outside.read_text(encoding="utf-8"), "PASSWORD: no-debe-cambiar\n")
+        self.assertFalse(package.exists())
 
 
 class TraversalTest(unittest.TestCase):

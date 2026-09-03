@@ -31,11 +31,12 @@ unknowns.json / dependencies.json / evidence-map.json
 **Estado: implementada** (`pepper/export/`).
 
 ```bash
-python3 -m pepper export <paquete>/ --out <publicación>/
+python3 -m pepper export <paquete>/ --manifest <paquete>.evidence-manifest.json --out <publicación>/
 ```
 
 ```text
 output/runtime-discovery.json del paquete
+→ ¿manifest externo e interno coinciden y la evidencia conserva sus hashes?
 → ¿valida contra runtime-discovery.schema.json?
 → ¿toda conclusión referencia evidencia declarada?
 → ¿toda evidencia resuelve a un event_id de events.jsonl o a un raw_ref real (archivo:línea)?

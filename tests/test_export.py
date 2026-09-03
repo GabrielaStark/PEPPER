@@ -29,7 +29,8 @@ class ExportTest(unittest.TestCase):
         base = Path(self.tmp.name)
         run(FIXTURE / "raw-evidence", base / "correlated")
         self.package = base / "package"
-        assemble(base / "correlated", self.package, FIXTURE / "artifacts")
+        summary = assemble(base / "correlated", self.package, FIXTURE / "artifacts")
+        self.manifest = Path(summary["external_manifest"])
         self.output = self.package / "output" / "runtime-discovery.json"
         shutil.copy2(GOLDEN, self.output)
         (self.package / "output" / "runtime-discovery.md").write_text("# demo\n", encoding="utf-8")
@@ -57,7 +58,7 @@ class ExportTest(unittest.TestCase):
     def test_check_validates_without_publishing(self):
         from pepper.export import check
 
-        report = check(self.package)
+        report = check(self.package, self.manifest)
         self.assertTrue(report.ok, report.errors)
         self.assertTrue((self.package / "output" / "validation.md").is_file())
         self.assertFalse((Path(self.tmp.name) / "export").exists())
@@ -86,14 +87,14 @@ class ExportTest(unittest.TestCase):
             assemble(Path(self.tmp.name) / "correlated", self.package, None)
 
     def test_golden_output_is_accepted(self):
-        discovery, report = validate(self.package)
+        discovery, report = validate(self.package, self.manifest)
         self.assertIsNotNone(discovery)
         self.assertEqual(report.errors, [])
         self.assertEqual(report.stats["candidate_rules"], 3)
 
     def test_publish_writes_the_contract_and_derived_files(self):
         out = Path(self.tmp.name) / "export"
-        report = publish(self.package, out)
+        report = publish(self.package, out, self.manifest)
         self.assertTrue(report.ok, report.errors)
         for name in ("runtime-discovery.json", "runtime-discovery.md", "validation.md", "flows.json",
                      "candidate-rules.json", "contradictions.json", "unknowns.json", "evidence-map.json",
@@ -104,40 +105,40 @@ class ExportTest(unittest.TestCase):
 
     def test_unresolved_evidence_reference_is_rejected(self):
         self._rewrite(lambda d: d["candidate_rules"][0]["evidence"].append("E-999"))
-        _, report = validate(self.package)
+        _, report = validate(self.package, self.manifest)
         self.assertTrue(any("E-999" in error for error in report.errors))
         out = Path(self.tmp.name) / "export"
-        publish(self.package, out)
+        publish(self.package, out, self.manifest)
         self.assertFalse(out.exists(), "una salida inválida no se publica")
         self.assertTrue((self.package / "output" / "validation.md").is_file())
 
     def test_raw_ref_out_of_range_is_rejected(self):
         self._rewrite(lambda d: d["evidence"][0].__setitem__("raw_ref", "http.jsonl:999"))
-        _, report = validate(self.package)
+        _, report = validate(self.package, self.manifest)
         self.assertTrue(any("fuera de rango" in error for error in report.errors))
 
     def test_conclusion_without_evidence_is_rejected(self):
         if jsonschema is None:
             self.skipTest("jsonschema no instalado")
         self._rewrite(lambda d: d["candidate_rules"][0].__setitem__("evidence", []))
-        _, report = validate(self.package)
+        _, report = validate(self.package, self.manifest)
         self.assertTrue(any("candidate_rules/0/evidence" in error for error in report.errors))
 
     def test_confidence_outside_vocabulary_is_rejected(self):
         if jsonschema is None:
             self.skipTest("jsonschema no instalado")
         self._rewrite(lambda d: d["candidate_rules"][0].__setitem__("confidence", "alta"))
-        _, report = validate(self.package)
+        _, report = validate(self.package, self.manifest)
         self.assertTrue(any("confidence" in error for error in report.errors))
 
     def test_wrong_session_is_rejected(self):
         self._rewrite(lambda d: d["flow"].__setitem__("session_id", "otra"))
-        _, report = validate(self.package)
+        _, report = validate(self.package, self.manifest)
         self.assertTrue(any("session_id" in error for error in report.errors))
 
     def test_missing_output_is_reported(self):
         self.output.unlink()
-        discovery, report = validate(self.package)
+        discovery, report = validate(self.package, self.manifest)
         self.assertIsNone(discovery)
         self.assertEqual(len(report.errors), 1)
 

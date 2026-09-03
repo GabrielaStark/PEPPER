@@ -33,16 +33,30 @@ def _cmd_correlate(args: argparse.Namespace) -> int:
 def _cmd_package(args: argparse.Namespace) -> int:
     from pepper.package import assemble
 
-    summary = assemble(args.correlated, args.out, args.legacy)
+    summary = assemble(
+        args.correlated,
+        args.out,
+        args.legacy,
+        data_mode=args.data_mode,
+        allow_sensitive=args.allow_sensitive,
+        acknowledge_unscanned=args.acknowledge_unscanned,
+        manifest_out=args.manifest_out,
+    )
     print(f"package · {summary['session_id']} · {summary['files']} archivos")
     print(f"  evidencia: {summary['events']} eventos, {summary['traces']} peticiones")
     print(f"  legacy: {', '.join(summary['legacy']) if summary['legacy'] else 'sin artefactos (usa --legacy)'}")
+    print(f"  datos: modo {summary['data_mode']} · {summary['sensitive_findings']} hallazgo(s) sensible(s) · "
+          f"{summary['unscanned_files']} archivo(s) no inspeccionado(s)")
     print(f"  paquete: {args.out}")
+    print(f"  manifest externo: {summary['external_manifest']} (no lo metas al paquete)")
     if summary.get("redacted_notes"):
         print(f"  ⚠ redacté credenciales en: {', '.join(summary['redacted_notes'])} (estaban en claro; el original en legacy/ no se tocó)")
     print()
     print("Siguiente paso — Discover, con el agente que prefieras:")
-    print(f"  cd {args.out} && claude    # o codex")
+    if summary["data_mode"] == "remote":
+        print(f"  cd {args.out} && claude    # o codex")
+    else:
+        print(f"  paquete LOCAL: usa únicamente un agente/modelo que no envíe contenido fuera de la máquina")
     return 0
 
 
@@ -293,14 +307,15 @@ def _cmd_demo(args: argparse.Namespace) -> int:
         f"correlate · {summary['raw_lines']} líneas crudas → {summary['kept']} eventos relevantes "
         f"en {summary['traces']} peticiones ({summary['dropped']} descartadas como ruido)"
     )
-    assemble(correlated, package, fixture / "artifacts")
+    package_summary = assemble(correlated, package, fixture / "artifacts")
     print(f"package   · {package}")
     print()
     print("Ahora corre tu agente dentro del paquete:")
     print(f"  cd {package} && claude    # o codex")
     print()
     print("Y cuando termine, valida y publica su resultado:")
-    print(f"  {_invocation()} export {package} --out {args.out / 'export'}")
+    print(f"  {_invocation()} export {package} --manifest {package_summary['external_manifest']} "
+          f"--out {args.out / 'export'}")
     print()
     print(f"Clave de respuestas: {fixture / 'expected' / 'notes.md'}")
     return 0
@@ -339,12 +354,21 @@ def build_parser() -> argparse.ArgumentParser:
     package.add_argument("correlated", type=Path, help="salida de `pepper correlate`")
     package.add_argument("--legacy", type=Path, help="directorio con los artefactos del legacy (source/, configuration/, docs/, ...)")
     package.add_argument("--out", type=Path, required=True, help="directorio del paquete (debe no existir o estar vacío)")
+    package.add_argument("--data-mode", choices=("remote", "local"), default="remote",
+                         help="frontera autorizada: remote bloquea datos sensibles/no inspeccionados; local prohíbe agentes remotos")
+    package.add_argument("--allow-sensitive", action="store_true",
+                         help="autoriza explícitamente ubicaciones sensibles detectadas en modo remote")
+    package.add_argument("--acknowledge-unscanned", action="store_true",
+                         help="autoriza explícitamente binarios/archivos grandes no inspeccionables en modo remote")
+    package.add_argument("--manifest-out", type=Path,
+                         help="manifest externo; default <paquete>.evidence-manifest.json, siempre fuera del paquete")
 
     export = commands.add_parser("export", help="valida la salida del agente y la publica")
     export.add_argument("package", type=Path, help="paquete controlado con output/runtime-discovery.json")
     export.add_argument("--out", type=Path, help="directorio de publicación")
     export.add_argument("--check", action="store_true", help="solo validar (deja output/validation.md), sin publicar")
-    export.add_argument("--manifest", type=Path, help="evidence-manifest.json conservado FUERA del paquete (protege contra la edición del manifest interno)")
+    export.add_argument("--manifest", type=Path, required=True,
+                        help="evidence-manifest.json conservado FUERA del paquete; obligatorio como raíz de confianza")
 
     detect = commands.add_parser("detect", help="evalúa qué perfil aplica a un directorio de artefactos")
     detect.add_argument("artifacts", type=Path, help="directorio con los artefactos del legacy")
@@ -365,7 +389,8 @@ def build_parser() -> argparse.ArgumentParser:
     isolate.add_argument("compose", type=Path, help="docker-compose.yml del entorno rehidratado")
     isolate.add_argument("--hosts", help="hosts externos que el artefacto invoca, separados por coma: cada uno debe resolver al stub")
     isolate.add_argument("--live", action="store_true", help="además, verifica los contenedores en ejecución (según Docker, no según el archivo)")
-    isolate.add_argument("--ingress", default="ingress", help="servicio que publica el puerto al host: el único con salida permitida (default: ingress)")
+    isolate.add_argument("--ingress", default="ingress",
+                         help="servicio proxy que publica el puerto al host sin egress (default: ingress)")
     isolate.add_argument("--out", type=Path, help="escribe el reporte legible en este archivo")
 
     proxy_cmd = commands.add_parser("proxy", help="proxy HTTP del ingress: inyecta correlation_id y emite http.jsonl")

@@ -14,16 +14,18 @@ C-01): lo que no se pudo comprobar no cuenta como verde.
     NO VERIFICADO  algo no se pudo comprobar (compose sin resolver, sin
                    contenedores, red ilegible…): bloquea igual que una fuga
 
-Invariante: **ningún contenedor del legacy puede alcanzar nada fuera de su red.**
-La única excepción es el ingress — y no basta con llamarse `ingress`: debe ser el
-proxy de PEPPER (imagen python, comando del proxy, un único montaje `:ro` cuyo
-hash coincide con `pepper/proxy.py`).
+Invariante: **ningún contenedor, incluido el ingress, puede alcanzar nada fuera
+de su red interna.** El host entra por un puerto publicado en loopback; eso no
+requiere una red externa. Y no basta con llamarse `ingress`: debe ser el proxy de
+PEPPER, sin entrypoint, con argv/upstream verificables y un único montaje `:ro`
+cuyo hash coincide con `pepper/proxy.py`.
 """
 
 from __future__ import annotations
 
 import ipaddress
 import json
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,6 +35,9 @@ DEFAULT_INGRESS = "ingress"
 
 _FORBIDDEN_NAMESPACES = ("pid", "ipc", "uts")
 _DOCKER_SOCKET = "docker.sock"
+_PYTHON_IMAGE = re.compile(r"^python:\d+(?:\.\d+)?-alpine(?:@sha256:[0-9a-f]{64})?$")
+_PROXY_PREFIX = ["python3", "-u", "/pepper-proxy.py"]
+_PROXY_OPTIONS = {"--listen", "--upstream", "--timeout"}
 
 
 @dataclass
@@ -171,6 +176,97 @@ def _is_bind(source: str) -> bool:
     return source.startswith(("/", "./", "../", "~")) or "/" in source
 
 
+def _parse_proxy_command(name: str, command: Any, report: Report) -> Optional[Tuple[str, int]]:
+    """Acepta solo argv declarativo; nada de shell, flags extra ni valores ambiguos."""
+    if not isinstance(command, list) or not all(isinstance(item, str) for item in command):
+        report.add("error", f"`{name}` (ingress) usa un command no verificable",
+                   "el proxy debe declararse como lista argv; los strings pasan por shell y no se consideran seguros")
+        return None
+    if command[:3] != _PROXY_PREFIX:
+        report.add("error", f"`{name}` (ingress) no ejecuta exactamente el proxy de PEPPER",
+                   f"el prefijo obligatorio es {_PROXY_PREFIX!r}")
+        return None
+    options: Dict[str, str] = {}
+    tail = command[3:]
+    if len(tail) % 2:
+        report.add("error", f"`{name}` (ingress) tiene argumentos incompletos: {tail!r}")
+        return None
+    for index in range(0, len(tail), 2):
+        option, value = tail[index:index + 2]
+        if option not in _PROXY_OPTIONS:
+            report.add("error", f"`{name}` (ingress) agrega una opción no permitida: {option}")
+            return None
+        if option in options:
+            report.add("error", f"`{name}` (ingress) repite la opción {option}")
+            return None
+        options[option] = value
+    if options.get("--listen") != "0.0.0.0:8080":
+        report.add("error", f"`{name}` (ingress) debe escuchar exactamente en 0.0.0.0:8080")
+    upstream = options.get("--upstream")
+    if not upstream:
+        report.add("error", f"`{name}` (ingress) no declara --upstream")
+        return None
+    host, separator, raw_port = upstream.rpartition(":")
+    if not separator or not host or not raw_port.isdigit() or not 1 <= int(raw_port) <= 65535:
+        report.add("error", f"`{name}` (ingress) declara un upstream inválido: {upstream!r}")
+        return None
+    if "--timeout" in options:
+        try:
+            timeout = float(options["--timeout"])
+        except ValueError:
+            timeout = 0
+        if timeout <= 0:
+            report.add("error", f"`{name}` (ingress) declara un timeout inválido: {options['--timeout']!r}")
+    return host.lower(), int(raw_port)
+
+
+def _dependency_names(service: Dict[str, Any]) -> List[str]:
+    dependencies = service.get("depends_on") or {}
+    if isinstance(dependencies, dict):
+        return [str(name) for name in dependencies]
+    if isinstance(dependencies, list):
+        return [str(name) for name in dependencies]
+    return []
+
+
+def _check_upstream(name: str, service: Dict[str, Any], upstream: Optional[Tuple[str, int]],
+                    services: Dict[str, Any], internal: Dict[str, bool], report: Report) -> None:
+    """El upstream debe ser una dependencia real compartida por una red interna."""
+    if upstream is None:
+        return
+    dependencies = _dependency_names(service)
+    if not dependencies:
+        report.add("error", f"`{name}` (ingress) no declara depends_on",
+                   "sin una dependencia explícita no se puede demostrar a qué aplicación debe reenviar")
+        return
+    ingress_networks = {network for network in _service_networks(service) if internal.get(network)}
+    allowed: Dict[str, str] = {}
+    for dependency in dependencies:
+        target = services.get(dependency) or {}
+        target_networks = _service_networks(target)
+        shared = ingress_networks & {network for network in target_networks if internal.get(network)}
+        if not shared:
+            continue
+        allowed[dependency.lower()] = dependency
+        container_name = str(target.get("container_name") or "").strip().lower()
+        if container_name:
+            allowed[container_name] = dependency
+        for network in shared:
+            spec = target_networks.get(network) or {}
+            address = str(spec.get("ipv4_address") or "").strip().lower()
+            if address:
+                allowed[address] = dependency
+            for alias in spec.get("aliases") or []:
+                allowed[str(alias).lower()] = dependency
+    host, port = upstream
+    if host not in allowed:
+        targets = ", ".join(sorted(allowed)) or "ninguno"
+        report.add("error", f"`{name}` (ingress) apunta a {host}:{port}, que no es una dependencia interna",
+                   f"destinos demostrables: {targets}; un upstream arbitrario puede ser producción")
+    else:
+        report.add("ok", f"el upstream {host}:{port} corresponde a `{allowed[host]}` en una red interna")
+
+
 def _check_service_hardening(name: str, service: Dict[str, Any], is_ingress: bool, report: Report) -> None:
     """Capacidades y montajes que reabren la salida aunque la red sea interna."""
     if service.get("privileged"):
@@ -194,7 +290,8 @@ def _check_service_hardening(name: str, service: Dict[str, Any], is_ingress: boo
                        "los montajes del host van :ro; con escritura, el legado escribe fuera del entorno desechable")
 
 
-def _check_ingress(name: str, service: Dict[str, Any], compose_dir: Optional[Path], report: Report) -> None:
+def _check_ingress(name: str, service: Dict[str, Any], compose_dir: Optional[Path],
+                   report: Report) -> Optional[Tuple[str, int]]:
     """El ingress no es un nombre: es el proxy de PEPPER, verificado (C-01).
 
     Llamar `ingress` a un `alpine sh -c exfiltrar` pasaba como aislado. Ahora:
@@ -202,33 +299,37 @@ def _check_ingress(name: str, service: Dict[str, Any], compose_dir: Optional[Pat
     cuyo SHA-256 coincide con el `pepper/proxy.py` de esta instalación.
     """
     image = str(service.get("image") or "")
-    if not image.startswith("python:"):
-        report.add("error", f"`{name}` (ingress) usa la imagen `{image or '?'}`, no python",
-                   "el ingress ES el proxy de PEPPER (python + pepper/proxy.py); cualquier otra cosa no es un reenviador verificado")
-    command = service.get("command") or []
-    command_text = " ".join(command) if isinstance(command, list) else str(command)
-    if "proxy.py" not in command_text or "--upstream" not in command_text:
-        report.add("error", f"`{name}` (ingress) no ejecuta el proxy de PEPPER: {command_text[:120] or '(sin comando)'}",
-                   "se exige `python3 … proxy.py --listen … --upstream …`")
+    if not _PYTHON_IMAGE.fullmatch(image):
+        report.add("error", f"`{name}` (ingress) usa una imagen no permitida: `{image or '?'}`",
+                   "se admite únicamente la imagen oficial python:<versión>-alpine, opcionalmente fijada por digest")
+    if service.get("build"):
+        report.add("error", f"`{name}` (ingress) declara build",
+                   "el único contenedor de entrada no puede ejecutar una imagen construida por el legacy")
+    entrypoint = service.get("entrypoint")
+    if entrypoint not in (None, "", []):
+        report.add("error", f"`{name}` (ingress) sobrescribe entrypoint: {entrypoint!r}",
+                   "un entrypoint se ejecuta antes que command y puede sustituir por completo al proxy")
+    upstream = _parse_proxy_command(name, service.get("command"), report)
     volumes = service.get("volumes") or []
     if len(volumes) != 1:
         report.add("error", f"`{name}` (ingress) tiene {len(volumes)} montajes; debe tener exactamente 1 (el proxy, :ro)")
-        return
+        return upstream
     source, target, readonly = _volume_parts(volumes[0])
-    if not readonly or source.rstrip("/").rsplit("/", 1)[-1] not in ("proxy.py",):
+    if (not readonly or target != "/pepper-proxy.py"
+            or source.rstrip("/").rsplit("/", 1)[-1] != "proxy.py"):
         report.add("error", f"`{name}` (ingress) monta `{source}` — el único montaje permitido es el proxy de PEPPER, :ro")
-        return
+        return upstream
     expected = bundled_proxy_hash()
     if expected is None:
         report.add("unknown", "no encontré pepper/proxy.py en esta instalación para verificar el hash del proxy")
-        return
+        return upstream
     if compose_dir is None:
         report.add("unknown", "no pude verificar el hash del proxy montado (sin la ruta del compose)")
-        return
+        return upstream
     mounted = (compose_dir / source).resolve() if not Path(source).is_absolute() else Path(source)
     if not mounted.is_file():
         report.add("error", f"el proxy montado no existe: {mounted}")
-        return
+        return upstream
     from pepper import manifest as evidence_manifest
     actual = evidence_manifest.sha256_file(mounted)
     if actual != expected:
@@ -236,6 +337,7 @@ def _check_ingress(name: str, service: Dict[str, Any], compose_dir: Optional[Pat
                    f"{mounted} difiere de pepper/proxy.py: un binario ajeno en el único contenedor con salida")
     else:
         report.add("ok", "el ingress monta exactamente el proxy de PEPPER (hash verificado, :ro)")
+    return upstream
 
 
 def check_static(compose: Dict[str, Any], external_hosts: Optional[List[str]] = None,
@@ -256,6 +358,8 @@ def check_static(compose: Dict[str, Any], external_hosts: Optional[List[str]] = 
     if not services:
         report.add("error", "el compose no declara servicios")
         return report
+    if ingress not in services:
+        report.add("error", f"el compose no declara el ingress verificado `{ingress}`")
 
     declared_internal = [n for n, is_int in internal.items() if is_int]
     if not declared_internal:
@@ -280,11 +384,8 @@ def check_static(compose: Dict[str, Any], external_hosts: Optional[List[str]] = 
                 report.add("error", f"`{name}` se conecta a la red `{net}`, que el compose no declara",
                            "una red no declarada usa el bridge por defecto: con salida")
             elif not internal[net]:
-                if is_ingress:
-                    report.add("ok", f"`{name}` (ingress) es el único con salida, por la red `{net}`")
-                else:
-                    report.add("error", f"`{name}` se conecta a la red `{net}`, que NO es internal",
-                               "este contenedor puede alcanzar internet y la VPN de la máquina")
+                report.add("error", f"`{name}` se conecta a la red `{net}`, que NO es internal",
+                           "también el ingress debe carecer de egress; publicar un puerto no requiere una red externa")
             for alias in (spec.get("aliases") or []):
                 aliases[str(alias).lower()] = name
 
@@ -309,7 +410,8 @@ def check_static(compose: Dict[str, Any], external_hosts: Optional[List[str]] = 
                                'cualquier equipo de tu LAN alcanza el legacy: usa "127.0.0.1:<puerto>:8080"')
 
         if is_ingress:
-            _check_ingress(name, service, compose_dir, report)
+            upstream = _check_ingress(name, service, compose_dir, report)
+            _check_upstream(name, service, upstream, services, internal, report)
 
     for host in (external_hosts or []):
         key = host.strip().lower()
@@ -396,6 +498,15 @@ def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
         host_config = info.get("HostConfig") or {}
         if host_config.get("Privileged"):
             report.add("error", f"`{service}` corre privileged (según Docker)")
+        if host_config.get("CapAdd"):
+            report.add("error", f"`{service}` agrega capacidades en ejecución: {host_config['CapAdd']}")
+        if host_config.get("Devices"):
+            report.add("error", f"`{service}` monta dispositivos del host en ejecución")
+        if str(host_config.get("NetworkMode") or "") == "host":
+            report.add("error", f"`{service}` comparte la red del host en ejecución")
+        for key, label in (("PidMode", "pid"), ("IpcMode", "ipc"), ("UTSMode", "uts")):
+            if str(host_config.get(key) or "") == "host":
+                report.add("error", f"`{service}` comparte el namespace {label} del host en ejecución")
         for mount in info.get("Mounts") or []:
             source = str(mount.get("Source", ""))
             if _DOCKER_SOCKET in source or _DOCKER_SOCKET in str(mount.get("Destination", "")):
@@ -414,15 +525,24 @@ def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
                            "una red que no se deja inspeccionar no cuenta como interna")
             elif internal:
                 report.add("ok", f"`{service}` está en la red interna `{network}`")
-            elif service == ingress:
-                report.add("ok", f"`{service}` (ingress) usa `{network}` para publicar el puerto")
             else:
                 report.add("error", f"`{service}` está conectado a `{network}`, que NO es interna en Docker",
-                           "este contenedor tiene salida ahora mismo: bájalo antes de observar nada")
+                           "todo contenedor, incluido el ingress, debe carecer de egress")
 
         if service == ingress:
-            proxy_mounts = [m for m in (info.get("Mounts") or [])
-                            if str(m.get("Destination", "")).endswith("proxy.py")]
+            config = info.get("Config") or {}
+            image = str(config.get("Image") or "")
+            if not _PYTHON_IMAGE.fullmatch(image):
+                report.add("error", f"`{service}` (ingress) ejecuta una imagen no permitida: `{image or '?'}`")
+            entrypoint = config.get("Entrypoint")
+            if entrypoint not in (None, "", []):
+                report.add("error", f"`{service}` (ingress) ejecuta un entrypoint inesperado: {entrypoint!r}")
+            _parse_proxy_command(service, config.get("Cmd"), report)
+
+            mounts = info.get("Mounts") or []
+            proxy_mounts = [m for m in mounts if str(m.get("Destination", "")) == "/pepper-proxy.py"]
+            if len(mounts) != 1:
+                report.add("error", f"`{service}` (ingress) tiene {len(mounts)} montajes vivos; debe tener exactamente uno")
             if len(proxy_mounts) != 1 or expected_proxy is None:
                 report.add("error", f"`{service}` (ingress) no monta el proxy de PEPPER (según Docker)")
             else:

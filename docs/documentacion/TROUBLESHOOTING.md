@@ -22,6 +22,14 @@ Problemas que salen y qué hacer. Si algo no está aquí, el detalle de cada fas
 
 **`pepper package: el directorio del paquete ya existe y no está vacío`** — hay un discovery anterior en `output/`. Muévelo o bórralo a propósito; PEPPER no pisa paquetes.
 
+**`pepper package: … es un symlink`** — copia el archivo o directorio real dentro de `legacy/`. Package no sigue enlaces, ni siquiera anidados: no puede demostrar que el destino permanezca dentro del perímetro ni garantizar que el original no se modifique.
+
+**`pepper package: datos sensibles detectados`** — el modo remoto encontró credenciales, llave privada, CURP o correo. El mensaje muestra ubicaciones, no valores. Sanea la fuente y repite. `--allow-sensitive` existe sólo cuando el responsable del dato autoriza explícitamente el procesamiento remoto; Claude Code no debe agregarlo por su cuenta.
+
+**`pepper package: hay archivos que PEPPER no puede inspeccionar`** — un WAR, dump, binario o archivo grande no puede declararse limpio automáticamente. Revísalo y, si el responsable acepta enviarlo al modelo remoto, repite con `--acknowledge-unscanned`; la excepción queda en el manifest. Alternativa: `--data-mode local` y un modelo realmente local.
+
+**`pepper export: falta el manifest externo`** — Package crea `<paquete>.evidence-manifest.json` junto al paquete. Pásalo con `--manifest`; el interno no lo reemplaza porque el agente puede escribir dentro del paquete. Si se perdió, vuelve a empaquetar: no fabriques otro a partir del contenido actual.
+
 ## Agentes
 
 **Inspect dice "desconocida" en todas las versiones** — los artefactos no las contienen. Es correcto. Consigue notas del servidor original, el `MANIFEST.MF`, un `pg_dump` con cabecera, o pregúntale a quien lo operaba — y dáselo al agente.

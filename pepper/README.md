@@ -15,9 +15,9 @@ python3 -m unittest discover -s tests       # la suite
 | [observe/](observe/) | agente `observador-runtime` | `pepper proxy` ([proxy.py](proxy.py)): el ingress que inyecta `correlation_id` y emite `http.jsonl`; `pepper collect` ([observe/collect.py](observe/collect.py)): la ventana desde los contenedores | **implementados**; las fuentes del perfil las copia el agente |
 | [correlate/](correlate/) | el núcleo | parsers declarativos, reducción auditada, correlación → `events.jsonl`, `flow.json` | **implementado** |
 | [package/](package/) | el núcleo | el paquete controlado con `prompt.md`, `CLAUDE.md`, `AGENTS.md` | **implementado** |
-| [discover/](discover/) | agente `descubridor-runtime` | `pepper export --check` para auto-verificarse | lo hace el agente |
+| [discover/](discover/) | agente `descubridor-runtime` | `pepper export --manifest <externo> --check` para auto-verificarse | lo hace el agente |
 | [export/](export/) | el núcleo | validación contra el contrato + publicación | **implementado** |
 
 Archivos transversales: `cli.py` (comandos), `session.py` (session.json), `profiles.py` (localizar y cargar perfiles), `detect.py`, `validate.py`, `isolate.py`.
 
-`jsonschema` es opcional: habilita `pepper validate` y la validación de forma en `pepper export`.
+`jsonschema` es obligatorio para `pepper export`: sin validación de forma no se publica.

@@ -36,7 +36,7 @@ La prueba de fuego para cualquier cambio: *¿esta línea del núcleo dejaría de
 | `rehydrate` | artefactos + perfil | entorno corriendo + `environment.json` | vía receta del perfil |
 | `observe` | entorno corriendo + ventana de flujo | evidencia cruda por fuente | colectores genéricos + colectores del perfil |
 | `correlate` | evidencia cruda | `events.jsonl` (schema común) + `flow.json` | vía parsers del perfil; correlación 100% genérica |
-| `package` | evidencia correlacionada + código + config | paquete controlado | ninguna |
+| `package` | evidencia correlacionada + código + config | paquete controlado + manifest externo + clasificación de datos | ninguna |
 | `discover` | paquete controlado | `runtime-discovery.json/md` (lo escribe el agente) | ninguna |
 | `export` | salida del agente | artefactos validados contra schema | ninguna |
 
@@ -70,7 +70,7 @@ Aquí está la sinergia clave con Rehydrate: **como PEPPER controla el entorno r
 
 Discover no invoca APIs de ningún agente: el paquete controlado es una carpeta autocontenida con la evidencia, el código disponible y el prompt. La adaptación por agente es mínima: PEPPER genera `CLAUDE.md` y `AGENTS.md` en la raíz del paquete, ambos apuntando al mismo prompt de discovery. El resultado se valida contra `schemas/runtime-discovery.schema.json` venga de donde venga, lo que permite el modo de **contraste**: correr dos agentes sobre el mismo paquete y comparar conclusiones (coincidencia sube confianza; discrepancia marca revisión humana).
 
-Durante Discover el agente opera bajo el **principio read-only**: lee, busca, correlaciona y reporta; no modifica código, datos, configuración ni servicios.
+Durante Discover el agente opera bajo el **principio read-only**: lee, busca, correlaciona y reporta; no modifica código, datos, configuración ni servicios. El manifest raíz queda fuera de su directorio de trabajo. Antes de entrar, Package bloquea symlinks y aplica el gate local/remote de datos.
 
 ## Estados
 

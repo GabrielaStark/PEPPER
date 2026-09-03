@@ -31,7 +31,10 @@ Solo biblioteca estándar (`unittest`); `jsonschema` habilita las comprobaciones
 **`test_isolate.py`** — el entorno rehidratado no alcanza nada externo:
 
 - los casos de fuga reales del primer legacy (red sin `internal`, `network_mode: host`, red no declarada, servicio sin `networks`, `extra_hosts` externo, host del artefacto sin alias al stub);
-- el ingress es el único con salida y solo puede montar el proxy de PEPPER (`:ro`); cualquier otro montaje es aviso.
+- ningún contenedor tiene salida, incluido el ingress; el host entra por un puerto publicado en loopback;
+- el ingress rechaza `entrypoint`, comandos shell, upstreams que no correspondan a una dependencia interna y cualquier montaje distinto al proxy verificado (`:ro`).
+
+**`test_sensitive.py`** — el gate previo a agentes remotos: bloquea credenciales y CURP sin imprimir valores; exige reconocer binarios no inspeccionados; registra toda excepción en el manifest; marca el modo local para impedir que Claude Code lo abra por accidente.
 
 **`test_proxy.py`** — el proxy HTTP del núcleo (todo en `127.0.0.1`, nada sale de la máquina):
 

@@ -23,9 +23,6 @@ networks:
     ipam:
       config:
         - subnet: {{subnet}}            # el /24 de las IPs que el artefacto espera
-  edge:
-    driver: bridge
-
 volumes:
   db-data:
   app-files:
@@ -110,7 +107,7 @@ services:
     depends_on:
       app:
         condition: service_started
-    networks: [legacy, edge]
+    networks: [legacy]                         # el host entra por ports; el contenedor NO necesita egress
     ports:
       - "127.0.0.1:{{host_port}}:8080"   # SOLO localhost: en 0.0.0.0 cualquier equipo de tu LAN alcanza el legacy (H-04)
     volumes:

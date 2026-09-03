@@ -78,6 +78,8 @@ La evidencia de runtime contiene lo que el sistema procesa: datos personales, cr
 - Una credencial encontrada se reporta como hallazgo por ubicación (`archivo:línea`). **Nunca se copia su valor** a ningún documento — una credencial pegada en un reporte es una fuga nueva.
 - Datos personales de la evidencia se citan por ID de evidencia, no se transcriben, salvo que el valor sea imprescindible para la conclusión — y aun así nunca en un documento que se commitea.
 - `legacy/` y `evidence/` no se versionan por defecto. No lo cambies tú.
+- Antes de Discover, `pepper package --data-mode remote` bloquea ubicaciones sensibles y material no inspeccionable. Nunca agregues `--allow-sensitive` ni `--acknowledge-unscanned` sin autorización explícita del humano responsable. En `--data-mode local`, no abras el paquete con un agente que envíe contenido fuera de la máquina.
+- `package.evidence-manifest.json` queda fuera del paquete y no se toca durante Discover; Export lo exige como raíz de confianza.
 
 ## 8. Fidelidad antes que modernización
 

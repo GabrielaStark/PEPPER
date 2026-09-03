@@ -216,6 +216,11 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
         except (OSError, HTTPException) as error:
             duration_ms = int((time.monotonic() - started) * 1000)
             message = json.dumps({"error": "pepper-proxy: el app no respondió", "detail": str(error)}).encode()
+            # Persiste antes de entregar al cliente: si se registra después del
+            # write, el cliente puede terminar y Observe cerrar la ventana antes
+            # de que exista la línea de respuesta.
+            self._record_response(correlation_id, 502, duration_ms, "application/json", message,
+                                  note=f"upstream inalcanzable: {error}")
             try:
                 self.send_response(502)
                 self.send_header("Content-Type", "application/json")
@@ -224,19 +229,19 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
                 self.wfile.write(message)
             except OSError:
                 pass
-            self._record_response(correlation_id, 502, duration_ms, "application/json", message,
-                                  note=f"upstream inalcanzable: {error}")
             return
         duration_ms = int((time.monotonic() - started) * 1000)
 
+        # La respuesta observada se fija antes de exponer sus bytes al cliente;
+        # elimina la carrera request-only en capturas y pruebas concurrentes.
+        content_type = next((value for name, value in headers if name.lower() == "content-type"), "")
+        self._record_response(correlation_id, status, duration_ms, content_type, payload)
+
         self.send_response(status, reason)
-        content_type = ""
         for name, value in headers:
             lowered = name.lower()
             if lowered in _HOP_BY_HOP or lowered == "content-length":
                 continue
-            if lowered == "content-type":
-                content_type = value
             self.send_header(name, value)
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
@@ -245,7 +250,6 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
                 self.wfile.write(payload)
             except OSError:
                 pass
-        self._record_response(correlation_id, status, duration_ms, content_type, payload)
 
     do_GET = do_POST = do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _handle
 

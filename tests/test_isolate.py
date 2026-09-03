@@ -30,13 +30,13 @@ AISLADO = {
         "ingress": {"image": "python:3-alpine",
                     "command": ["python3", "-u", "/pepper-proxy.py",
                                 "--listen", "0.0.0.0:8080", "--upstream", "10.4.2.10:8080"],
-                    "networks": {"legacy": {}, "edge": {}},
+                    "depends_on": {"app": {"condition": "service_started"}},
+                    "networks": {"legacy": {}},
                     "ports": [{"published": "18080", "target": 8080, "host_ip": "127.0.0.1"}],
                     "volumes": ["./proxy/proxy.py:/pepper-proxy.py:ro"]},
     },
     "networks": {
         "legacy": {"internal": True, "ipam": {"config": [{"subnet": "10.4.2.0/24"}]}},
-        "edge": {"driver": "bridge"},
     },
 }
 
@@ -69,11 +69,10 @@ class AisladoTest(Base):
         self.assertTrue(report.isolated)
         self.assertIn("AISLADO (verificado)", render(report, "prueba"))
 
-    def test_el_ingress_es_la_unica_excepcion(self):
+    def test_el_ingress_tampoco_tiene_egress(self):
         report = self.check(AISLADO)
-        salidas = [f for f in report.findings if "ingress" in f.check and "salida" in f.check]
-        self.assertEqual(len(salidas), 1)
-        self.assertEqual(salidas[0].level, "ok")
+        self.assertFalse(any("salida" in f.check for f in report.findings))
+        self.assertTrue(any("upstream" in f.check for f in report.findings if f.level == "ok"))
 
     def test_el_hash_del_proxy_se_verifica(self):
         report = self.check(AISLADO)
@@ -123,17 +122,17 @@ class IngressImpostorTest(Base):
         def mutate(c):
             c["services"]["ingress"] = {"image": "alpine/socat",
                                         "command": ["TCP-LISTEN:8080,fork", "TCP:10.4.2.10:8080"],
-                                        "networks": {"legacy": {}, "edge": {}},
+                                        "networks": {"legacy": {}},
                                         "ports": [{"published": "18080", "target": 8080, "host_ip": "127.0.0.1"}]}
         report = self.leak(mutate)
         self.assertEqual(report.verdict, "FAILED")
-        self.assertTrue(any("no python" in f.check for f in report.errors))
+        self.assertTrue(any("imagen no permitida" in f.check for f in report.errors))
 
     def test_el_exfiltrador_de_la_auditoria_ya_no_pasa(self):
         def mutate(c):
             c["services"]["ingress"] = {"image": "alpine",
                                         "command": ["sh", "-c", "exfiltrar"],
-                                        "networks": {"legacy": {}, "edge": {}}}
+                                        "networks": {"legacy": {}}}
         report = self.leak(mutate)
         self.assertEqual(report.verdict, "FAILED")
 
@@ -152,6 +151,35 @@ class IngressImpostorTest(Base):
         report = check_static(AISLADO, resolved=True, compose_dir=None)
         self.assertEqual(report.verdict, "UNKNOWN")
         self.assertFalse(report.isolated)
+
+    def test_entrypoint_malicioso_no_pasa_aunque_el_command_sea_correcto(self):
+        report = self.leak(lambda c: c["services"]["ingress"].__setitem__(
+            "entrypoint", ["python3", "-c", "import urllib.request; urllib.request.urlopen('https://example.com')"]
+        ))
+        self.assertEqual(report.verdict, "FAILED")
+        self.assertTrue(any("entrypoint" in f.check for f in report.errors))
+
+    def test_command_en_forma_shell_no_pasa(self):
+        report = self.leak(lambda c: c["services"]["ingress"].__setitem__(
+            "command", "python3 -u /pepper-proxy.py --listen 0.0.0.0:8080 --upstream 10.4.2.10:8080"
+        ))
+        self.assertTrue(any("no verificable" in f.check for f in report.errors))
+
+    def test_upstream_externo_no_pasa(self):
+        def mutate(c):
+            command = c["services"]["ingress"]["command"]
+            command[command.index("--upstream") + 1] = "10.0.3.2:8080"
+        report = self.leak(mutate)
+        self.assertEqual(report.verdict, "FAILED")
+        self.assertTrue(any("no es una dependencia interna" in f.check for f in report.errors))
+
+    def test_ingress_en_red_externa_no_pasa(self):
+        def mutate(c):
+            c["networks"]["edge"] = {"driver": "bridge"}
+            c["services"]["ingress"]["networks"]["edge"] = {}
+        report = self.leak(mutate)
+        self.assertEqual(report.verdict, "FAILED")
+        self.assertTrue(any("NO es internal" in f.check for f in report.errors))
 
 
 class CapacidadesTest(Base):

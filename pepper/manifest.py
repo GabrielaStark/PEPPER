@@ -82,7 +82,9 @@ def verify(root: Path, manifest: Dict, scopes: Optional[List[str]] = None) -> Li
     listed: Dict[str, str] = manifest.get("files", {})
     for relative, expected in sorted(listed.items()):
         path = root / relative
-        if not path.is_file():
+        if path.is_symlink():
+            errors.append(f"integridad · {relative} es un symlink; la evidencia debe permanecer dentro del paquete")
+        elif not path.is_file():
             errors.append(f"integridad · falta {relative} (listado en el manifest)")
         elif sha256_file(path) != expected:
             errors.append(f"integridad · {relative} fue modificado después de Correlate (hash distinto al manifest)")
@@ -91,6 +93,10 @@ def verify(root: Path, manifest: Dict, scopes: Optional[List[str]] = None) -> Li
         if not base.is_dir():
             continue
         for path in sorted(base.rglob("*")):
+            if path.is_symlink():
+                relative = path.relative_to(root).as_posix()
+                errors.append(f"integridad · {relative} es un symlink; no se siguen enlaces en evidencia ni legacy")
+                continue
             if not path.is_file():
                 continue
             relative = path.relative_to(root).as_posix()

@@ -8,8 +8,10 @@ Lee `docs/documentacion/PRINCIPIOS.md` y aplica sus reglas como restricciones du
 ## 1. Valida y publica
 
 ```bash
-python3 -m pepper export pepper-out/$ARGUMENTS/package --out docs/pepper/discovery/$ARGUMENTS
+python3 -m pepper export pepper-out/$ARGUMENTS/package --manifest pepper-out/$ARGUMENTS/package.evidence-manifest.json --out docs/pepper/discovery/$ARGUMENTS
 ```
+
+El manifest externo es obligatorio. Si falta o está dentro del paquete, no sustituyas su función con el manifest interno: vuelve a Package para crear una raíz de confianza fuera del alcance normal de Discover.
 
 Si el resultado es **RECHAZADO**, muestra los errores tal cual y NO corrijas la salida tú: vuelve a `/pepper-discover $ARGUMENTS` para que el agente la corrija sobre la evidencia. Una salida que no valida no se publica — ni "a mano", ni "solo esta vez".
 
