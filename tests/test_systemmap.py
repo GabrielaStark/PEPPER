@@ -31,6 +31,9 @@ if name.endswith("Controller"):
     print("  public void guardar();")
     print("        org.springframework.web.bind.annotation.PostMapping(")
     print('          value=["/guardar"]')
+    # anotación de CLASE (indentación menor): la ruta base, no un endpoint
+    print("    org.springframework.web.bind.annotation.RequestMapping(")
+    print('      value=["/api/rest"]')
 elif name.endswith("Schedule"):
     print("  public void run();")
     print("    org.springframework.scheduling.annotation.Scheduled(")
@@ -115,12 +118,44 @@ class SystemMapTest(unittest.TestCase):
             self.skipTest("jsonschema no instalado")
         self.assertEqual(errors, [], errors)
 
-    def test_rutas_del_bytecode(self):
+    def test_rutas_del_bytecode_con_la_ruta_base_de_la_clase(self):
+        # Regresión: la @RequestMapping de CLASE es el prefijo, no un endpoint.
+        # Antes salía un endpoint fantasma "/api/rest" y los demás sin prefijo.
         m = self._map()
         paths = {(e["method"], e["path"]) for e in m["entrypoints"]}
-        self.assertIn(("GET", "/obtenerGeneros"), paths)
-        self.assertIn(("POST", "/guardar"), paths)
-        self.assertTrue(any(e["kind"] == "http_route" for e in m["entrypoints"]))
+        self.assertIn(("GET", "/api/rest/obtenerGeneros"), paths)
+        self.assertIn(("POST", "/api/rest/guardar"), paths)
+        self.assertNotIn(("", "/api/rest"), paths, "la ruta base no es un endpoint por sí sola")
+
+    def test_cobertura_de_jobs_con_firma_declarada(self):
+        # Un job sin log propio solo se delata por sus consultas: el perfil declara
+        # con qué regex reconocerlo (le pasó a RevisionCitasSchedule en la corrida real).
+        extractors = [dict(e) for e in EXTRACTORS]
+        extractors[0]["job_signatures"] = {"SyncSchedule": r"sincronizando catalogos"}
+        m = build_map(self.war, extractors, "perfil-test", dump=self.dump, tools=self.tools)
+        self.assertEqual(m["jobs"][0]["signature"], r"sincronizando catalogos")
+        ev = self.dir / "ev"
+        (ev / "containers").mkdir(parents=True)
+        (ev / "containers" / "app.log").write_text("18:00 INFO sincronizando catalogos ok\n", encoding="utf-8")
+        cov = coverage(m, [], evidence_dir=ev)
+        self.assertTrue(cov["jobs_measurable"])
+        self.assertEqual(cov["jobs_observed"], 1)
+
+    def test_cobertura_de_jobs_sin_firma_no_miente(self):
+        m = self._map()  # sin job_signatures
+        cov = coverage(m, [])
+        self.assertFalse(cov["jobs_measurable"])
+        self.assertIsNone(cov["jobs_observed"], "sin firma se declara no medible, nunca 0 observados")
+
+    def test_cobertura_de_dependencias_por_el_stub(self):
+        m = self._map()
+        ev = self.dir / "ev2"
+        (ev / "containers").mkdir(parents=True)
+        (ev / "containers" / "stub.log").write_text(
+            '{"host": "bus.institucion.example:443", "path": "/x"}\n', encoding="utf-8")
+        cov = coverage(m, [], evidence_dir=ev)
+        self.assertIn("bus.institucion.example", cov["dependencies_confirmed"])
+        self.assertEqual(cov["dependencies_observed"], 1)
 
     def test_jobs_deduplicados(self):
         m = self._map()
@@ -159,10 +194,10 @@ class SystemMapTest(unittest.TestCase):
 
     def test_cobertura_observado_vs_total(self):
         m = self._map()
-        cov = coverage(m, observed_paths=["/guardar", "/otra?x=1"])
+        cov = coverage(m, observed_paths=["/api/rest/guardar", "/otra?x=1"])
         self.assertEqual(cov["routes_observed"], 1)
         self.assertGreater(cov["routes_total"], 1)
-        self.assertIn("POST /guardar", cov["observed"])
+        self.assertIn("POST /api/rest/guardar", cov["observed"])
         self.assertTrue(any("obtenerGeneros" in r for r in cov["not_observed"]))
 
 

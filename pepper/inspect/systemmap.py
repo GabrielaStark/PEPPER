@@ -190,20 +190,31 @@ def _extract_jvm_routes(artifact: Path, spec: Dict[str, Any], report: "MapReport
             fqn = n[len(class_root):].lstrip("/").removesuffix(".class").replace("/", ".")
             out = _run_tool(javap, ["-p", "-v", "-classpath", str(cp), fqn])
             if out:
-                _parse_javap(out, fqn.split(".")[-1], report)
+                _parse_javap(out, fqn.split(".")[-1], report, spec.get("job_signatures") or {})
 
 
 _MAP_ANN = re.compile(r"annotation\.(RequestMapping|GetMapping|PostMapping|PutMapping|DeleteMapping)\(")
 
 
-def _parse_javap(out: str, class_name: str, report: "MapReport") -> None:
-    """Extrae verbo+path+handler de las anotaciones de mapeo, y cron de @Scheduled."""
+def _parse_javap(out: str, class_name: str, report: "MapReport",
+                 job_signatures: Optional[Dict[str, str]] = None) -> None:
+    """Extrae verbo+path+handler de las anotaciones de mapeo, y cron de @Scheduled.
+
+    Distingue por indentación la anotación de CLASE (la ruta base, p. ej.
+    `@RequestMapping("/api/rest")`) de las de MÉTODO: la base se antepone a las
+    rutas de esa clase y no se emite como entrada propia — si no, aparece un
+    endpoint fantasma `/api/rest` y los demás salen sin su prefijo.
+    """
     method = ""
     verb = ""
     pend = False
+    pend_class_level = False
     sched = False
+    base_path = ""
+    routes: List[Dict[str, Any]] = []
     for line in out.splitlines():
         s = line.strip()
+        indent = len(line) - len(line.lstrip())
         m = re.match(r"^(public|protected).*\b(\w+)\(", s)
         if m:
             method = m.group(2)
@@ -212,6 +223,11 @@ def _parse_javap(out: str, class_name: str, report: "MapReport") -> None:
         if sched and ("cron=" in s or "value=[" in s or "fixedRate=" in s or "fixedDelay=" in s):
             val = s.split("=", 1)[1].strip().strip("[]").strip('"')
             job = {"name": class_name, "schedule": val, "evidence": f"{class_name}.class (javap @Scheduled)"}
+            signature = (job_signatures or {}).get(class_name)
+            if signature:
+                # Con qué se reconoce este job en la evidencia: muchos no dejan log
+                # propio y solo se delatan por las consultas que lanzan.
+                job["signature"] = signature
             if not any(j["name"] == class_name and j["schedule"] == val for j in report.jobs):
                 report.jobs.append(job)  # el cron aparece dos veces en el bytecode (anotación + constante)
             sched = False
@@ -219,15 +235,22 @@ def _parse_javap(out: str, class_name: str, report: "MapReport") -> None:
         if am:
             verb = am.group(1)
             pend = True
+            pend_class_level = indent <= 4  # las de método van más indentadas
         if pend and "value=[" in s:
             path = s.split("value=[", 1)[1].split("]")[0].strip().strip('"')
-            kind = "rest_endpoint" if "Rest" in class_name else "http_route"
-            http = {"RequestMapping": "", "GetMapping": "GET", "PostMapping": "POST",
-                    "PutMapping": "PUT", "DeleteMapping": "DELETE"}.get(verb, "")
-            report.entrypoints.append({"kind": kind, "method": http, "path": path,
-                                       "handler": f"{class_name}.{method}",
-                                       "evidence": f"{class_name}.class (javap {verb})"})
+            if pend_class_level:
+                base_path = path.rstrip("/")
+            else:
+                http = {"RequestMapping": "", "GetMapping": "GET", "PostMapping": "POST",
+                        "PutMapping": "PUT", "DeleteMapping": "DELETE"}.get(verb, "")
+                routes.append({"kind": "rest_endpoint" if "Rest" in class_name else "http_route",
+                               "method": http, "path": path, "handler": f"{class_name}.{method}",
+                               "evidence": f"{class_name}.class (javap {verb})"})
             pend = False
+    for route in routes:
+        if base_path and not route["path"].startswith(base_path):
+            route["path"] = base_path + route["path"]
+        report.entrypoints.append(route)
 
 
 # ------------------------------------------------------------- ensamblado
@@ -298,17 +321,51 @@ def build_map(artifact: Path, extractors: List[Dict[str, Any]], profile_id: Opti
     }
 
 
-def coverage(system_map: Dict[str, Any], observed_paths: List[str]) -> Dict[str, Any]:
-    """Qué entradas del mapa se han observado en la evidencia (http.jsonl)."""
+def coverage(system_map: Dict[str, Any], observed_paths: List[str],
+             evidence_dir: Optional[Path] = None) -> Dict[str, Any]:
+    """Qué del mapa se ha confirmado en la evidencia: rutas, dependencias y jobs.
+
+    - Rutas: comparación directa contra los `path` del http.jsonl.
+    - Dependencias: el stub registra CADA llamada externa interceptada; un host que
+      aparece ahí está confirmado en ejecución.
+    - Jobs: un job sin log propio no es detectable por nombre (le pasó a
+      RevisionCitasSchedule, que solo deja sus consultas). Si el mapa no trae una
+      firma para buscarlo, se declara **no medible automáticamente** — nunca "0
+      observados", que sería mentir por omisión.
+    """
     observed = {p.split("?")[0].rstrip("/") or "/" for p in observed_paths}
     routes = [e for e in system_map.get("entrypoints", []) if e["kind"] in ("http_route", "rest_endpoint")]
     hit, miss = [], []
     for e in routes:
-        base = "/api/rest" + e["path"] if e["kind"] == "rest_endpoint" else e["path"]
-        (hit if (base.rstrip("/") or "/") in observed else miss).append(f"{e.get('method','')} {base}".strip())
+        path = e["path"].rstrip("/") or "/"
+        (hit if path in observed else miss).append(f"{e.get('method','')} {e['path']}".strip())
+
+    evidence_text = ""
+    stub_text = ""
+    if evidence_dir is not None and evidence_dir.is_dir():
+        for name in ("containers/app.log", "containers/db.err.log"):
+            path = evidence_dir / name
+            if path.is_file():
+                evidence_text += path.read_text(encoding="utf-8", errors="replace")
+        stub = evidence_dir / "containers" / "stub.log"
+        if stub.is_file():
+            stub_text = stub.read_text(encoding="utf-8", errors="replace")
+
+    deps = system_map.get("external_dependencies", [])
+    deps_hit = sorted({d["target"] for d in deps if d.get("target") and d["target"].split(":")[0] in stub_text})
+
+    jobs = system_map.get("jobs", [])
+    jobs_with_signature = [j for j in jobs if j.get("signature")]
+    jobs_hit = [j["name"] for j in jobs_with_signature
+                if re.search(j["signature"], evidence_text)] if evidence_text else []
+    jobs_measurable = bool(jobs_with_signature)
+
     return {
         "routes_total": len(routes), "routes_observed": len(hit),
-        "jobs_total": len(system_map.get("jobs", [])), "jobs_observed": 0,
-        "dependencies_total": len(system_map.get("external_dependencies", [])),
+        "jobs_total": len(jobs),
+        "jobs_measurable": jobs_measurable,
+        "jobs_observed": len(jobs_hit) if jobs_measurable else None,
+        "dependencies_total": len(deps), "dependencies_observed": len(deps_hit),
+        "dependencies_confirmed": deps_hit,
         "observed": sorted(hit), "not_observed": sorted(miss),
     }

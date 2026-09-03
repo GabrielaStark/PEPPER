@@ -10,7 +10,12 @@
         "mx/com/edomex/siat/controller/",
         "mx/com/edomex/siat/rest/",
         "mx/com/edomex/siat/cron/"
-      ]
+      ],
+      "job_signatures": {
+        "RevisionCitasSchedule": "dsestatuscita\\s*=\\$1|date\\(c\\.fechacita\\)\\s*=\\s*current_date",
+        "CatalogosSidecoSchedule": "sincronizaci|estatusSolicitudSideco|seguimientoSolicitudes",
+        "CatalogosPjSchedule": "CatalogosPj|catalogos.*_pj|ResponseCatalogos"
+      }
     },
     {
       "mechanism": "config_hosts",
