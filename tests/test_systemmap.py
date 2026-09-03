@@ -44,6 +44,9 @@ elif name.endswith("Schedule"):
 # pg_restore -l de mentira: una TOC con servidor foráneo, trigger y conteos.
 FAKE_PG_RESTORE = r'''#!/usr/bin/env python3
 print(";  toc de mentira")
+print(";     dbname: base_origen")
+print(";     Dumped from database version: 10.6")
+print(";     Dumped by pg_dump version: 17.10")
 print("2580; 1417 128087 SERVER - svr_externo dueno")
 print("10; 1259 100 TABLE public trabajador dueno")
 print("11; 1259 101 TABLE public empresa dueno")
@@ -109,9 +112,13 @@ class SystemMapTest(unittest.TestCase):
         return build_map(self.war, EXTRACTORS, "perfil-test", dump=self.dump,
                          tools=self.tools if tools is None else tools)
 
-    def test_mapa_completo_valida_contra_el_contrato(self):
+    def test_superficie_sin_extractor_es_hueco_declarado_y_valida_contra_el_contrato(self):
+        # ningún mecanismo del perfil enumera roles: el mapa NO puede decirse completo (D23)
         m = self._map()
-        self.assertTrue(m["complete"], m["coverage_gaps"])
+        self.assertFalse(m["complete"])
+        self.assertEqual(len(m["coverage_gaps"]), 1, m["coverage_gaps"])
+        self.assertIn("roles", m["coverage_gaps"][0])
+        self.assertEqual(m["roles"], [])
         try:
             errors = validate_instance(m, "system-map")
         except ImportError:
@@ -185,6 +192,13 @@ class SystemMapTest(unittest.TestCase):
         self.assertIn(("foreign_server", "svr_externo"), kinds)
         summ = {d["name"]: d.get("count") for d in m["data_stores"] if d["kind"] == "summary"}
         self.assertEqual(summ.get("table"), 2)
+
+    def test_cabecera_del_respaldo_llega_al_mapa(self):
+        # base de origen y versión del servidor: lo que delata discrepancias con NOTAS.md
+        m = self._map()
+        notas = [n for n in m["notes"] if n.startswith("respaldo ")]
+        self.assertTrue(any("base de origen: base_origen" in n for n in notas), notas)
+        self.assertTrue(any("versión del servidor de origen: 10.6" in n for n in notas), notas)
 
     def test_fail_honest_sin_herramientas(self):
         m = self._map(tools={})  # sin javap ni pg_restore ni docker

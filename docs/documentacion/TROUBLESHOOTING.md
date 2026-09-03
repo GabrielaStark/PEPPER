@@ -32,6 +32,10 @@ Problemas que salen y qué hacer. Si algo no está aquí, el detalle de cada fas
 
 ## Agentes
 
+**`Unknown command: /pepper-init`** — Claude Code no está abierto en la raíz del workspace: los comandos se cargan de `<cwd>/.claude/commands/`. Cierra y vuelve a abrir desde la carpeta que contiene `.claude/`, `pepper/` y `legacy/`. Mientras tanto, cualquier agente puede ejecutar la fase leyendo `.claude/commands/pepper-<fase>.md` (es lo que manda `AGENTS.md`).
+
+**Una dependencia externa por IP directa no aparece en el stub** — el stub intercepta **por nombre** (alias DNS en la red interna). Si el artefacto llama a `http://10.20.30.40:8080/`, esa IP no se puede aliasear: la llamada falla sin salir de la red (seguro), pero el stub no la registra. Si necesitas la evidencia, agrega esa IP al stub con una segunda subred interna que la contenga; si no, declárala como flujo no observable en `environment.json`.
+
 **Inspect dice "desconocida" en todas las versiones** — los artefactos no las contienen. Es correcto. Consigue notas del servidor original, el `MANIFEST.MF`, un `pg_dump` con cabecera, o pregúntale a quien lo operaba — y dáselo al agente.
 
 **Rehydrate termina en `BLOCKED`** — es un entregable: `docs/pepper/missing-evidence.md` dice qué falta y qué artefacto lo resolvería. Consíguelo y repite. No le pidas al agente que "invente algo para que arranque".
