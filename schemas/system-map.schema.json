@@ -53,6 +53,7 @@
         "properties": {
           "name": {"type": "string"},
           "schedule": {"type": "string", "description": "Expresión cron o intervalo."},
+          "signature": {"type": "string", "description": "Regex con que se reconoce este job en la evidencia (muchos no dejan log propio y solo se delatan por sus consultas). Sin ella, la cobertura de jobs se declara no medible en vez de reportar 0."},
           "detail": {"type": "string"},
           "evidence": {"type": "string"}
         }

@@ -267,9 +267,13 @@ def _cmd_map(args: argparse.Namespace) -> int:
                     observed.append(_json.loads(line).get("path", ""))
                 except ValueError:
                     pass
-        cov = coverage(system_map, observed)
-        print(f"  cobertura: {cov['routes_observed']}/{cov['routes_total']} rutas observadas; "
-              f"0/{cov['jobs_total']} jobs; 0/{cov['dependencies_total']} dependencias confirmadas")
+        cov = coverage(system_map, observed, evidence_dir=args.evidence)
+        jobs_txt = (f"{cov['jobs_observed']}/{cov['jobs_total']} jobs" if cov["jobs_measurable"]
+                    else f"jobs: {cov['jobs_total']} (sin firma declarada: confírmalos a mano)")
+        print(f"  cobertura: {cov['routes_observed']}/{cov['routes_total']} rutas · "
+              f"{cov['dependencies_observed']}/{cov['dependencies_total']} dependencias confirmadas · {jobs_txt}")
+        if cov["dependencies_confirmed"]:
+            print(f"    dependencias vistas en ejecución: {', '.join(cov['dependencies_confirmed'])}")
         if cov["not_observed"]:
             print(f"    sin observar aún: {len(cov['not_observed'])} rutas (ver {args.out})")
     print(f"  salida: {args.out}")
