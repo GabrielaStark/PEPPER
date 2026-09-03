@@ -234,6 +234,47 @@ class CapacidadesTest(Base):
         self.assertTrue(any("con escritura" in f.check for f in report.errors))
 
 
+class PoliticaDelNavegadorTest(unittest.TestCase):
+    """El navegador del humano es parte del perímetro: el ingress vivo debe imponerle
+    la política de PEPPER, y se comprueba por loopback — nunca hacia otro destino."""
+
+    def _serve(self, csp):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        import threading
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+            def do_GET(self):
+                self.send_response(302); self.send_header("Location", "/login")
+                if csp: self.send_header("Content-Security-Policy", csp)
+                self.send_header("Content-Length", "0"); self.end_headers()
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        return {"NetworkSettings": {"Ports": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(srv.server_address[1])}]}}}
+
+    def test_con_la_politica_de_pepper_es_verde(self):
+        from pepper.isolate import Report, _check_live_browser_policy
+        from pepper.proxy import BROWSER_POLICY
+        report = Report()
+        _check_live_browser_policy("ingress", self._serve(BROWSER_POLICY), report)
+        self.assertEqual(report.errors, [])
+        self.assertTrue(any("impone al navegador" in f.check for f in report.findings if f.level == "ok"))
+
+    def test_sin_politica_o_con_una_laxa_es_fuga(self):
+        from pepper.isolate import Report, _check_live_browser_policy
+        for csp in (None, "default-src *", "default-src 'self'"):   # la última no reporta bloqueos
+            report = Report()
+            _check_live_browser_policy("ingress", self._serve(csp), report)
+            self.assertEqual(report.verdict, "FAILED", csp)
+
+    def test_sin_puerto_publicado_no_hay_verde(self):
+        from pepper.isolate import Report, _check_live_browser_policy
+        report = Report()
+        _check_live_browser_policy("ingress", {"NetworkSettings": {"Ports": {}}}, report)
+        self.assertEqual(report.verdict, "UNKNOWN")
+
+
 class ConexionesVivasDelIngressTest(unittest.TestCase):
     """El hash demuestra QUÉ código se montó; esto, CON QUIÉN habla el proceso.
 
@@ -258,6 +299,26 @@ class ConexionesVivasDelIngressTest(unittest.TestCase):
         report = self._report(["10.100.0.10"])
         self.assertEqual(report.errors, [])
         self.assertTrue(any("solo tiene conexiones" in f.check for f in report.findings))
+
+    def test_una_conexion_entrante_del_navegador_no_es_salida(self):
+        # /proc/net/tcp: LISTEN en :8080, el navegador del host entrando por ese puerto,
+        # y el proxy saliendo hacia el app interno. Solo lo último es un destino remoto.
+        from unittest import mock
+
+        from pepper.isolate import _live_remote_peers
+
+        def hx(ip, port):
+            import ipaddress
+            return int(ipaddress.ip_address(ip)).to_bytes(4, "little").hex().upper() + ":" + f"{port:04X}"
+        tabla = "\n".join([
+            "  sl  local_address rem_address   st",
+            f"   0: {hx('0.0.0.0', 8080)} {hx('0.0.0.0', 0)} 0A",           # LISTEN
+            f"   1: {hx('172.20.0.2', 8080)} {hx('172.20.0.1', 64068)} 01",  # ENTRANTE: el host al puerto publicado
+            f"   2: {hx('10.100.0.4', 39288)} {hx('10.100.0.10', 8080)} 01",  # SALIENTE: al app
+        ])
+        fake = mock.Mock(returncode=0, stdout=tabla)
+        with mock.patch("pepper.isolate.subprocess.run", return_value=fake):
+            self.assertEqual(_live_remote_peers("c1"), ["10.100.0.10"])
 
     def test_una_conexion_hacia_fuera_es_fuga(self):
         report = self._report(["10.100.0.10", "1.1.1.1"])

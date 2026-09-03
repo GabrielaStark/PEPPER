@@ -29,6 +29,8 @@ import ipaddress
 import json
 import re
 import subprocess
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -568,13 +570,19 @@ def _live_remote_peers(container: str) -> Optional[List[str]]:
                          capture_output=True, text=True)
     if out.returncode != 0:
         return None
+    rows = [line.split() for line in out.stdout.splitlines() if ":" in line]
+    rows = [r for r in rows if len(r) >= 4 and ":" in r[1] and ":" in r[2]]
+    # Los puertos en LISTEN son los que el contenedor OFRECE. Una conexión cuyo puerto
+    # local es uno de ellos es ENTRANTE (el navegador del humano llegando al puerto
+    # publicado), no una salida: contarla como fuga hacía que isolate dijera
+    # NO AISLADO justo mientras alguien usaba el sistema.
+    listening = {r[1].rsplit(":", 1)[1] for r in rows if r[3] == "0A"}
     peers = set()
-    for line in out.stdout.splitlines()[1:]:
-        parts = line.split()
-        if len(parts) < 4 or ":" not in parts[2]:
+    for parts in rows:
+        if parts[3] == "0A":
             continue
-        if parts[3] == "0A":          # LISTEN: no es una conexión saliente
-            continue
+        if parts[1].rsplit(":", 1)[1] in listening:
+            continue  # entrante
         hexip = parts[2].split(":")[0]
         if len(hexip) == 8:           # IPv4, little-endian
             try:
@@ -614,6 +622,50 @@ def _check_live_ingress_peers(service: str, container: str, upstream: Optional[T
     else:
         report.add("ok", f"`{service}` (ingress) solo tiene conexiones al entorno interno"
                           + (f" ({', '.join(peers)})" if peers else " (ninguna abierta)"))
+
+
+def _published_loopback_url(info: Dict[str, Any]) -> Optional[str]:
+    ports = ((info.get("NetworkSettings") or {}).get("Ports") or {})
+    for bindings in ports.values():
+        for binding in bindings or []:
+            host_port = str(binding.get("HostPort") or "")
+            if host_port:
+                return f"http://127.0.0.1:{host_port}/"
+    return None
+
+
+def browser_policy_ok(policy: str) -> bool:
+    """La política que el ingress debe imponer: todo destino 'self' y reporte de bloqueos."""
+    return "default-src 'self'" in policy and "report-uri /__pepper/csp-report" in policy
+
+
+def _check_live_browser_policy(service: str, info: Dict[str, Any], report: Report) -> None:
+    """El navegador del humano es parte del perímetro y ningún contenedor lo ve.
+
+    Se pide la raíz por loopback —solo 127.0.0.1, jamás otro destino— y se exige
+    la Content-Security-Policy de PEPPER en la respuesta: sin ella el navegador
+    cargaría iframes, scripts e imágenes de los hosts del artefacto (con VPN, de
+    producción) por fuera de los contenedores."""
+    url = _published_loopback_url(info)
+    if url is None:
+        report.add("unknown", f"`{service}` (ingress) no publica ningún puerto",
+                   "sin puerto publicado no se puede comprobar la política del navegador")
+        return
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method="GET"), timeout=8) as response:
+            policy = response.headers.get("Content-Security-Policy") or ""
+    except urllib.error.HTTPError as error:
+        policy = error.headers.get("Content-Security-Policy") or ""
+    except (urllib.error.URLError, OSError, ValueError) as error:
+        report.add("unknown", f"`{service}` (ingress): no pude pedir {url} para comprobar la política del navegador",
+                   str(error)[:120])
+        return
+    if browser_policy_ok(policy):
+        report.add("ok", f"`{service}` (ingress) impone al navegador la política de PEPPER: solo 127.0.0.1, con reporte de bloqueos")
+    else:
+        report.add("error", f"`{service}` (ingress) NO impone la política del navegador en {url}",
+                   "sin Content-Security-Policy el navegador del humano carga iframes, scripts e imágenes de los "
+                   "hosts del artefacto: fuga por fuera de los contenedores")
 
 
 def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
@@ -720,6 +772,7 @@ def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
                 report.add("error", f"`{service}` (ingress) ejecuta un entrypoint inesperado: {entrypoint!r}")
             live_upstream = _parse_proxy_command(service, config.get("Cmd"), report)
             _check_live_ingress_peers(service, name, live_upstream, live_subnets, report)
+            _check_live_browser_policy(service, info, report)
 
             mounts = info.get("Mounts") or []
             proxy_mounts = [m for m in mounts if str(m.get("Destination", "")) == "/pepper-proxy.py"]
