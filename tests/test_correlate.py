@@ -112,6 +112,59 @@ class CorrelateFixtureTest(unittest.TestCase):
                 self.assertEqual((self.out / name).read_bytes(), (again / name).read_bytes(), name)
 
 
+class ContencionExactaTest(unittest.TestCase):
+    """Un recorrido rápido: peticiones de milisegundos separadas por milisegundos.
+
+    La tolerancia acerca cada evento a sus peticiones vecinas. Si eso bastara para
+    declararlo ambiguo, se perdería el SQL que cae limpio dentro de UNA petición —
+    que es justo lo que Correlate existe para amarrar (E2E 2026-09-03: 92% de la
+    evidencia se descartaba con la tolerancia por defecto).
+    """
+
+    def _sesion_y_eventos(self):
+        from datetime import datetime, timedelta, timezone
+
+        from pepper.correlate.correlate import correlate
+        from pepper.correlate.events import Event
+        from pepper.session import Collector, Session
+
+        t0 = datetime(2026, 9, 3, 12, 0, 0, tzinfo=timezone.utc)
+        session = Session(session_id="flow-x", flow_name="recorrido rápido",
+                          observed_start=t0, observed_end=t0 + timedelta(seconds=10),
+                          tz=timezone.utc, collectors=[Collector(source="http-proxy", file="http.jsonl")])
+        events, ms = [], lambda n: t0 + timedelta(milliseconds=n)
+        # tres peticiones consecutivas de 20 ms, separadas por 5 ms
+        for i, inicio in enumerate((0, 25, 50)):
+            cid = f"req-{i}"
+            events.append(Event(timestamp=ms(inicio), session_id="flow-x", source="http-proxy",
+                                event_type="http_request", raw_ref=f"http.jsonl:{i*2+1}", correlation_id=cid))
+            events.append(Event(timestamp=ms(inicio + 20), session_id="flow-x", source="http-proxy",
+                                event_type="http_response", raw_ref=f"http.jsonl:{i*2+2}", correlation_id=cid))
+        # un SQL dentro de la SEGUNDA petición (25→45 ms): no es ambiguo, aunque la
+        # tolerancia de 500 ms lo acerque a las otras dos
+        events.append(Event(timestamp=ms(30), session_id="flow-x", source="postgresql",
+                            event_type="sql", raw_ref="db.log:1", operation="SELECT",
+                            message="select 1", metadata={"pid": "7"}))
+        events.sort(key=lambda e: e.timestamp)
+        for n, e in enumerate(events, 1):
+            e.event_id = f"E-{n:04d}"
+        return correlate(events, session, affinity_keys=["pid"], tolerance_ms=500)
+
+    def test_el_sql_dentro_de_una_peticion_no_es_ambiguo(self):
+        flow = self._sesion_y_eventos()
+        self.assertEqual(flow["unassigned"], [], "la tolerancia no debe volver ambiguo lo que cae dentro de una sola petición")
+        segunda = next(t for t in flow["traces"] if t["correlation_id"] == "req-1")
+        tipos = [e["event_type"] for e in segunda["events"]]
+        self.assertIn("sql", tipos, "el SQL pertenece a la petición que lo contiene")
+        sql = next(e for e in segunda["events"] if e["event_type"] == "sql")
+        self.assertEqual(sql["basis"], "ventana temporal")
+
+    def test_todos_los_eventos_quedan_asignados(self):
+        flow = self._sesion_y_eventos()
+        self.assertEqual(flow["stats"]["assigned"], 7)  # 6 http + 1 sql
+        self.assertEqual(flow["stats"]["unassigned"], 0)
+
+
 class CorrelateErrorsTest(unittest.TestCase):
     def test_unknown_source_without_parser_fails_clearly(self):
         with tempfile.TemporaryDirectory() as tmp:

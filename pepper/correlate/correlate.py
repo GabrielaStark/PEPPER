@@ -120,6 +120,16 @@ def correlate(
             unassigned.append(_unassigned(event, "fuera de toda petición observada", []))
             continue
 
+        # La contención EXACTA manda sobre la tolerancia. Un evento que cae dentro
+        # de una sola petición no es ambiguo porque el margen lo acerque a sus
+        # vecinas: en un recorrido rápido (peticiones de milisegundos, separadas por
+        # milisegundos) la tolerancia por defecto declaraba "ambiguo" el 92% del SQL
+        # que caía limpio dentro de UNA petición. La tolerancia es el respaldo para
+        # los eventos que no caen dentro de ninguna, no una forma de perderlos.
+        exact = [(trace, basis) for trace, basis in candidates if "±" not in basis]
+        if exact:
+            candidates = exact
+
         if len(candidates) == 1:
             trace, basis = candidates[0]
             affinity = trace.matching_affinity(event, affinity_keys)

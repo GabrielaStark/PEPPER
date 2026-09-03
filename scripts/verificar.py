@@ -64,8 +64,11 @@ def parse_frontmatter(texto):
 sys.path.insert(0, str(RAIZ))
 ERRORES = []
 IGNORAR = {".git", "pepper-out", "__pycache__", "node_modules", "analysis", "legacy", "evidence"}
+# El PRODUCTO del workspace (lo que PEPPER escribe sobre el legacy) no es la
+# herramienta: se verifica la herramienta, no los reportes de quien la usa.
+IGNORAR_RUTAS = ("docs/pepper",)
 # Tokens con forma de nombre que no son comandos/agentes/skills.
-TOLERADOS = {"pepper-out", "pepper-discovery", "pepper-proxy"}
+TOLERADOS = {"pepper-out", "pepper-discovery", "pepper-proxy", "pepper-stub"}
 
 
 def error(msg):
@@ -73,7 +76,9 @@ def error(msg):
 
 
 def archivos_md():
-    return [p for p in RAIZ.rglob("*.md") if not (set(p.parts) & IGNORAR)]
+    return [p for p in RAIZ.rglob("*.md")
+            if not (set(p.parts) & IGNORAR)
+            and not p.relative_to(RAIZ).as_posix().startswith(IGNORAR_RUTAS)]
 
 
 def verifica_frontmatter():

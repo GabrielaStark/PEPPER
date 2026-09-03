@@ -1,7 +1,7 @@
 {
   "parser_version": "0.1.0",
   "source": "postgresql",
-  "description": "Log de PostgreSQL (log_statement=all, log_line_prefix='%m [%p] %u@%d ') capturado con `pepper collect` (docker logs --timestamps). El timestamp autoritativo es el prefijo RFC3339 UTC de Docker; el %m del propio log queda en metadata. Los par\u00e1metros de una sentencia preparada llegan en una l\u00ednea DETAIL posterior del mismo backend (pid) y se fusionan en el evento de la sentencia.",
+  "description": "Log de PostgreSQL (log_statement=all, log_line_prefix='%m [%p] %u@%d ') capturado con `pepper collect` (docker logs --timestamps). El timestamp autoritativo es el prefijo RFC3339 UTC de Docker; el %m del propio log queda en metadata. Los parámetros de una sentencia preparada llegan en una línea DETAIL posterior del mismo backend (pid) y se fusionan en el evento de la sentencia. Una sentencia que ocupa varias líneas continúa en las que no traen el prefijo del motor: se anexan al evento anterior en vez de perderse (si no, la consulta queda truncada en su primera línea).",
   "line_pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z)\\s+(?P<pg_ts>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}) (?P<tz>\\S+) \\[(?P<pid>\\d+)\\] (?P<user>[^@\\s]+)@(?P<database>\\S+) (?P<kind>[A-Z]+):\\s+(?P<message>.*)$",
   "timestamp": {
     "group": "timestamp"
@@ -78,5 +78,8 @@
   },
   "affinity": [
     "pid"
-  ]
+  ],
+  "continuation": {
+    "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z\\s+(?!\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3} \\S+ \\[\\d+\\])"
+  }
 }
