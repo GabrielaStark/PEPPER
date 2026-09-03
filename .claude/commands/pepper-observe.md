@@ -16,7 +16,7 @@ Use the observador-runtime subagent to capture the flow "$ARGUMENTS" into `evide
 1. **Por dónde entra y con qué usuario** (URL publicada por el ingress y credencial disponible).
 2. **Un flujo a la vez**: nada de abrir otras pantallas en paralelo mientras la ventana esté abierta.
 3. **Que provoque al menos un rechazo** — un campo obligatorio vacío, un dato imposible, un duplicado. El rechazo dice qué condición exige el sistema, y esa es una regla de negocio. Un flujo perfecto a la primera enseña la mitad.
-4. **Que avise al terminar** con una frase de qué hizo, incluidos los tropiezos y lo que no pudo completar: eso es `operator_note` y orienta todo el discovery.
+4. **Que avise al terminar** con una palabra. La nota de lo que pasó la redacta el agente a partir de la evidencia (rutas, escrituras, rechazos, bloqueos) y se la muestra; el humano solo corrige o añade el caso de negocio si quiere. El agente no le pregunta nada que la evidencia ya responda.
 5. **Que no apunte nada** mientras opera: la captura es completa.
 6. **Que una pantalla en blanco o un botón mudo no es un fallo suyo**: el ingress bloquea en el navegador todo lo que el legacy intente cargar de un servidor real (D25) y lo registra como dependencia externa. Que lo mencione en su nota.
 

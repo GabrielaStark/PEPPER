@@ -63,7 +63,8 @@ Verifica que cada colector produce líneas **ahora**, antes de la ventana (un `G
 1. Explica al humano qué va a hacer y qué debe evitar (no abrir otras funciones a la vez: dos peticiones concurrentes se vuelven difíciles de separar).
 2. Marca el inicio: `date` con zona horaria; guárdalo.
 3. El humano ejecuta el flujo. Espera. No hagas nada que genere tráfico.
-4. Marca el fin. Pide al humano que describa en una frase qué hizo, incluidos los intentos fallidos — eso va a `operator_note` y es oro para el discovery.
+4. Cuando el humano diga que terminó, **no cierres en ese instante**: mira el stdout del ingress y espera a que no entre ninguna petición nueva durante 10 s (una persona dice "terminé" con un clic todavía en vuelo). Entonces marca el fin.
+5. **La nota la redactas tú a partir de la evidencia, no la pides.** Rutas ejercitadas y cuántas veces, escrituras por tabla, tablas más leídas, rechazos (respuestas ≥ 400), bloqueos del navegador (`direction: "blocked"`), errores del servidor. Se la presentas en tres líneas y le preguntas **una sola cosa**: si quiere corregir o añadir algo (qué caso de negocio era, qué intentó y no salió). Si no contesta, la nota queda como la redactaste, marcada como derivada de la evidencia. **Nunca le preguntes algo que la evidencia ya responde** — si hubo rechazos, si algo se bloqueó, qué pantallas tocó: eso lo sabes tú.
 
 **Flujo ejercitado por el agente (D14, ampliación)**: solo si el humano te lo instruye explícitamente — con qué flujo, qué datos y qué caso — puedes ejecutar tú las peticiones HTTP **a través del ingress** (el proxy de PEPPER), nunca directo al app ni a la base. Cada petición tuya queda en `http.jsonl` con su `correlation_id`, igual que las de un humano, y en `operator_note` se declara que el operador fue el agente. Las reglas de la ventana no cambian: un flujo por sesión, sin tráfico extra.
 

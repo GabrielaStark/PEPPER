@@ -59,8 +59,8 @@ Es el único paso donde **tú operas el sistema** y el agente solo mira. Si no q
 | 2 | el agente | Verifica el aislamiento y comprueba que cada colector está emitiendo líneas **ahora**. Te dice por dónde entrar y con qué usuario. |
 | 3 | el agente | **Abre la ventana** y se queda quieto: no toca la aplicación ni genera tráfico. |
 | 4 | **tú** | **Ejecutas el flujo** en el navegador, como lo haría quien usa el sistema a diario. |
-| 5 | tú | Dices **"terminé"** y describes en una frase qué hiciste. |
-| 6 | el agente | Cierra la ventana, espera el margen, captura con `pepper collect` y te reporta qué quedó. |
+| 5 | tú | Dices **"terminé"**. Nada más. |
+| 6 | el agente | Espera a que el sistema quede quieto unos segundos, cierra la ventana, captura con `pepper collect`, y **te cuenta qué pasó** leyéndolo de la evidencia: qué pantallas tocaste, qué escribió, si algo fue rechazado o bloqueado. Tú corriges o añades el caso de negocio si quieres; si no, queda así. |
 
 **Tres cosas que cambian la calidad de lo que se descubre:**
 
@@ -69,11 +69,9 @@ Es el único paso donde **tú operas el sistema** y el agente solo mira. Si no q
 - **Lo que se atora también sirve.** Si no pudiste terminar, dilo: un flujo que se traba es evidencia igual de buena, y queda registrado.
 - **Si una pantalla sale en blanco o un botón no hace nada, no lo arregles: menciónalo.** Tu navegador está fuera de los contenedores, así que el ingress le impone una política que solo deja cargar desde `127.0.0.1`. Lo que el legacy intente traer de un servidor real (una calculadora en un `<iframe>`, un editor de documentos, un script) el navegador lo bloquea **antes de salir** y lo reporta: queda en la evidencia como una dependencia externa. Ese blanco es un hallazgo.
 
-**Qué decir al terminar.** Una frase basta, y va tal cual a la evidencia como `operator_note`:
+**Qué decir al terminar.** "Terminé". El agente te dirá qué vio; si quieres añadir el contexto de negocio (*"era un trabajador de primera vez; al guardar sin CURP me marcó error"*), suma — pero no es obligatorio. **No apuntes nada mientras operas**: cada petición, cada consulta a la base y cada línea del servidor ya se están guardando, y el agente no debe preguntarte nada que esa evidencia ya conteste.
 
-> *"Registré un trabajador de primera vez con su empresa, le saqué turno y lo atendí. Al guardar sin CURP me marcó error, lo corregí y ya pasó."*
-
-Con eso el agente sabe qué buscar en las 400 sentencias que capturó. **No apuntes nada mientras operas**: cada petición, cada consulta a la base y cada línea del servidor ya se están guardando.
+**¿No conoces los flujos del sistema?** No tienes que operarlo tú. Con el mapa de superficie (`pepper map`) el agente puede ejercitar cada entrada por el ingress con datos plausibles — es lo que un agente cree que es el flujo, no lo que hace un usuario, y así queda declarado en la evidencia — pero produce más que dar clics a ciegas. Solo tienes que autorizarlo.
 
 **¿Varios flujos?** Uno por sesión. Termina el que estás haciendo, deja que se capture, y vuelve a invocar `/pepper-observe` con el siguiente nombre. Cada uno queda en su propia carpeta (`flow-001`, `flow-002`, …) y se analiza por separado.
 
