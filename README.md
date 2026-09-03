@@ -180,7 +180,7 @@ pepper/
 │   └── documentacion/                 ← este manual + ARQUITECTURA, PERFILES, VISION, fases/
 ├── templates/NOTAS-LEGACY.md          ← lo que el humano sabe del legacy; init lo copia a legacy/NOTAS.md
 ├── examples/legacy-demo/              ← legacy de juguete: artefactos, evidencia, clave de respuestas
-├── tests/                             ← 120 tests del núcleo
+├── tests/                             ← 127 tests del núcleo
 ├── scripts/verificar.py               ← auto-verificación del framework (CI)
 ├── AGENTS.md · CLAUDE.md              ← la misma guía para Codex y para Claude Code
 ├── legacy/ · evidence/ · pepper-out/  ← en tu workspace: artefactos, capturas, intermedios (ignorados)
@@ -216,7 +216,7 @@ pepper/
 
 1. **Toda conclusión referencia evidencia íntegra.** IDs que resuelven a un evento o a una línea cruda; un manifest externo obligatorio amarra los bytes fuera del paquete. `pepper export` rechaza lo que no resuelve o fue alterado.
 2. **El legacy es solo lectura.** PEPPER descubre; no repara, no moderniza, no hace commit en el repo del legacy.
-3. **El entorno rehidratado no alcanza nada externo.** Todos los contenedores, incluido el ingress, viven sólo en redes internas; el host entra por un puerto publicado en loopback. Stub para cada host del artefacto, servidores foráneos re-apuntados y `pepper isolate` antes y después de levantar. La salida de red no es negociable.
+3. **El entorno rehidratado no alcanza nada externo.** Todos los contenedores del legacy viven sólo en redes internas; el único con una red de publicación es el ingress —el proxy de PEPPER, verificado por hash— y solo para que el host entre por un puerto en loopback (Docker no publica puertos desde una red `internal`). Stub para cada host del artefacto, servidores foráneos re-apuntados y `pepper isolate` antes y después de levantar. La salida de red no es negociable.
 4. **Lo determinístico lo hace el núcleo.** Misma evidencia → mismos bytes. La reducción se audita en `reduction.md`; el SQL nunca se deduplica; los errores y las escrituras nunca se descartan.
 5. **Lo observado no se mezcla con lo inferido.** `correlation_id` es lo que la fuente emitió; lo inferido va aparte con su base.
 6. **Cada fase termina en gate humano.** El plan de rehydrate se aprueba antes de ejecutarse; el flujo lo ejecuta el humano; el discovery se lee completo antes de publicarse.
@@ -244,7 +244,7 @@ pepper/
 | Pieza | Estado |
 |---|---|
 | Comandos, agentes y skills (`.claude/`) | escritos; ejercitados sobre un legacy real |
-| Núcleo — Correlate, Package, Export, detect, validate, isolate, proxy | **implementados y probados** (120 tests) |
+| Núcleo — Correlate, Package, Export, detect, validate, isolate, proxy | **implementados y probados** (127 tests) |
 | Núcleo — proxy HTTP con `correlation_id` (`pepper proxy`, el ingress) | **implementado y probado**; emite `http.jsonl` por stdout y redacta credenciales |
 | Núcleo — colector genérico de contenedores (`pepper collect`) | **implementado y probado**; las fuentes del perfil (archivos dentro de contenedores) las copia el agente |
 | Contratos (`schemas/`) | 8, definidos y validados |

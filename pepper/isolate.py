@@ -14,9 +14,11 @@ C-01): lo que no se pudo comprobar no cuenta como verde.
     NO VERIFICADO  algo no se pudo comprobar (compose sin resolver, sin
                    contenedores, red ilegible…): bloquea igual que una fuga
 
-Invariante: **ningún contenedor, incluido el ingress, puede alcanzar nada fuera
-de su red interna.** El host entra por un puerto publicado en loopback; eso no
-requiere una red externa. Y no basta con llamarse `ingress`: debe ser el proxy de
+Invariante: **ningún contenedor del legacy puede alcanzar nada fuera de su red
+interna.** La única excepción es la red de publicación del ingress —Docker no
+publica puertos de un contenedor que solo está en redes `internal`; comprobado:
+el puerto no responde desde el host— y esa red la usa solo él, de modo que el
+único código con salida es el proxy verificado. No basta con llamarse `ingress`: debe ser el proxy de
 PEPPER, sin entrypoint, con argv/upstream verificables y un único montaje `:ro`
 cuyo hash coincide con `pepper/proxy.py`.
 """
@@ -340,6 +342,36 @@ def _check_ingress(name: str, service: Dict[str, Any], compose_dir: Optional[Pat
     return upstream
 
 
+def _check_publication_network(name: str, service: Dict[str, Any], services: Dict[str, Any],
+                               compose: Dict[str, Any], internal: Dict[str, bool], report: Report) -> None:
+    """La única red con salida es la de publicación del ingress, y solo él la usa.
+
+    Docker no publica puertos de un contenedor que solo está en redes `internal`
+    (el puerto no responde desde el host), así que el ingress necesita una red más.
+    Su egress queda acotado por la identidad verificada del proxy (_check_ingress).
+    """
+    external = [net for net in _service_networks(service) if internal.get(net) is False]
+    if not external:
+        report.add("warn", f"`{name}` (ingress) no tiene red de publicación",
+                   "Docker no publica puertos desde una red internal: el host no podrá entrar; agrega una red `edge` solo para el ingress")
+        return
+    if len(external) > 1:
+        report.add("error", f"`{name}` (ingress) está en {len(external)} redes con salida: {', '.join(sorted(external))}",
+                   "una sola red de publicación; cada red extra es superficie de salida sin necesidad")
+        return
+    net = external[0]
+    if ((compose.get("networks") or {}).get(net) or {}).get("external"):
+        report.add("unknown", f"la red de publicación `{net}` es preexistente (external): no puedo comprobar quién más la usa",
+                   "declárala en el compose; con --live se verifica quién está conectado según Docker")
+    others = sorted(other for other, spec in services.items()
+                    if other != name and net in _service_networks(spec or {}))
+    if others:
+        report.add("error", f"la red de publicación `{net}` también la usan: {', '.join(others)}",
+                   "solo el ingress verificado puede tener salida; cualquier otro servicio ahí alcanza producción")
+    else:
+        report.add("ok", f"`{name}` (ingress) publica por la red `{net}`, que ningún otro servicio usa")
+
+
 def check_static(compose: Dict[str, Any], external_hosts: Optional[List[str]] = None,
                  ingress: str = DEFAULT_INGRESS, resolved: bool = True,
                  compose_dir: Optional[Path] = None) -> Report:
@@ -383,11 +415,13 @@ def check_static(compose: Dict[str, Any], external_hosts: Optional[List[str]] = 
             if internal.get(net) is None:
                 report.add("error", f"`{name}` se conecta a la red `{net}`, que el compose no declara",
                            "una red no declarada usa el bridge por defecto: con salida")
-            elif not internal[net]:
+            elif not internal[net] and not is_ingress:
                 report.add("error", f"`{name}` se conecta a la red `{net}`, que NO es internal",
-                           "también el ingress debe carecer de egress; publicar un puerto no requiere una red externa")
+                           "solo el ingress verificado toca una red con salida, y solo para publicar su puerto")
             for alias in (spec.get("aliases") or []):
                 aliases[str(alias).lower()] = name
+        if is_ingress:
+            _check_publication_network(name, service, services, compose, internal, report)
 
         for host, ip in _extra_hosts(service).items():
             if not _is_internal_ip(ip, subnets):
@@ -445,6 +479,43 @@ def _inspect_json(name: str) -> Optional[Dict[str, Any]]:
         return data[0] if isinstance(data, list) and data else None
     except ValueError:
         return None
+
+
+def _network_members(network: str) -> Optional[List[str]]:
+    """Nombres de los contenedores conectados a una red, según Docker (None si no se deja inspeccionar)."""
+    out = subprocess.run(["docker", "network", "inspect", network, "--format", "{{json .Containers}}"],
+                         capture_output=True, text=True)
+    if out.returncode != 0:
+        return None
+    try:
+        members = json.loads(out.stdout.strip() or "{}") or {}
+    except ValueError:
+        return None
+    return sorted(str((entry or {}).get("Name") or key) for key, entry in members.items())
+
+
+def _check_live_publication_network(service: str, container: str, external: List[str], report: Report) -> None:
+    """Lo mismo que _check_publication_network, pero preguntándole a Docker quién está conectado."""
+    if not external:
+        report.add("warn", f"`{service}` (ingress) no tiene red de publicación en ejecución",
+                   "Docker no publica puertos desde una red internal: el host no podrá entrar")
+        return
+    if len(external) > 1:
+        report.add("error", f"`{service}` (ingress) está en {len(external)} redes con salida: {', '.join(external)}",
+                   "una sola red de publicación")
+        return
+    network = external[0]
+    members = _network_members(network)
+    if members is None:
+        report.add("error", f"`{service}`: no pude ver quién está conectado a la red de publicación `{network}`",
+                   "una red que no se deja inspeccionar no cuenta como exclusiva")
+        return
+    others = [member for member in members if member != container]
+    if others:
+        report.add("error", f"la red de publicación `{network}` tiene otros contenedores: {', '.join(others)}",
+                   "solo el ingress verificado puede tener salida")
+    else:
+        report.add("ok", f"`{service}` (ingress) publica por `{network}`, que ningún otro contenedor usa (según Docker)")
 
 
 def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
@@ -518,6 +589,7 @@ def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
             report.add("error", f"`{service}`: no pude leer sus redes",
                        "sin redes legibles no hay nada verificado")
             continue
+        external_networks: List[str] = []
         for network in networks:
             internal = is_internal(network)
             if internal is None:
@@ -525,9 +597,13 @@ def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
                            "una red que no se deja inspeccionar no cuenta como interna")
             elif internal:
                 report.add("ok", f"`{service}` está en la red interna `{network}`")
-            else:
+            elif service != ingress:
                 report.add("error", f"`{service}` está conectado a `{network}`, que NO es interna en Docker",
-                           "todo contenedor, incluido el ingress, debe carecer de egress")
+                           "solo el ingress verificado toca una red con salida")
+            else:
+                external_networks.append(network)
+        if service == ingress:
+            _check_live_publication_network(service, name, external_networks, report)
 
         if service == ingress:
             config = info.get("Config") or {}

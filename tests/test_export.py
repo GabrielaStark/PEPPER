@@ -29,7 +29,8 @@ class ExportTest(unittest.TestCase):
         base = Path(self.tmp.name)
         run(FIXTURE / "raw-evidence", base / "correlated")
         self.package = base / "package"
-        summary = assemble(base / "correlated", self.package, FIXTURE / "artifacts")
+        # el fixture trae credenciales de juguete a propósito: la excepción es explícita (D24)
+        summary = assemble(base / "correlated", self.package, FIXTURE / "artifacts", allow_sensitive=True)
         self.manifest = Path(summary["external_manifest"])
         self.output = self.package / "output" / "runtime-discovery.json"
         shutil.copy2(GOLDEN, self.output)

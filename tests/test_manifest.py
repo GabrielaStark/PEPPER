@@ -73,7 +73,8 @@ class ExportIntegrityTest(unittest.TestCase):
         (legacy / "respaldo.dump").write_bytes(b"PGDMP falso")
         shutil.copytree(FIXTURE / "artifacts" / "configuration", legacy / "configuration")
         self.package = base / "package"
-        summary = assemble(correlated, self.package, legacy)
+        # binarios falsos + credenciales de juguete: excepciones explícitas, como en un legacy real (D24)
+        summary = assemble(correlated, self.package, legacy, allow_sensitive=True, acknowledge_unscanned=True)
         self.external_manifest = Path(summary["external_manifest"])
         shutil.copy2(FIXTURE / "expected" / "runtime-discovery.json",
                      self.package / "output" / "runtime-discovery.json")
@@ -121,7 +122,7 @@ class ExportIntegrityTest(unittest.TestCase):
         from pepper.package import assemble as _assemble
         corr = Path(self._tmp.name) / "corr2"
         _run(FIXTURE / "raw-evidence", corr)
-        summary = _assemble(corr, pkg2, legacy2)
+        summary = _assemble(corr, pkg2, legacy2, allow_sensitive=True)
         self.assertIn("NOTAS.md", summary["redacted_notes"])
         content = (pkg2 / "legacy" / "NOTAS.md").read_text(encoding="utf-8")
         self.assertNotIn("SuperSecreta123", content)

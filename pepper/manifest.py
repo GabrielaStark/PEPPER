@@ -6,7 +6,8 @@ cualquiera —el agente incluido— puede fabricar un evento en el paquete y Exp
 no tiene contra qué compararlo (hallazgo C-02 de la auditoría 2026-09-02).
 
 - Correlate lo escribe al terminar (`evidence-manifest.json`): SHA-256 de cada
-  archivo de su salida, más versión de PEPPER y timestamp.
+  archivo de su salida, más versión de PEPPER. Sin timestamp: misma evidencia →
+  mismos bytes (D8), y dos corridas se comparan con un diff.
 - Package lo copia junto con la evidencia.
 - Export lo exige y verifica: todo archivo listado existe con el hash exacto, y
   no hay archivos EXTRA en el ámbito de la evidencia. El agente solo escribe en
@@ -22,7 +23,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -52,7 +52,6 @@ def build(root: Path, exclude: tuple = (MANIFEST_NAME,)) -> Dict:
     return {
         "manifest_version": "0.1.0",
         "generated_by": f"pepper {__version__}",
-        "created": datetime.now().astimezone().isoformat(timespec="seconds"),
         "files": files,
     }
 

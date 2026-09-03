@@ -126,6 +126,18 @@ class ProxyTest(unittest.TestCase):
         self.assertEqual(response["status"], 200)
         self.assertIn("duration_ms", response)
 
+    def test_cuerpo_ilegible_responde_400_y_no_reenvia(self):
+        import socket
+        with socket.create_connection(self.proxy.server_address, timeout=5) as sock:
+            sock.sendall(b"POST /login HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+                         b"zz\r\nhola\r\n0\r\n\r\n")
+            raw = sock.recv(4096)
+        self.assertTrue(raw.startswith(b"HTTP/1.1 400"), raw[:40])
+        request, response = self._pair()
+        self.assertEqual(response["status"], 400)
+        self.assertIn("ilegible", response["note"])
+        self.assertEqual(request["correlation_id"], response["correlation_id"])
+
     def test_preserva_host_del_cliente(self):
         _, _, payload = self._request("GET", "/echo-headers", headers={"Host": "legado.local:18080"})
         self.assertEqual(json.loads(payload)["host"], "legado.local:18080")

@@ -31,12 +31,14 @@ AISLADO = {
                     "command": ["python3", "-u", "/pepper-proxy.py",
                                 "--listen", "0.0.0.0:8080", "--upstream", "10.4.2.10:8080"],
                     "depends_on": {"app": {"condition": "service_started"}},
-                    "networks": {"legacy": {}},
+                    "networks": {"legacy": {}, "edge": {}},
                     "ports": [{"published": "18080", "target": 8080, "host_ip": "127.0.0.1"}],
                     "volumes": ["./proxy/proxy.py:/pepper-proxy.py:ro"]},
     },
     "networks": {
         "legacy": {"internal": True, "ipam": {"config": [{"subnet": "10.4.2.0/24"}]}},
+        # Docker no publica puertos desde una red internal: el ingress, y solo él, sale por aquí
+        "edge": {"driver": "bridge"},
     },
 }
 
@@ -69,9 +71,9 @@ class AisladoTest(Base):
         self.assertTrue(report.isolated)
         self.assertIn("AISLADO (verificado)", render(report, "prueba"))
 
-    def test_el_ingress_tampoco_tiene_egress(self):
+    def test_el_ingress_publica_por_una_red_exclusiva(self):
         report = self.check(AISLADO)
-        self.assertFalse(any("salida" in f.check for f in report.findings))
+        self.assertTrue(any("ningún otro servicio usa" in f.check for f in report.findings if f.level == "ok"))
         self.assertTrue(any("upstream" in f.check for f in report.findings if f.level == "ok"))
 
     def test_el_hash_del_proxy_se_verifica(self):
@@ -173,13 +175,29 @@ class IngressImpostorTest(Base):
         self.assertEqual(report.verdict, "FAILED")
         self.assertTrue(any("no es una dependencia interna" in f.check for f in report.errors))
 
-    def test_ingress_en_red_externa_no_pasa(self):
-        def mutate(c):
-            c["networks"]["edge"] = {"driver": "bridge"}
-            c["services"]["ingress"]["networks"]["edge"] = {}
-        report = self.leak(mutate)
+    def test_otro_servicio_en_la_red_de_publicacion_es_fuga(self):
+        report = self.leak(lambda c: c["services"]["app"]["networks"].__setitem__("edge", {}))
         self.assertEqual(report.verdict, "FAILED")
         self.assertTrue(any("NO es internal" in f.check for f in report.errors))
+        self.assertTrue(any("también la usan: app" in f.check for f in report.errors))
+
+    def test_ingress_con_dos_redes_de_salida_es_fuga(self):
+        def mutate(c):
+            c["networks"]["edge2"] = {"driver": "bridge"}
+            c["services"]["ingress"]["networks"]["edge2"] = {}
+        report = self.leak(mutate)
+        self.assertEqual(report.verdict, "FAILED")
+        self.assertTrue(any("2 redes con salida" in f.check for f in report.errors))
+
+    def test_ingress_sin_red_de_publicacion_es_aviso_no_fuga(self):
+        # nada sale, pero Docker tampoco publica el puerto: el host no podría entrar
+        report = self.leak(lambda c: c["services"]["ingress"]["networks"].pop("edge"))
+        self.assertEqual(report.verdict, "VERIFIED", [f.check for f in report.findings if f.level != "ok"])
+        self.assertTrue(any("no tiene red de publicación" in f.check for f in report.warnings))
+
+    def test_red_de_publicacion_preexistente_no_es_verde(self):
+        report = self.leak(lambda c: c["networks"].__setitem__("edge", {"external": True}))
+        self.assertEqual(report.verdict, "UNKNOWN")
 
 
 class CapacidadesTest(Base):
