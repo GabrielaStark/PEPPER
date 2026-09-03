@@ -42,6 +42,7 @@ Cuando la ruta es la raíz de un repo con PEPPER instalado encima (`.`), la herr
 ## 1. Inventario                 qué hay, clasificado
 ## 2. Stack identificado         tabla: capa · tecnología · versión · evidencia (archivo:línea)
 ## 3. Dependencias detectadas    datasources, servicios externos, colas, certificados, variables
+## 3.5 Mapa de superficie        `docs/pepper/system-map.json` (si el perfil trae extractores): rutas, jobs, dependencias, datos, roles — el universo completo
 ## 4. Faltantes                  qué falta · qué artefacto lo resolvería · ¿bloquea?
 ## 5. Perfil                     aplicable (id, estado, puntaje) o borrador creado
 ## 6. Escalón y veredicto        1/2/3 · READY-candidato / PARTIAL / BLOCKED · por qué
@@ -71,9 +72,21 @@ Lenguaje, frameworks, servidor de aplicaciones, motor de base de datos, sistema 
 
 Cuando una versión no está en ningún lado, escribe "desconocida" y qué artefacto la resolvería. Nunca "probablemente la última" ni "lo común en esa época".
 
+### Fase 3.5 — Mapa exhaustivo de la superficie (obligatoria si el perfil trae extractores)
+
+Lo mecánico no se enumera a mano: lo hace el núcleo, completo e igual cada vez (Principio 3). Si el perfil declara `extractors.json`, corre:
+
+```bash
+python3 -m pepper map <artefacto> --profile <id> --dump <respaldo> --out docs/pepper/system-map.json
+```
+
+Produce el **universo completo** del sistema —cada ruta HTTP, cada endpoint REST, cada job, cada dependencia externa, cada servidor foráneo de la base, cada rol— validado contra `schemas/system-map.schema.json`. Es la enumeración exhaustiva que Observe **no** puede dar (Observe solo ve lo que se ejercita): sin este mapa, "todos los flujos y todas las dependencias" queda a medias sin que nadie lo note. **Si el mapa sale `INCOMPLETO`** (`complete: false`), léelo: falta una herramienta (javap/pg_restore) o Docker; resuélvelo o declara explícitamente qué quedó sin enumerar. Un mapa parcial se reporta parcial, nunca como completo.
+
+El mapa es la base de la **cobertura**: cada sesión de Observe confirma unas entradas del mapa; Discover reporta observadas vs totales. Así "a medias" se vuelve visible y medible, no una omisión silenciosa.
+
 ### Fase 4 — Dependencias y faltantes
 
-Busca datasources (JNDI, URLs JDBC), servicios externos (URLs, WSDL, colas, SMTP), certificados y keystores, variables de ambiente, puertos, archivos referenciados que no están. Contrasta contra los `required_inputs` del perfil. Cada faltante con qué artefacto lo resolvería y si bloquea el arranque o solo degrada.
+Parte del `system-map.json` (Fase 3.5) para las dependencias: sus `external_dependencies` y los `data_stores` de tipo `foreign_server` son las interconexiones a otros sistemas. Complétalo con datasources (JNDI, URLs JDBC), certificados y keystores, variables de ambiente, puertos, archivos referenciados que no están. Contrasta contra los `required_inputs` del perfil. Cada faltante con qué artefacto lo resolvería y si bloquea el arranque o solo degrada.
 
 ### Fase 5 — Borrador de perfil (solo si no hay perfil)
 

@@ -63,7 +63,7 @@ def parse_frontmatter(texto):
     return datos
 sys.path.insert(0, str(RAIZ))
 ERRORES = []
-IGNORAR = {".git", "pepper-out", "__pycache__", "node_modules"}
+IGNORAR = {".git", "pepper-out", "__pycache__", "node_modules", "analysis", "legacy", "evidence"}
 # Tokens con forma de nombre que no son comandos/agentes/skills.
 TOLERADOS = {"pepper-out", "pepper-discovery", "pepper-proxy"}
 

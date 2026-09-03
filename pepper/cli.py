@@ -216,6 +216,66 @@ def _cmd_collect(args: argparse.Namespace) -> int:
     return 0 if captured else 1
 
 
+def _cmd_map(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from pepper.inspect import build_map, coverage
+    from pepper.profiles import load_profile
+
+    extractors: List[Dict] = []
+    profile_id = None
+    if args.profile:
+        profile = load_profile(args.profile)
+        profile_id = profile.id
+        spec_path = profile.dir / "extractors.json"
+        if not spec_path.is_file():
+            print(f"pepper map: el perfil {profile.id} no declara extractors.json", file=sys.stderr)
+            return 2
+        extractors = _json.loads(spec_path.read_text(encoding="utf-8")).get("extractors", [])
+    else:
+        print("pepper map: sin --profile no hay extractores; el mapa saldría vacío", file=sys.stderr)
+        return 2
+
+    try:
+        system_map = build_map(args.artifact, extractors, profile_id, dump=args.dump)
+    except FileNotFoundError as error:
+        print(f"pepper map: {error}", file=sys.stderr)
+        return 2
+
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(_json.dumps(system_map, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    ep = system_map["entrypoints"]
+    routes = [e for e in ep if e["kind"] in ("http_route", "rest_endpoint")]
+    print(f"map · {args.artifact.name} · perfil {profile_id}")
+    print(f"  entradas HTTP: {len(routes)} ({sum(1 for e in ep if e['kind']=='rest_endpoint')} REST) · "
+          f"jobs: {len(system_map['jobs'])} · dependencias externas: {len(system_map['external_dependencies'])} · "
+          f"objetos de datos: {len(system_map['data_stores'])}")
+    if system_map["complete"]:
+        print("  mapa COMPLETO")
+    else:
+        print(f"  mapa INCOMPLETO ({len(system_map['coverage_gaps'])} extractor(es) no corrieron):")
+        for gap in system_map["coverage_gaps"]:
+            print(f"    ? {gap}")
+
+    if args.evidence:
+        observed = []
+        http = args.evidence / "http.jsonl"
+        if http.is_file():
+            for line in http.read_text(encoding="utf-8").splitlines():
+                try:
+                    observed.append(_json.loads(line).get("path", ""))
+                except ValueError:
+                    pass
+        cov = coverage(system_map, observed)
+        print(f"  cobertura: {cov['routes_observed']}/{cov['routes_total']} rutas observadas; "
+              f"0/{cov['jobs_total']} jobs; 0/{cov['dependencies_total']} dependencias confirmadas")
+        if cov["not_observed"]:
+            print(f"    sin observar aún: {len(cov['not_observed'])} rutas (ver {args.out})")
+    print(f"  salida: {args.out}")
+    return 0
+
+
 def _cmd_demo(args: argparse.Namespace) -> int:
     from pepper.correlate import run
     from pepper.package import assemble
@@ -247,6 +307,7 @@ COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
     "package": _cmd_package,
     "export": _cmd_export,
     "detect": _cmd_detect,
+    "map": _cmd_map,
     "validate": _cmd_validate,
     "isolate": _cmd_isolate,
     "proxy": _cmd_proxy,
@@ -285,9 +346,16 @@ def build_parser() -> argparse.ArgumentParser:
     detect.add_argument("artifacts", type=Path, help="directorio con los artefactos del legacy")
     detect.add_argument("--json", action="store_true", help="salida en JSON")
 
+    map_cmd = commands.add_parser("map", help="enumera la superficie completa del artefacto: rutas, jobs, dependencias, datos, roles")
+    map_cmd.add_argument("artifact", type=Path, help="el artefacto desplegable (WAR/JAR/zip o directorio)")
+    map_cmd.add_argument("--profile", required=True, help="perfil cuyos extractores aplicar (declara cómo minar este stack)")
+    map_cmd.add_argument("--dump", type=Path, help="respaldo de la base (para inventariar datos y servidores foráneos)")
+    map_cmd.add_argument("--evidence", type=Path, help="directorio de evidencia (evidence/<sid>) para medir cobertura observada")
+    map_cmd.add_argument("--out", type=Path, default=Path("docs/pepper/system-map.json"), help="dónde escribir el mapa (default docs/pepper/system-map.json)")
+
     validate = commands.add_parser("validate", help="valida archivos contra los contratos de schemas/")
     validate.add_argument("files", type=Path, nargs="+", help="profile.json, parsers/*.json, session.json, environment.json, flow.json, events.jsonl, runtime-discovery.json")
-    validate.add_argument("--schema", choices=("event", "environment", "flow", "parser", "profile", "runtime-discovery", "session"), help="fuerza el schema (si el nombre del archivo no lo delata)")
+    validate.add_argument("--schema", choices=("event", "environment", "flow", "parser", "profile", "runtime-discovery", "session", "system-map"), help="fuerza el schema (si el nombre del archivo no lo delata)")
 
     isolate = commands.add_parser("isolate", help="verifica que un entorno rehidratado no pueda alcanzar nada externo")
     isolate.add_argument("compose", type=Path, help="docker-compose.yml del entorno rehidratado")
