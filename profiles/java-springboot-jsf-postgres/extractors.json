@@ -1,0 +1,42 @@
+{
+  "extractor_version": "0.1.0",
+  "description": "Cómo `pepper map` enumera la superficie de un WAR de Spring Boot + JSF + PostgreSQL. Cada bloque declara un MECANISMO del núcleo y sus patrones (datos, no código). El núcleo no sabe de Java; este perfil sí.",
+  "extractors": [
+    {
+      "mechanism": "jvm_route_annotations",
+      "description": "Rutas @RequestMapping/@Get/@PostMapping y jobs @Scheduled del bytecode, vía javap.",
+      "class_root": "WEB-INF/classes",
+      "package_prefixes": [
+        "mx/com/edomex/siat/controller/",
+        "mx/com/edomex/siat/rest/",
+        "mx/com/edomex/siat/cron/"
+      ]
+    },
+    {
+      "mechanism": "config_hosts",
+      "description": "Hosts/URLs en los perfiles application*.yml embebidos.",
+      "config_patterns": ["WEB-INF/classes/application.*\\.(yml|yaml|properties)$", "application.*\\.(yml|yaml|properties)$"],
+      "host_key_pattern": "(?i)(url|host|smtp|uri|endpoint|bus|sideco|renapo|calculadora|editor)"
+    },
+    {
+      "mechanism": "archive_url_scan",
+      "description": "URLs externas incrustadas en config, vistas y bytecode.",
+      "member_patterns": ["\\.(yml|yaml|properties|xml|xhtml|class)$"],
+      "exclude_host_patterns": [
+        "w3\\.org", "xmlns", "springframework", "apache\\.org", "jboss", "slf4j",
+        "jasperreports\\.sourceforge\\.net", "primefaces", "jquery", "localhost", "example\\.com",
+        "cdn\\.", "cdnjs\\.", "jsdelivr", "cloudflare", "googleapis", "gstatic", "fontawesome", "bootstrapcdn"
+      ],
+      "kind_hints": {
+        "bus": ["bus\\.", "desabus\\."],
+        "rest": ["sideco", "ademservicios", "\\d+\\.\\d+\\.\\d+\\.\\d+"],
+        "smtp": ["smtp"],
+        "web": ["strabajo", "edomex\\.gob\\.mx"]
+      }
+    },
+    {
+      "mechanism": "db_dump_toc",
+      "description": "Inventario del respaldo con pg_restore -l: tablas, funciones, triggers, vistas y servidores foráneos (dblink/postgres_fdw)."
+    }
+  ]
+}

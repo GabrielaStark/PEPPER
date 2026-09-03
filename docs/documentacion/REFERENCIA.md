@@ -188,6 +188,7 @@ Mapeo de confianza (skill `evidencia-runtime` §3): `confirmada` y `fuertemente_
 
 ```bash
 python3 -m pepper detect <artefactos>/                       # qué perfil aplica, con qué señales
+python3 -m pepper map <artefacto> --profile <id> [--dump <r>] [--evidence <e>] --out <f>  # superficie completa + cobertura observada
 python3 -m pepper validate <archivo>... [--schema NOMBRE]     # contratos: profile, parser, session, environment, flow, event, runtime-discovery
 python3 -m pepper isolate <compose> [--hosts a,b] [--live]    # ¿el entorno rehidratado puede alcanzar algo externo?
 python3 -m pepper proxy --upstream <host:puerto> [--listen h:p] [--out f]  # el ingress: inyecta correlation_id, emite http.jsonl

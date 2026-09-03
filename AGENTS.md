@@ -24,6 +24,7 @@ Lo mecánico no se hace a mano; lo hace el núcleo, igual cada vez:
 
 ```bash
 python3 -m pepper detect <artefactos>/            # qué perfil aplica
+python3 -m pepper map <artefacto> --profile <id> --dump <respaldo>  # enumera TODA la superficie: rutas, jobs, dependencias, datos, roles
 python3 -m pepper validate <archivo>...           # contratos de schemas/
 python3 -m pepper isolate <compose> --live         # el entorno no alcanza nada externo
 python3 -m pepper proxy --upstream <app>          # el ingress: inyecta correlation_id, emite http.jsonl

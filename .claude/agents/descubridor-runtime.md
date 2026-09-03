@@ -38,9 +38,13 @@ Lee `README.md`, `session.json`, `evidence/flow.md` y `events.jsonl`. Reporta al
 
 Sigue las fases del skill `discovery-runtime`: secuencia observada → componentes, datos y dependencias → reglas candidatas → comparación runtime ↔ código (si hay fuente) → errores y desconocidos. Entre fases, cuando encuentres algo que el humano deba saber ya (una contradicción fuerte, un hallazgo de seguridad, una rama que el flujo no ejercitó), dilo en ese momento, no al final.
 
+### Fase 6.5 — Cobertura contra el mapa (si existe `docs/pepper/system-map.json`)
+
+El mapa de Inspect es el **universo** del sistema; tu sesión observó una parte. Reconcilia: contrasta las rutas del `flow.json` contra los `entrypoints` del mapa y reporta **observado vs total** —rutas, endpoints REST, jobs, dependencias externas—. Lo que el mapa lista y esta sesión no tocó **no desaparece**: entra como desconocido con su ruta ("el endpoint X existe y no se ha observado"). Nunca presentes lo observado como si fuera el sistema completo: si observaste 15 de 45 rutas, dilo. Esa honestidad de cobertura es exactamente lo que distingue un levantamiento serio de "información a medias".
+
 ### Fase 7 — Escritura
 
-Escribe ambos archivos en `output/` desde el primer borrador. Muestra al humano el `.md` **sección por sección**: las reglas candidatas una a una con su evidencia, después las contradicciones, después los desconocidos. Itera con su feedback — sobre la evidencia, nunca ajustando la conclusión para que cuadre.
+Escribe ambos archivos en `output/` desde el primer borrador. Muestra al humano el `.md` **sección por sección**: las reglas candidatas una a una con su evidencia, después las contradicciones, después los desconocidos (incluida la cobertura pendiente del mapa). Itera con su feedback — sobre la evidencia, nunca ajustando la conclusión para que cuadre.
 
 ### Fase 8 — Auto-validación y cierre
 

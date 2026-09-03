@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pepper/system-map.schema.json",
+  "title": "PepperSystemMap",
+  "description": "Inventario EXHAUSTIVO de la superficie de un sistema legacy, extraído del artefacto de forma determinística (no de la observación). Enumera todo lo que el sistema puede hacer: cada entrada HTTP, cada job, cada dependencia externa, cada almacén de datos, cada perfil. La observación en vivo confirma flujos concretos y se mide como COBERTURA contra este mapa. Todo elemento cita evidencia (archivo!miembro, archivo:línea o comando determinístico).",
+  "type": "object",
+  "required": ["schema_version", "profile_id", "complete", "entrypoints", "jobs", "external_dependencies", "data_stores", "roles"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "string"},
+    "profile_id": {"type": ["string", "null"], "description": "Perfil aplicado, o null si el mapa se hizo sin perfil."},
+    "artifact": {
+      "type": "object",
+      "description": "El artefacto inspeccionado.",
+      "additionalProperties": true,
+      "properties": {"name": {"type": "string"}, "sha256": {"type": "string"}}
+    },
+    "generated_by": {"type": "string"},
+    "created": {"type": "string"},
+    "complete": {
+      "type": "boolean",
+      "description": "false si algún extractor no pudo correr (p. ej. faltó javap o pg_restore): el mapa está INCOMPLETO y coverage_gaps dice qué falta. Fail-honest: un mapa parcial se declara parcial."
+    },
+    "coverage_gaps": {
+      "type": "array",
+      "description": "Qué no se pudo extraer y por qué. Vacío cuando complete=true.",
+      "items": {"type": "string"}
+    },
+    "entrypoints": {
+      "type": "array",
+      "description": "Toda entrada HTTP: rutas MVC, endpoints REST, pantallas, rutas públicas.",
+      "items": {
+        "type": "object",
+        "required": ["kind", "path", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {"type": "string", "enum": ["http_route", "rest_endpoint", "screen", "public_route"]},
+          "method": {"type": "string", "description": "GET, POST, … o vacío si no aplica."},
+          "path": {"type": "string"},
+          "handler": {"type": "string", "description": "Clase/método que atiende, si se pudo determinar."},
+          "auth": {"type": "string", "enum": ["public", "authenticated", "unknown"], "default": "unknown"},
+          "evidence": {"type": "string"}
+        }
+      }
+    },
+    "jobs": {
+      "type": "array",
+      "description": "Procesos automáticos (cron/scheduled).",
+      "items": {
+        "type": "object",
+        "required": ["name", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "schedule": {"type": "string", "description": "Expresión cron o intervalo."},
+          "detail": {"type": "string"},
+          "evidence": {"type": "string"}
+        }
+      }
+    },
+    "external_dependencies": {
+      "type": "array",
+      "description": "Todo sistema fuera del legacy que el artefacto invoca: REST, bases foráneas, buses, SMTP, editores, archivos.",
+      "items": {
+        "type": "object",
+        "required": ["name", "kind", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "kind": {"type": "string", "enum": ["rest", "db", "foreign_db", "smtp", "bus", "web", "file", "other"]},
+          "target": {"type": "string", "description": "Host/URL o identificador."},
+          "endpoints": {"type": "array", "items": {"type": "string"}},
+          "detail": {"type": "string"},
+          "evidence": {"type": "string"}
+        }
+      }
+    },
+    "data_stores": {
+      "type": "array",
+      "description": "Objetos de datos del respaldo: tablas, vistas, funciones, triggers, secuencias y SERVIDORES FORÁNEOS (interconexiones a otras bases).",
+      "items": {
+        "type": "object",
+        "required": ["kind", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {"type": "string", "enum": ["table", "view", "function", "trigger", "sequence", "foreign_server", "extension", "summary"]},
+          "name": {"type": "string"},
+          "count": {"type": "integer"},
+          "detail": {"type": "string"},
+          "evidence": {"type": "string"}
+        }
+      }
+    },
+    "roles": {
+      "type": "array",
+      "description": "Perfiles/roles del sistema.",
+      "items": {
+        "type": "object",
+        "required": ["name", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "active": {"type": "boolean"},
+          "detail": {"type": "string"},
+          "evidence": {"type": "string"}
+        }
+      }
+    },
+    "notes": {"type": "array", "items": {"type": "string"}}
+  }
+}
