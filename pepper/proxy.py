@@ -52,6 +52,10 @@ _MAX_TEXT_CHARS = 2048       # tope para cuerpos JSON que no parsean
 CORRELATION_HEADER = "X-Pepper-Correlation-Id"
 
 
+class _BadRequest(ValueError):
+    """La petición no se puede leer (chunk o Content-Length malformados): 400 y no se reenvía."""
+
+
 def _now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="milliseconds")
 
@@ -120,17 +124,22 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
         pass
 
     def _read_request_body(self) -> bytes:
-        if (self.headers.get("Transfer-Encoding") or "").lower() == "chunked":
-            data = bytearray()
-            while True:
-                size_line = self.rfile.readline()
-                size = int(size_line.split(b";")[0].strip() or b"0", 16)
-                if size == 0:
+        try:
+            if (self.headers.get("Transfer-Encoding") or "").lower() == "chunked":
+                data = bytearray()
+                while True:
+                    size_line = self.rfile.readline()
+                    size = int(size_line.split(b";")[0].strip() or b"0", 16)
+                    if size == 0:
+                        self.rfile.readline()
+                        return bytes(data)
+                    data += self.rfile.read(size)
                     self.rfile.readline()
-                    return bytes(data)
-                data += self.rfile.read(size)
-                self.rfile.readline()
-        length = int(self.headers.get("Content-Length") or 0)
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError as error:
+            raise _BadRequest(f"cuerpo ilegible: {error}") from None
+        if length < 0:
+            raise _BadRequest("Content-Length negativo")
         return self.rfile.read(length) if length else b""
 
     def _forward(self, correlation_id: str, body: bytes) -> Tuple[int, str, List[Tuple[str, str]], bytes]:
@@ -206,29 +215,42 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
             entry["note"] = note
         self.server.recorder.record(entry)  # type: ignore[attr-defined]
 
+    def _fail(self, correlation_id: str, status: int, duration_ms: int, error: str,
+              detail: str, note: str) -> None:
+        """Respuesta generada por el proxy (400/502), registrada ANTES de escribirla al
+        cliente: si se registrara después, el cliente puede terminar y Observe cerrar
+        la ventana antes de que exista la línea de respuesta."""
+        message = json.dumps({"error": error, "detail": detail}).encode()
+        self._record_response(correlation_id, status, duration_ms, "application/json", message, note=note)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(message)))
+            self.end_headers()
+            self.wfile.write(message)
+        except OSError:
+            pass
+
     def _handle(self) -> None:
         correlation_id = f"req-{uuid.uuid4().hex[:12]}"
-        body = self._read_request_body()
+        try:
+            body = self._read_request_body()
+        except _BadRequest as error:
+            # Sin cuerpo confiable no hay nada que reenviar; la conexión quedó fuera de
+            # sincronía con el cliente, así que se cierra en vez de reutilizarse.
+            self._record_request(correlation_id, b"")
+            self._fail(correlation_id, 400, 0, "pepper-proxy: petición ilegible", str(error),
+                       note=f"petición ilegible: {error}")
+            self.close_connection = True
+            return
         self._record_request(correlation_id, body)
         started = time.monotonic()
         try:
             status, reason, headers, payload = self._forward(correlation_id, body)
         except (OSError, HTTPException) as error:
             duration_ms = int((time.monotonic() - started) * 1000)
-            message = json.dumps({"error": "pepper-proxy: el app no respondió", "detail": str(error)}).encode()
-            # Persiste antes de entregar al cliente: si se registra después del
-            # write, el cliente puede terminar y Observe cerrar la ventana antes
-            # de que exista la línea de respuesta.
-            self._record_response(correlation_id, 502, duration_ms, "application/json", message,
-                                  note=f"upstream inalcanzable: {error}")
-            try:
-                self.send_response(502)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(message)))
-                self.end_headers()
-                self.wfile.write(message)
-            except OSError:
-                pass
+            self._fail(correlation_id, 502, duration_ms, "pepper-proxy: el app no respondió", str(error),
+                       note=f"upstream inalcanzable: {error}")
             return
         duration_ms = int((time.monotonic() - started) * 1000)
 

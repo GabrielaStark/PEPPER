@@ -28,6 +28,9 @@ _SECRET_XML = re.compile(
 )
 _PRIVATE_KEY = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----")
 _CURP = re.compile(r"\b[A-Z][AEIOUX][A-Z]{2}\d{6}[HM][A-Z]{5}[A-Z0-9]\d\b", re.IGNORECASE)
+# RFC (persona moral 3 letras, física 4) con fecha válida y homoclave que termina en dígito o A,
+# solo en mayúsculas: un patrón más laxo bloquearía identificadores inocentes de logs y SQL.
+_RFC = re.compile(r"\b[A-ZÑ]{3,4}\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])[A-Z0-9]{2}[0-9A]\b")
 _EMAIL = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 _SAFE_VALUES = {
     "******", "*****", "xxxx", "xxxxx", "[redactado]", "[redacted]", "${secret}", "${password}",
@@ -105,6 +108,8 @@ def _scan_text(text: str, display: str, report: Report) -> None:
                 report.add_sensitive("credential", display, number)
         if _CURP.search(line):
             report.add_sensitive("curp", display, number)
+        if _RFC.search(line):
+            report.add_sensitive("rfc", display, number)
         if _EMAIL.search(line):
             report.add_sensitive("email", display, number)
 
@@ -112,8 +117,9 @@ def _scan_text(text: str, display: str, report: Report) -> None:
 def scan(roots: Iterable[Tuple[str, Path, Optional[Ignore]]]) -> Report:
     """Escanea raíces y devuelve únicamente categorías/ubicaciones.
 
-    Los binarios y archivos grandes se marcan como no inspeccionados: afirmar que
-    están limpios sin haberlos leído sería otra forma de inventar evidencia.
+    Los binarios, los archivos grandes y los que no se dejan decodificar completos
+    se marcan como no inspeccionados: afirmar que están limpios sin haberlos leído
+    sería otra forma de inventar evidencia.
     """
     report = Report()
     for label, root, ignore in roots:
@@ -137,7 +143,14 @@ def scan(roots: Iterable[Tuple[str, Path, Optional[Ignore]]]) -> Report:
             if _looks_binary(data[:8192]):
                 report.add_unscanned("binary", display)
                 continue
-            _scan_text(data.decode("utf-8", errors="strict"), display, report)
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                # UTF-8 en los primeros 8 KB y otra codificación después (un SQL viejo en
+                # latin-1): no se puede afirmar que se leyó completo → no inspeccionado.
+                report.add_unscanned("undecodable", display)
+                continue
+            _scan_text(text, display, report)
     return report
 
 

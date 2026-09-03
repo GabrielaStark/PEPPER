@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 
 from pepper.correlate import run as correlate_run  # noqa: E402
 from pepper.package import assemble  # noqa: E402
+from pepper.sensitive import scan  # noqa: E402
 
 FIXTURE = ROOT / "examples" / "legacy-demo"
 
@@ -80,6 +81,35 @@ class SensitiveDataGateTest(unittest.TestCase):
         self.assertTrue(manifest["data_policy"]["acknowledge_unscanned"])
         self.assertGreaterEqual(manifest["data_policy"]["sensitive_findings"], 1)
         self.assertGreaterEqual(manifest["data_policy"]["unscanned_files"], 1)
+
+    def test_remoto_bloquea_rfc(self):
+        legacy = self.root / "legacy-rfc"
+        legacy.mkdir()
+        (legacy / "empresa.sql").write_text("INSERT INTO enempresa VALUES ('GOCG950101AB1');\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "rfc"):
+            assemble(self.correlated, self.root / "package-rfc", legacy, data_mode="remote")
+
+    def test_la_bandera_synthetic_no_exime_del_gate(self):
+        # session.json lo escribe el agente en Observe: una bandera suya no abre la frontera
+        raw = self.root / "raw-synthetic"
+        shutil.copytree(FIXTURE / "raw-evidence", raw)  # trae synthetic: true
+        correlated = self.root / "correlated-synthetic"
+        correlate_run(raw, correlated)
+        legacy = self.root / "legacy-real"
+        legacy.mkdir()
+        (legacy / "sistema.war").write_bytes(b"PK\x03\x04\x00\x00contenido")
+        with self.assertRaisesRegex(ValueError, "no puede inspeccionar"):
+            assemble(correlated, self.root / "package-synthetic", legacy, data_mode="remote")
+        self.assertFalse((self.root / "package-synthetic").exists())
+
+    def test_codificacion_mixta_no_truena_y_queda_como_no_inspeccionado(self):
+        # UTF-8 limpio en los primeros 8 KB (pasa el sniff) y un byte latin-1 después
+        legacy = self.root / "legacy-latin1"
+        legacy.mkdir()
+        (legacy / "schema.sql").write_bytes(b"-- comentario\n" * 700 + b"-- a\xf1o fiscal\n")
+        report = scan([("legacy", legacy, None)])
+        self.assertEqual([(f.kind, f.location) for f in report.unscanned], [("undecodable", "legacy/schema.sql")])
+        self.assertEqual(report.sensitive, [])
 
     def test_modo_local_prohibe_agentes_remotos_en_el_adaptador(self):
         legacy = self.root / "legacy-local"

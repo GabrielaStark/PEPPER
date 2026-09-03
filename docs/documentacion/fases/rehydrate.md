@@ -50,7 +50,7 @@ python3 -m pepper isolate <compose> --hosts "<hosts externos>"          # antes 
 python3 -m pepper isolate <compose> --hosts "<hosts>" --live            # después, contra los contenedores
 ```
 
-Qué comprueba: que toda red sea `internal` (salvo la del ingress, un reenviador puro), que ningún servicio use `network_mode: host` ni una red no declarada, que ningún `extra_hosts` apunte fuera de las subredes internas, que cada host externo del artefacto esté aliaseado al stub, y —con `--live`— que Docker confirme lo mismo sobre los contenedores en ejecución. Sale con código 1 si hay fuga; el agente tiene prohibido levantar el entorno en rojo.
+Qué comprueba: que toda red sea `internal` (salvo la red de publicación, exclusiva del ingress verificado por hash), que ningún servicio use `network_mode: host` ni una red no declarada, que ningún `extra_hosts` apunte fuera de las subredes internas, que cada host externo del artefacto esté aliaseado al stub, y —con `--live`— que Docker confirme lo mismo sobre los contenedores en ejecución. Sale con código 1 si hay fuga; el agente tiene prohibido levantar el entorno en rojo.
 
 ## Cuando faltan insumos de verdad
 

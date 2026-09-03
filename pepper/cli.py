@@ -307,8 +307,11 @@ def _cmd_demo(args: argparse.Namespace) -> int:
         f"correlate · {summary['raw_lines']} líneas crudas → {summary['kept']} eventos relevantes "
         f"en {summary['traces']} peticiones ({summary['dropped']} descartadas como ruido)"
     )
-    package_summary = assemble(correlated, package, fixture / "artifacts")
+    # El fixture trae credenciales de juguete a propósito; la excepción es explícita y
+    # queda en el manifest, igual que con un legacy real (la bandera synthetic no exime).
+    package_summary = assemble(correlated, package, fixture / "artifacts", allow_sensitive=True)
     print(f"package   · {package}")
+    print("            (fixture sintético con credenciales de juguete: --allow-sensitive implícito, registrado en el manifest)")
     print()
     print("Ahora corre tu agente dentro del paquete:")
     print(f"  cd {package} && claude    # o codex")

@@ -233,8 +233,11 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
     if legacy_dir is not None:
         roots.append(("legacy", legacy_dir, _legacy_ignore(legacy_dir)))
     data_report = scan_sensitive(roots)
+    # `synthetic` lo escribe quien produce session.json (el agente, en Observe): informa,
+    # pero NO exime del gate — con esa bandera un WAR y un dump reales viajaban a un
+    # agente remoto sin revisión (auditoría 2026-09-03). El demo pasa con flags explícitos.
     synthetic = bool(session.get("synthetic"))
-    if data_mode == "remote" and not synthetic:
+    if data_mode == "remote":
         if data_report.sensitive and not allow_sensitive:
             raise ValueError(
                 "datos sensibles detectados; no se creó el paquete remoto. "

@@ -108,7 +108,7 @@ class CorrelateFixtureTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as other:
             again = Path(other) / "correlated"
             run(FIXTURE, again)
-            for name in ("events.jsonl", "flow.json", "flow.md", "reduction.md"):
+            for name in ("events.jsonl", "flow.json", "flow.md", "reduction.md", "evidence-manifest.json"):
                 self.assertEqual((self.out / name).read_bytes(), (again / name).read_bytes(), name)
 
 
