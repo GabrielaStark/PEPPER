@@ -20,14 +20,14 @@ from pepper.isolate import check_static, render  # noqa: E402
 
 AISLADO = {
     "services": {
-        "db": {"image": "postgres:16", "networks": {"legacy": {"ipv4_address": "10.4.2.186"}}},
-        "stub": {"image": "python:3-alpine",
+        "db": {"image": "postgres:16", "dns": ["10.4.2.254"], "networks": {"legacy": {"ipv4_address": "10.4.2.186"}}},
+        "stub": {"image": "python:3-alpine", "dns": ["10.4.2.254"],
                  "networks": {"legacy": {"ipv4_address": "10.4.2.185",
                                          "aliases": ["bus.institucion.example", "smtp.gmail.com"]}}},
-        "app": {"image": "jboss/wildfly:21.0.2.Final",
+        "app": {"image": "jboss/wildfly:21.0.2.Final", "dns": ["10.4.2.254"],
                 "networks": {"legacy": {"ipv4_address": "10.4.2.10"}},
                 "volumes": ["../../legacy/app.war:/opt/jboss/wildfly/standalone/deployments/app.war:ro"]},
-        "ingress": {"image": "python:3-alpine",
+        "ingress": {"image": "python:3-alpine", "dns": ["10.4.2.254"],
                     "command": ["python3", "-u", "/pepper-proxy.py",
                                 "--listen", "0.0.0.0:8080", "--upstream", "10.4.2.10:8080"],
                     "depends_on": {"app": {"condition": "service_started"}},
@@ -195,6 +195,21 @@ class IngressImpostorTest(Base):
         self.assertEqual(report.verdict, "VERIFIED", [f.check for f in report.findings if f.level != "ok"])
         self.assertTrue(any("no tiene red de publicación" in f.check for f in report.warnings))
 
+    def test_sin_dns_no_hay_verde(self):
+        # el resolver embebido reenviaría al resolver del host todo nombre que no sea alias
+        report = self.leak(lambda c: c["services"]["app"].pop("dns"))
+        self.assertEqual(report.verdict, "UNKNOWN")
+        self.assertTrue(any("no fija `dns:`" in f.check for f in report.unknowns))
+
+    def test_dns_fuera_de_la_subred_interna_es_fuga(self):
+        report = self.leak(lambda c: c["services"]["app"].__setitem__("dns", ["8.8.8.8"]))
+        self.assertEqual(report.verdict, "FAILED")
+        self.assertTrue(any("DNS fuera" in f.check for f in report.errors))
+
+    def test_el_sumidero_dns_se_reporta_en_verde(self):
+        report = self.check(AISLADO)
+        self.assertEqual(sum(1 for f in report.findings if f.level == "ok" and "sumidero DNS" in f.check), 4)
+
     def test_red_de_publicacion_preexistente_no_es_verde(self):
         report = self.leak(lambda c: c["networks"].__setitem__("edge", {"external": True}))
         self.assertEqual(report.verdict, "UNKNOWN")
@@ -217,6 +232,46 @@ class CapacidadesTest(Base):
     def test_montaje_del_host_con_escritura_es_fuga(self):
         report = self.leak(lambda c: c["services"]["app"]["volumes"].append("../../legacy:/datos"))
         self.assertTrue(any("con escritura" in f.check for f in report.errors))
+
+
+class ConexionesVivasDelIngressTest(unittest.TestCase):
+    """El hash demuestra QUÉ código se montó; esto, CON QUIÉN habla el proceso.
+
+    El ingress es el único contenedor con salida: si tiene una conexión abierta a
+    algo que no es el app interno, el entorno dejó de estar aislado aunque el
+    archivo montado siga siendo el proxy correcto.
+    """
+
+    def _report(self, peers, upstream=("10.100.0.10", 8080), subnets=("10.100.0.0/24",)):
+        import ipaddress
+        from unittest import mock
+
+        from pepper.isolate import Report, _check_live_ingress_peers
+
+        report = Report()
+        redes = [ipaddress.ip_network(s) for s in subnets]
+        with mock.patch("pepper.isolate._live_remote_peers", return_value=peers):
+            _check_live_ingress_peers("ingress", "c1", upstream, redes, report)
+        return report
+
+    def test_solo_habla_con_el_app_interno(self):
+        report = self._report(["10.100.0.10"])
+        self.assertEqual(report.errors, [])
+        self.assertTrue(any("solo tiene conexiones" in f.check for f in report.findings))
+
+    def test_una_conexion_hacia_fuera_es_fuga(self):
+        report = self._report(["10.100.0.10", "1.1.1.1"])
+        self.assertTrue(any("1.1.1.1" in f.check for f in report.errors), report.errors)
+
+    def test_una_conexion_a_la_red_del_host_es_fuga(self):
+        # el caso que importa: la laptop en la red institucional, con VPN
+        report = self._report(["10.33.121.254"])
+        self.assertTrue(any("10.33.121.254" in f.check for f in report.errors), report.errors)
+
+    def test_si_no_se_puede_leer_no_hay_verde(self):
+        report = self._report(None)
+        self.assertEqual(report.verdict, "UNKNOWN")
+        self.assertFalse(report.isolated)
 
 
 class FailClosedTest(Base):

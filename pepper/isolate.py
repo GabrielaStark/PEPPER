@@ -342,6 +342,29 @@ def _check_ingress(name: str, service: Dict[str, Any], compose_dir: Optional[Pat
     return upstream
 
 
+def _check_dns(name: str, dns: Any, subnets: Iterable[ipaddress.IPv4Network], report: Report) -> None:
+    """`internal: true` bloquea los paquetes, no las preguntas.
+
+    El resolver embebido de Docker contesta los alias de la red y REENVÍA todo lo demás
+    al resolver configurado — por defecto el de la máquina; con VPN, el institucional.
+    Un host del artefacto que no esté en los alias deja ahí una consulta con su nombre
+    aunque ningún paquete de datos salga. Por eso cada servicio fija `dns:` a una IP
+    sin nada detrás dentro de la subred interna: el sumidero. Sin eso no hay verde.
+    """
+    servers = [dns] if isinstance(dns, str) else list(dns or [])
+    if not servers:
+        report.add("unknown", f"`{name}` no fija `dns:`",
+                   "los nombres que no sean alias se reenvían al resolver del host (con VPN, al institucional); "
+                   "declara dns: [<IP libre dentro de la subred interna>]")
+        return
+    outside = [str(s) for s in servers if not _is_internal_ip(str(s), subnets)]
+    if outside:
+        report.add("error", f"`{name}` fija un DNS fuera de las redes internas: {', '.join(outside)}",
+                   "un resolver externo es una salida: cada nombre consultado viaja hasta él")
+        return
+    report.add("ok", f"`{name}` resuelve solo dentro de la red interna (sumidero DNS {', '.join(map(str, servers))})")
+
+
 def _check_publication_network(name: str, service: Dict[str, Any], services: Dict[str, Any],
                                compose: Dict[str, Any], internal: Dict[str, bool], report: Report) -> None:
     """La única red con salida es la de publicación del ingress, y solo él la usa.
@@ -428,9 +451,7 @@ def check_static(compose: Dict[str, Any], external_hosts: Optional[List[str]] = 
                 report.add("error", f"`{name}` mapea el host `{host}` a {ip}, fuera de las redes internas",
                            "un extra_hosts a una IP externa reabre el camino a producción")
 
-        if service.get("dns"):
-            report.add("warn", f"`{name}` declara servidores DNS propios: {service['dns']}",
-                       "en una red interna no responden; si responden, hay salida")
+        _check_dns(name, service.get("dns"), subnets, report)
 
         published = [p for p in (service.get("ports") or [])]
         if published and not is_ingress:
@@ -518,6 +539,83 @@ def _check_live_publication_network(service: str, container: str, external: List
         report.add("ok", f"`{service}` (ingress) publica por `{network}`, que ningún otro contenedor usa (según Docker)")
 
 
+def _network_subnets(network: str) -> List[ipaddress.IPv4Network]:
+    out = subprocess.run(["docker", "network", "inspect", network, "--format", "{{json .IPAM.Config}}"],
+                         capture_output=True, text=True)
+    if out.returncode != 0:
+        return []
+    try:
+        config = json.loads(out.stdout.strip() or "[]") or []
+    except ValueError:
+        return []
+    subnets = []
+    for entry in config:
+        subnet = (entry or {}).get("Subnet")
+        if subnet:
+            try:
+                subnets.append(ipaddress.ip_network(subnet, strict=False))
+            except ValueError:
+                continue
+    return subnets
+
+
+def _live_remote_peers(container: str) -> Optional[List[str]]:
+    """Destinos remotos con los que el contenedor tiene conexiones abiertas, según su
+    propia pila de red. El hash del proxy demuestra QUÉ código se montó; esto
+    demuestra CON QUIÉN está hablando de verdad."""
+    out = subprocess.run(["docker", "exec", container, "sh", "-c",
+                          "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null"],
+                         capture_output=True, text=True)
+    if out.returncode != 0:
+        return None
+    peers = set()
+    for line in out.stdout.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 4 or ":" not in parts[2]:
+            continue
+        if parts[3] == "0A":          # LISTEN: no es una conexión saliente
+            continue
+        hexip = parts[2].split(":")[0]
+        if len(hexip) == 8:           # IPv4, little-endian
+            try:
+                ip = ipaddress.ip_address(int.from_bytes(bytes.fromhex(hexip), "little"))
+            except ValueError:
+                continue
+            if ip.is_unspecified or ip.is_loopback:
+                continue
+            peers.add(str(ip))
+    return sorted(peers)
+
+
+def _check_live_ingress_peers(service: str, container: str, upstream: Optional[Tuple[str, int]],
+                              subnets: List[ipaddress.IPv4Network], report: Report) -> None:
+    """El único contenedor con salida no puede estar hablando con nada fuera del entorno."""
+    peers = _live_remote_peers(container)
+    if peers is None:
+        report.add("unknown", f"`{service}` (ingress): no pude leer con quién tiene conexiones abiertas",
+                   "sin eso no se demuestra que el único contenedor con salida solo habla con el app")
+        return
+    permitido = {upstream[0]} if upstream else set()
+    fuera = []
+    for peer in peers:
+        if peer in permitido:
+            continue
+        try:
+            address = ipaddress.ip_address(peer)
+        except ValueError:
+            fuera.append(peer)
+            continue
+        if any(address in subnet for subnet in subnets):
+            continue
+        fuera.append(peer)
+    if fuera:
+        report.add("error", f"`{service}` (ingress) tiene conexiones abiertas fuera del entorno: {', '.join(fuera)}",
+                   "el único contenedor con salida debe hablar únicamente con el app interno")
+    else:
+        report.add("ok", f"`{service}` (ingress) solo tiene conexiones al entorno interno"
+                          + (f" ({', '.join(peers)})" if peers else " (ninguna abierta)"))
+
+
 def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
                ingress: str = DEFAULT_INGRESS) -> Report:
     """Verifica el aislamiento sobre los contenedores en ejecución, según Docker.
@@ -556,6 +654,7 @@ def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
         return network_internal[network]
 
     expected_proxy = bundled_proxy_hash()
+    live_subnets: List[ipaddress.IPv4Network] = []
 
     for container in containers:
         name = container.get("Name") or container.get("name") or "?"
@@ -590,6 +689,7 @@ def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
                        "sin redes legibles no hay nada verificado")
             continue
         external_networks: List[str] = []
+        container_subnets: List[ipaddress.IPv4Network] = []
         for network in networks:
             internal = is_internal(network)
             if internal is None:
@@ -597,11 +697,16 @@ def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
                            "una red que no se deja inspeccionar no cuenta como interna")
             elif internal:
                 report.add("ok", f"`{service}` está en la red interna `{network}`")
+                nets = _network_subnets(network)
+                live_subnets.extend(nets)
+                container_subnets.extend(nets)
             elif service != ingress:
                 report.add("error", f"`{service}` está conectado a `{network}`, que NO es interna en Docker",
                            "solo el ingress verificado toca una red con salida")
             else:
                 external_networks.append(network)
+        # DNS según Docker, no según el YAML: lo que no sea alias debe morir dentro
+        _check_dns(service, host_config.get("Dns"), container_subnets, report)
         if service == ingress:
             _check_live_publication_network(service, name, external_networks, report)
 
@@ -613,7 +718,8 @@ def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
             entrypoint = config.get("Entrypoint")
             if entrypoint not in (None, "", []):
                 report.add("error", f"`{service}` (ingress) ejecuta un entrypoint inesperado: {entrypoint!r}")
-            _parse_proxy_command(service, config.get("Cmd"), report)
+            live_upstream = _parse_proxy_command(service, config.get("Cmd"), report)
+            _check_live_ingress_peers(service, name, live_upstream, live_subnets, report)
 
             mounts = info.get("Mounts") or []
             proxy_mounts = [m for m in mounts if str(m.get("Destination", "")) == "/pepper-proxy.py"]

@@ -50,6 +50,8 @@ Problemas que salen y qué hacer. Si algo no está aquí, el detalle de cada fas
 
 **El puerto publicado no responde (`curl 127.0.0.1:<puerto>` → connection refused) aunque el ingress esté arriba** — el ingress solo está en la red `internal`, y Docker no publica puertos desde ahí. Conéctalo además a la red `edge` (solo a él) y repite `isolate`.
 
+**`isolate · NO VERIFICADO` por «sin `dns:`»** — sin un resolver fijado, el DNS embebido de Docker reenvía al resolver de tu máquina cualquier nombre que no sea alias de la red; con VPN, esa consulta llega al DNS institucional (una huella con el nombre de un host de producción, aunque ningún paquete de datos salga). Declara en cada servicio `dns: ["<IP libre dentro de la subred interna>"]`, p. ej. la `.254`: los alias siguen resolviendo al stub y todo lo demás muere ahí.
+
 **`isolate` no puede resolver el compose** — necesita `docker compose config` (o `pyyaml` como respaldo). Verifica que Docker esté instalado; el daemon no hace falta para la comprobación estática, solo para `--live`.
 
 **Una vista o función alcanzó una base de producción** — el respaldo trae `pg_foreign_server` / `USER MAPPING` con host y contraseña reales, y la máquina tiene VPN. La receta re-apunta los servidores foráneos al stub y la red es `internal` (D19); si lo ves en un compose viejo, `docker compose down` y regenera.
