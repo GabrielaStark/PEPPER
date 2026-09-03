@@ -140,6 +140,18 @@ def _extract_db_toc(spec: Dict[str, Any], report: "MapReport", dump: Optional[Pa
         return
     counts: Dict[str, int] = {}
     ref = f"{dump.name} (pg_restore -l)"
+    # La cabecera del TOC declara de dónde salió el respaldo: base de origen y
+    # versión del servidor. Son los datos que delatan una discrepancia con lo que
+    # el humano cree (NOTAS.md) y con la imagen que Rehydrate va a levantar.
+    for key, label in (("dbname", "base de origen"),
+                       ("Dumped from database version", "versión del servidor de origen"),
+                       ("Dumped by pg_dump version", "generado por pg_dump")):
+        for line in listing.splitlines():
+            if line.startswith(";") and key in line:
+                value = line.split(":", 1)[1].strip() if ":" in line else ""
+                if value:
+                    report.notes.append(f"respaldo {dump.name} · {label}: {value}")
+                break
     for line in listing.splitlines():
         line = line.strip()
         if not line or line.startswith(";"):
@@ -269,6 +281,18 @@ class MapReport:
         self.gaps.append(message)
 
 
+# Qué superficie del mapa alimenta cada mecanismo. Lo que ningún mecanismo del
+# perfil cubre no puede salir como "cero": sale como hueco declarado (D23:
+# un mapa parcial se declara parcial, nunca se disfraza de completo).
+_MECHANISM_SURFACES: Dict[str, tuple] = {
+    "archive_url_scan": ("external_dependencies",),
+    "config_hosts": ("external_dependencies",),
+    "db_dump_toc": ("data_stores",),
+    "jvm_route_annotations": ("entrypoints", "jobs"),
+}
+_SURFACES = ("entrypoints", "jobs", "external_dependencies", "data_stores", "roles")
+
+
 _MECHANISMS: Dict[str, Callable] = {
     "archive_url_scan": lambda art, spec, rep, ctx: _extract_archive_urls(art, spec, rep),
     "config_hosts": lambda art, spec, rep, ctx: _extract_config_hosts(art, spec, rep),
@@ -303,6 +327,14 @@ def build_map(artifact: Path, extractors: List[Dict[str, Any]], profile_id: Opti
             report.gap(f"mecanismo desconocido en el perfil: {kind!r}")
             continue
         handler(artifact, extractor, report, ctx)
+
+    covered = set()
+    for extractor in extractors:
+        covered.update(_MECHANISM_SURFACES.get(extractor.get("mechanism"), ()))
+    for surface in _SURFACES:
+        if surface not in covered:
+            report.gap(f"{surface}: ningún extractor del perfil sabe enumerarlos; "
+                       f"la lista vacía NO significa que el sistema no tenga")
 
     return {
         "schema_version": "0.1.0",

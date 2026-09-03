@@ -97,6 +97,8 @@ Aquí no hay remote que quitar: la herramienta llega copiada (no clonada) y giti
 claude          # (o codex) desde la raíz del workspace
 ```
 
+> **Desde la raíz, literalmente.** Los comandos `/pepper-*` se cargan de `.claude/commands/` del directorio donde abres Claude Code. Si lo abres un nivel arriba (o en una subcarpeta), verás `Unknown command: /pepper-init` sin más explicación.
+
 y adentro:
 
 1. **`/pepper-init`** — verifica herramientas, prepara carpetas, detecta qué perfil aplica y te deja `legacy/NOTAS.md`: **escribe ahí lo que sepas** (qué servidor corre en producción, versiones, cómo se levanta, servicios externos, flujos que importan). Tu nota manda sobre lo que la herramienta infiera.

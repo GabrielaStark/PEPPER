@@ -89,6 +89,17 @@ class SensitiveDataGateTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "rfc"):
             assemble(self.correlated, self.root / "package-rfc", legacy, data_mode="remote")
 
+    def test_variantes_de_credencial_del_mundo_real(self):
+        # `psw:` apareció en un artefacto real y el gate lo dejó pasar (E2E 2026-09-03)
+        legacy = self.root / "legacy-variantes"
+        legacy.mkdir()
+        (legacy / "sei.yml").write_text("sei:\n  usr: servicio\n  psw: ValorFalso123\n", encoding="utf-8")
+        (legacy / "mail.properties").write_text("mail.contrasenia=ValorFalso456\n", encoding="utf-8")
+        (legacy / "ws.xml").write_text("<credencial>ValorFalso789</credencial>\n", encoding="utf-8")
+        report = scan([("legacy", legacy, None)])
+        hits = sorted(f.path.rsplit("/", 1)[-1] for f in report.sensitive if f.kind == "credential")
+        self.assertEqual(hits, ["mail.properties", "sei.yml", "ws.xml"])
+
     def test_la_bandera_synthetic_no_exime_del_gate(self):
         # session.json lo escribe el agente en Observe: una bandera suya no abre la frontera
         raw = self.root / "raw-synthetic"

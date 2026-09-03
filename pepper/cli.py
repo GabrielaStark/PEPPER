@@ -119,7 +119,15 @@ def _cmd_detect(args: argparse.Namespace) -> int:
             print(f"      + {match['type']} {match['pattern']!r} → {match['hit']}  (+{match['weight']:g})")
     print()
     if not applicable:
-        print("Ningún perfil aplica: escalón 2 (observar con colectores genéricos) o 3 (inspección + borrador de perfil).")
+        from pepper.detect import inventory
+
+        seen = inventory(args.artifacts)
+        if seen["files"] == 0:
+            print(f"No hay artefactos en {args.artifacts}: nada que detectar. Copia ahí lo que tengas del legacy (WAR/JAR, dist, respaldo, configuración) y repite.")
+        else:
+            dominant = ", ".join(f"{ext} ×{n}" for ext, n in seen["dominant"])
+            print(f"Vi {seen['files']} archivo(s); predominan: {dominant}.")
+            print("Ningún perfil cubre este stack: escalón 2 (observar con colectores genéricos) o 3 (inspección + borrador de perfil).")
     else:
         best = applicable[0]
         if best["status"] == "validated":
@@ -268,7 +276,7 @@ def _cmd_map(args: argparse.Namespace) -> int:
     if system_map["complete"]:
         print("  mapa COMPLETO")
     else:
-        print(f"  mapa INCOMPLETO ({len(system_map['coverage_gaps'])} extractor(es) no corrieron):")
+        print(f"  mapa INCOMPLETO ({len(system_map['coverage_gaps'])} hueco(s) declarado(s) — lo que no se pudo enumerar, no un cero):")
         for gap in system_map["coverage_gaps"]:
             print(f"    ? {gap}")
 

@@ -19,11 +19,11 @@ _IGNORED_DIRS = {".git", "node_modules", "target", "__pycache__", ".idea", ".vsc
 _IGNORED_SUFFIXES = {".class", ".pyc"}
 
 _SECRET_ASSIGNMENT = re.compile(
-    r"(?i)[\"']?(?:password|passwd|pwd|contrase(?:ña|na)|clave|secret|token|api[_-]?key|client[_-]?secret)"
+    r"(?i)[\"']?(?:password|passwd|passphrase|pwd|psw|contrase\w*|clave|secret|token|api[_-]?key|client[_-]?secret|credencial)"
     r"[\"']?\s*[:=]\s*[\"']?([^\s\"'#,;<>]{4,})"
 )
 _SECRET_XML = re.compile(
-    r"(?i)<(?:password|passwd|pwd|contrase(?:ña|na)|clave|secret|token|api[_-]?key|client[_-]?secret)[^>]*>"
+    r"(?i)<(?:password|passwd|passphrase|pwd|psw|contrase\w*|clave|secret|token|api[_-]?key|client[_-]?secret|credencial)[^>]*>"
     r"\s*([^<\s]{4,})\s*</"
 )
 _PRIVATE_KEY = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----")

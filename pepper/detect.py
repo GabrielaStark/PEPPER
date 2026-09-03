@@ -171,6 +171,18 @@ def evaluate(profile: Profile, root: Path, entries: List[Path],
     }
 
 
+def inventory(root: Path, top: int = 5) -> Dict[str, Any]:
+    """Qué hay en la carpeta, para que "ningún perfil aplica" diga por qué: cero
+    archivos no es lo mismo que 18 mil archivos de un stack sin perfil."""
+    entries = [p for p in _walk(root) if p.is_file()]
+    counts: Dict[str, int] = {}
+    for path in entries:
+        ext = path.suffix.lower() or "(sin extensión)"
+        counts[ext] = counts.get(ext, 0) + 1
+    dominant = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:top]
+    return {"files": len(entries), "dominant": dominant}
+
+
 def detect(root: Path) -> List[Dict[str, Any]]:
     if not root.is_dir():
         raise FileNotFoundError(f"directorio de artefactos inexistente: {root}")
