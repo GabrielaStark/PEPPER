@@ -7,6 +7,9 @@
 #     app se publica por el proxy `ingress` (ahí irá el proxy HTTP de PEPPER).
 #   - Todo host externo del artefacto se resuelve por alias DNS al `stub`, que responde
 #     503 y registra cada petición (evidencia de dependencias).
+#   - Cada servicio fija `dns:` a un sumidero dentro de la subred interna (D22, DNS): el
+#     resolver embebido de Docker reenvía lo que no es alias al resolver del host — con
+#     VPN, al institucional — y esa consulta lleva el nombre de un host de producción.
 #   - Si el WAR trae jboss-web.xml, se despliega en WildFly (D20), NO con java -jar.
 #   - `pepper isolate <compose> --hosts <hosts>` debe salir en verde ANTES de levantar,
 #     y con --live después: el aislamiento lo verifica el núcleo, no el agente.
@@ -32,6 +35,7 @@ volumes:
 services:
   db:
     image: postgres:{{postgres_version}}   # NOTAS.md, o la cabecera del respaldo
+    dns: [{{dns_sink}}]                   # IP libre de la subred interna: lo que no sea alias muere aquí, no va al resolver del host
     environment:
       POSTGRES_DB: {{db_name}}             # el nombre que el artefacto espera (no el del respaldo)
       POSTGRES_USER: {{db_user}}
@@ -53,6 +57,7 @@ services:
   # de producción en sus USER MAPPING). Una vez: docker compose --profile restore run --rm restore
   restore:
     image: postgres:{{pg_restore_version}}
+    dns: [{{dns_sink}}]                   # IP libre de la subred interna: lo que no sea alias muere aquí, no va al resolver del host
     profiles: ["restore"]
     depends_on:
       db:
@@ -72,6 +77,7 @@ services:
   # igual que el proxy). Los puertos son los que el artefacto espera de sus externos.
   stub:
     image: python:3-alpine
+    dns: [{{dns_sink}}]                   # IP libre de la subred interna: lo que no sea alias muere aquí, no va al resolver del host
     command: ["python3", "-u", "/stub/stub.py", "--ports", "{{stub_ports}}"]
     networks:
       legacy:
@@ -82,6 +88,7 @@ services:
 
   app:
     image: {{server_image}}                # jboss/wildfly:<versión de NOTAS.md> si hay jboss-web.xml
+    dns: [{{dns_sink}}]                   # IP libre de la subred interna: lo que no sea alias muere aquí, no va al resolver del host
     depends_on:
       db:
         condition: service_healthy
@@ -105,6 +112,7 @@ services:
   # No registra headers de credenciales y redacta campos que parezcan contraseñas.
   ingress:
     image: python:3-alpine
+    dns: [{{dns_sink}}]                   # IP libre de la subred interna: lo que no sea alias muere aquí, no va al resolver del host
     command: ["python3", "-u", "/pepper-proxy.py", "--listen", "0.0.0.0:8080", "--upstream", "{{app_ip}}:8080"]
     depends_on:
       app:
