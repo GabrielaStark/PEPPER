@@ -19,6 +19,18 @@ Lo que nunca registra: headers de credenciales (Authorization, Cookie,
 Set-Cookie…) ni el valor de campos que parezcan credenciales (password,
 contraseña, clave, secret, token…), que se sustituyen por "[REDACTADO]".
 La evidencia cita ubicaciones, no secretos.
+
+El navegador del humano es parte del perímetro. Los contenedores están en una
+red interna, pero el HTML del legacy puede apuntar a sus servidores reales
+(un <object>, un <iframe>, un <img>, un fetch, un window.open) y el navegador
+los pediría directo — con VPN, a producción — sin que ningún contenedor lo vea.
+Por eso cada respuesta sale con una Content-Security-Policy que solo permite
+cargar desde el propio ingress: el navegador bloquea lo demás ANTES de resolver
+un nombre, y le reporta al ingress qué bloqueó (report-uri). Para lo que CSP no
+cubre (window.open, clic en un enlace externo, envío de un formulario) se
+inyecta un guardián de pocas líneas en cada página HTML que lo intercepta y lo
+reporta. Ambos reportes quedan en http.jsonl como `direction: "blocked"`:
+evidencia de la dependencia externa, que antes se perdía.
 """
 
 from __future__ import annotations
@@ -45,6 +57,34 @@ _HOP_BY_HOP = {
 _SECRET_HEADERS = {"authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key"}
 _SECRET_FIELD_RE = re.compile(r"(?i)(pass|pwd|contrase|clave|secret|token|credencial|authorization)")
 _REDACTED = "[REDACTADO]"
+
+# Política que el ingress impone al navegador: nada sale a otro origen. Los
+# 'unsafe-*' son inevitables en un legacy (JSF/PrimeFaces usan inline y eval);
+# lo que importa es que TODO destino sea 'self'. report-uri manda al ingress
+# cada bloqueo: es evidencia de dependencia externa.
+BROWSER_POLICY = (
+    "default-src 'self' data: blob: 'unsafe-inline' 'unsafe-eval'; "
+    "frame-src 'self'; object-src 'self'; child-src 'self' blob:; worker-src 'self' blob:; "
+    "connect-src 'self'; form-action 'self'; base-uri 'self'; "
+    "report-uri /__pepper/csp-report"
+)
+# Headers del app que podrían relajar o sustituir la política, o precargar de fuera.
+_STRIPPED_RESPONSE_HEADERS = {"content-security-policy", "content-security-policy-report-only", "link", "refresh"}
+# Endpoints propios del ingress: el navegador reporta aquí lo que bloqueó.
+_REPORT_PATHS = {"/__pepper/csp-report": "csp", "/__pepper/nav-report": "navigation"}
+# Guardián para lo que CSP no cubre: window.open, clic en <a href> externo y submit
+# a otro origen. Intercepta, no navega, y reporta. Solo ASCII: se inyecta en bytes.
+_GUARD_SCRIPT = (
+    b"<script data-pepper=\"guard\">(function(){var O=location.origin;"
+    b"function X(u){try{return new URL(u,location.href).origin!==O}catch(e){return false}}"
+    b"function R(k,u){try{var b=JSON.stringify({kind:k,blocked_uri:String(u),document_uri:location.href});"
+    b"if(navigator.sendBeacon){navigator.sendBeacon('/__pepper/nav-report',b)}else{fetch('/__pepper/nav-report',{method:'POST',body:b,keepalive:true})}}catch(e){}}"
+    b"var W=window.open;window.open=function(u){if(u&&X(u)){R('window.open',u);return null}return W.apply(this,arguments)};"
+    b"document.addEventListener('click',function(e){var t=e.target;var a=(t&&t.closest)?t.closest('a[href]'):null;"
+    b"if(a&&X(a.href)){e.preventDefault();e.stopImmediatePropagation();R('link',a.href)}},true);"
+    b"document.addEventListener('submit',function(e){var f=e.target;if(f&&f.action&&X(f.action)){e.preventDefault();e.stopImmediatePropagation();R('form',f.action)}},true);"
+    b"})();</script>"
+)
 
 _MAX_CAPTURE_BYTES = 65536   # cuerpos más grandes no se interpretan: solo se anota el tamaño
 _MAX_TEXT_CHARS = 2048       # tope para cuerpos JSON que no parsean
@@ -90,6 +130,59 @@ def _capture_body(content_type: str, data: bytes) -> Tuple[Optional[Any], Option
             # puede llevar el secreto entero (auditoría H-05). No se registra.
             return None, len(data)
     return None, len(data)
+
+
+def guard_html(content_type: str, content_encoding: str, payload: bytes) -> Tuple[bytes, Optional[str]]:
+    """Inyecta el guardián al inicio de <head> (o al inicio del documento) en respuestas HTML.
+
+    Devuelve (cuerpo, nota). Si el cuerpo viene comprimido no se toca —la política
+    CSP del header aplica igual— y se anota para que quede en la evidencia."""
+    kind = content_type.split(";", 1)[0].strip().lower()
+    if kind != "text/html" or not payload:
+        return payload, None
+    if content_encoding and content_encoding.strip().lower() not in ("", "identity"):
+        return payload, f"guardián del navegador no inyectado: respuesta comprimida ({content_encoding})"
+    lower = payload.lower()
+    at = 0
+    for tag in (b"<head", b"<html"):
+        i = lower.find(tag)
+        if i >= 0:
+            j = lower.find(b">", i)
+            if j >= 0:
+                at = j + 1
+                break
+    return payload[:at] + _GUARD_SCRIPT + payload[at:], None
+
+
+def blocked_record(kind: str, report: Dict[str, Any]) -> Dict[str, Any]:
+    """Normaliza un reporte del navegador (CSP o guardián) a una línea de http.jsonl.
+
+    El query del destino bloqueado se guarda aparte y redactado: puede llevar
+    identificadores reales; nunca credenciales en claro."""
+    if kind == "csp":
+        body = report.get("csp-report") if isinstance(report.get("csp-report"), dict) else report
+        uri = str(body.get("blocked-uri") or body.get("blockedURL") or "")
+        entry: Dict[str, Any] = {
+            "ts": _now_iso(), "direction": "blocked", "kind": "csp",
+            "directive": str(body.get("effective-directive") or body.get("violated-directive") or ""),
+            "document_uri": str(body.get("document-uri") or body.get("documentURL") or ""),
+        }
+    else:
+        uri = str(report.get("blocked_uri") or "")
+        entry = {"ts": _now_iso(), "direction": "blocked", "kind": str(report.get("kind") or "navigation"),
+                 "document_uri": str(report.get("document_uri") or "")}
+    parts = urlsplit(uri) if "://" in uri else None
+    if parts and parts.netloc:
+        entry["blocked_host"] = parts.netloc
+        entry["blocked_path"] = parts.path or "/"
+        entry["blocked_uri"] = f"{parts.scheme}://{parts.netloc}{parts.path or '/'}"
+        if parts.query:
+            pairs = parse_qs(parts.query, keep_blank_values=True)
+            entry["blocked_query"] = _redact({k: v[0] if len(v) == 1 else v for k, v in pairs.items()})
+    else:
+        entry["blocked_uri"] = uri  # el navegador a veces reporta solo el origen o un esquema
+        entry["blocked_host"] = uri
+    return entry
 
 
 class Recorder:
@@ -154,6 +247,8 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
                     continue
                 if lowered == "content-length":
                     continue  # se recalcula: el cuerpo ya está completo en memoria
+                if lowered == "accept-encoding":
+                    continue  # el cuerpo debe llegar plano: el guardián se inyecta en el HTML
                 if lowered == "host":
                     has_host = True
                 connection.putheader(name, value)
@@ -225,9 +320,29 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
         try:
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Security-Policy", BROWSER_POLICY)
             self.send_header("Content-Length", str(len(message)))
             self.end_headers()
             self.wfile.write(message)
+        except OSError:
+            pass
+
+    def _handle_report(self, kind: str, body: bytes) -> None:
+        """El navegador dice qué bloqueó. Se registra (sin correlation_id: no es una
+        petición al app y no debe anclar una traza) y se responde 204."""
+        if self.command != "POST":
+            self.send_response(404); self.send_header("Content-Length", "0"); self.end_headers(); return
+        try:
+            report = json.loads(body.decode("utf-8", errors="replace")) if body else {}
+        except ValueError:
+            report = {}
+        if not isinstance(report, dict):
+            report = {}
+        self.server.recorder.record(blocked_record(kind, report))  # type: ignore[attr-defined]
+        try:
+            self.send_response(204)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
         except OSError:
             pass
 
@@ -243,6 +358,10 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
                        note=f"petición ilegible: {error}")
             self.close_connection = True
             return
+        report_kind = _REPORT_PATHS.get(self.path.partition("?")[0])
+        if report_kind:
+            self._handle_report(report_kind, body)
+            return
         self._record_request(correlation_id, body)
         started = time.monotonic()
         try:
@@ -257,14 +376,18 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
         # La respuesta observada se fija antes de exponer sus bytes al cliente;
         # elimina la carrera request-only en capturas y pruebas concurrentes.
         content_type = next((value for name, value in headers if name.lower() == "content-type"), "")
-        self._record_response(correlation_id, status, duration_ms, content_type, payload)
+        encoding = next((value for name, value in headers if name.lower() == "content-encoding"), "")
+        payload, guard_note = guard_html(content_type, encoding, payload)
+        self._record_response(correlation_id, status, duration_ms, content_type, payload, note=guard_note)
 
         self.send_response(status, reason)
         for name, value in headers:
             lowered = name.lower()
-            if lowered in _HOP_BY_HOP or lowered == "content-length":
+            if lowered in _HOP_BY_HOP or lowered == "content-length" or lowered in _STRIPPED_RESPONSE_HEADERS:
                 continue
             self.send_header(name, value)
+        self.send_header("Content-Security-Policy", BROWSER_POLICY)
+        self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         if self.command != "HEAD" and payload:

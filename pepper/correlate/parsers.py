@@ -214,8 +214,30 @@ class HttpProxyParser:
         return events, unparsed
 
     def _event(self, record: Dict[str, Any], raw_ref: str, session: Session) -> Event:
-        operation = f"{record['method']} {record['path']}"
         direction = record.get("direction", "request")
+        if direction == "blocked":
+            # El navegador del humano intentó salir a otro origen y el ingress lo
+            # bloqueó (CSP o guardián). Es la única huella de esa dependencia externa:
+            # severidad warn para que la reducción jamás la descarte. Sin
+            # correlation_id a propósito: no es una petición al app.
+            host = record.get("blocked_host") or record.get("blocked_uri") or "?"
+            metadata = {key: record[key] for key in
+                        ("kind", "blocked_uri", "blocked_host", "blocked_path", "blocked_query", "document_uri", "directive")
+                        if key in record}
+            return Event(
+                timestamp=parse_datetime(record["ts"], session.tz),
+                session_id=session.session_id,
+                source=self.source,
+                component="navegador",
+                event_type="custom",
+                operation=f"BLOQUEADO {host}",
+                correlation_id=None,
+                message=f"el navegador intentó salir a {host} ({record.get('kind', '?')}) y el ingress lo bloqueó",
+                severity="warn",
+                raw_ref=raw_ref,
+                metadata=metadata,
+            )
+        operation = f"{record['method']} {record['path']}"
         metadata: Dict[str, Any] = {"method": record["method"], "path": record["path"]}
         for key in ("client", "content_type", "body", "duration_ms", "query"):
             if key in record:

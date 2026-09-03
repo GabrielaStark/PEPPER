@@ -50,6 +50,12 @@ Problemas que salen y qué hacer. Si algo no está aquí, el detalle de cada fas
 
 **El puerto publicado no responde (`curl 127.0.0.1:<puerto>` → connection refused) aunque el ingress esté arriba** — el ingress solo está en la red `internal`, y Docker no publica puertos desde ahí. Conéctalo además a la red `edge` (solo a él) y repite `isolate`.
 
+**Una pantalla del legacy sale en blanco, un botón no hace nada, o el navegador dice «bloqueado»** — es la política de contenido que el ingress impone al navegador (D25): esa pantalla intentó cargar algo de un host real del artefacto (un `<object>`, un `<iframe>`, un script, una imagen) y el navegador se negó antes de resolver el nombre. **Es un hallazgo, no un fallo**: la dependencia queda en `evidence/<sid>/http.jsonl` como `direction: "blocked"` con host y ruta, y Correlate la conserva como evidencia protegida. Anótalo en la nota del operador.
+
+**`isolate · NO AISLADO` por «NO impone la política del navegador»** — el ingress que corre no es el proxy actual (la política vive en `pepper/proxy.py`). Recopia el archivo a `pepper-out/rehydrate/proxy/proxy.py`, recrea el ingress (`docker compose up -d --force-recreate ingress`) y repite.
+
+**`isolate · NO AISLADO` por «conexiones abiertas fuera del entorno» hacia la puerta de enlace (`172.x.0.1`) justo mientras alguien usa el sistema** — versiones anteriores contaban las conexiones *entrantes* del navegador al puerto publicado como si fueran salidas. Actualiza PEPPER: el chequeo ya distingue entrante de saliente.
+
 **`isolate · NO VERIFICADO` por «sin `dns:`»** — sin un resolver fijado, el DNS embebido de Docker reenvía al resolver de tu máquina cualquier nombre que no sea alias de la red; con VPN, esa consulta llega al DNS institucional (una huella con el nombre de un host de producción, aunque ningún paquete de datos salga). Declara en cada servicio `dns: ["<IP libre dentro de la subred interna>"]`, p. ej. la `.254`: los alias siguen resolviendo al stub y todo lo demás muere ahí.
 
 **`isolate` no puede resolver el compose** — necesita `docker compose config` (o `pyyaml` como respaldo). Verifica que Docker esté instalado; el daemon no hace falta para la comprobación estática, solo para `--live`.

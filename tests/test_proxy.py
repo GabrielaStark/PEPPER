@@ -42,7 +42,13 @@ class _UpstreamHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/echo-headers"):
             self._reply(200, {"correlation": self.headers.get(CORRELATION_HEADER),
-                              "host": self.headers.get("Host")})
+                              "host": self.headers.get("Host"),
+                              "accept_encoding": self.headers.get("Accept-Encoding")})
+        elif self.path.startswith("/con-csp"):
+            # un app que trae su propia política laxa y precarga de fuera
+            self._reply(200, b"<html><head><title>x</title></head><body>hola</body></html>", content_type="text/html",
+                        extra_headers=[("Content-Security-Policy", "default-src *"),
+                                       ("Link", "<http://externo.example/a.js>; rel=preload; as=script")])
         elif self.path.startswith("/redirect"):
             self._reply(303, b"", content_type="text/plain", extra_headers=[("Location", "/destino")])
         elif self.path.startswith("/pagina"):
@@ -228,6 +234,89 @@ class ProxyTest(unittest.TestCase):
         finally:
             dead.shutdown()
             dead.server_close()
+
+    # --- el navegador del humano es parte del perímetro ---
+
+    def test_toda_respuesta_lleva_la_politica_del_navegador(self):
+        from pepper.proxy import BROWSER_POLICY
+        for path in ("/echo-headers", "/pagina", "/redirect"):
+            _, headers, _ = self._request("GET", path)
+            self.assertEqual(headers.get("Content-Security-Policy"), BROWSER_POLICY, path)
+            self.assertEqual(headers.get("Referrer-Policy"), "no-referrer", path)
+        self.assertIn("default-src 'self'", BROWSER_POLICY)
+        self.assertIn("object-src 'self'", BROWSER_POLICY)      # el <object type=text/html> del caso real
+        self.assertIn("frame-src 'self'", BROWSER_POLICY)
+        self.assertIn("form-action 'self'", BROWSER_POLICY)
+        self.assertIn("report-uri /__pepper/csp-report", BROWSER_POLICY)
+
+    def test_el_html_recibe_el_guardian_y_lo_demas_no(self):
+        status, headers, body = self._request("GET", "/pagina")
+        self.assertEqual(status, 200)
+        self.assertIn(b'data-pepper="guard"', body)
+        # el fixture no tiene <head>: el guardián va justo tras <html>, antes de cualquier contenido
+        self.assertLess(body.index(b'data-pepper="guard"'), body.lower().index(b"<body"))
+        self.assertEqual(int(headers["Content-Length"]), len(body))
+        _, _, json_body = self._request("GET", "/echo-headers")
+        self.assertNotIn(b"data-pepper", json_body)
+
+    def test_la_politica_del_app_se_reemplaza_y_el_preload_externo_se_quita(self):
+        from pepper.proxy import BROWSER_POLICY
+        _, headers, body = self._request("GET", "/con-csp")
+        self.assertEqual(headers.get("Content-Security-Policy"), BROWSER_POLICY)
+        self.assertNotIn("default-src *", str(headers))
+        self.assertIsNone(headers.get("Link"))
+        self.assertIn(b'data-pepper="guard"', body)
+
+    def test_accept_encoding_no_se_reenvia(self):
+        _, _, payload = self._request("GET", "/echo-headers", headers={"Accept-Encoding": "gzip, br"})
+        self.assertIsNone(json.loads(payload)["accept_encoding"], "el cuerpo debe llegar plano para inyectar el guardián")
+
+    def test_reporte_csp_queda_como_bloqueo_sin_correlation_id(self):
+        report = {"csp-report": {"document-uri": "http://127.0.0.1:18080/cita",
+                                 "blocked-uri": "https://servidor-real.example/iframe/calc?idTrabajador=77&token=SECRETO",
+                                 "effective-directive": "object-src"}}
+        status, _, _ = self._request("POST", "/__pepper/csp-report", body=json.dumps(report),
+                                     headers={"Content-Type": "application/csp-report"})
+        self.assertEqual(status, 204)
+        entry = self.recorder.entries[-1]
+        self.assertEqual(entry["direction"], "blocked")
+        self.assertEqual(entry["kind"], "csp")
+        self.assertEqual(entry["blocked_host"], "servidor-real.example")
+        self.assertEqual(entry["blocked_uri"], "https://servidor-real.example/iframe/calc")
+        self.assertEqual(entry["blocked_query"], {"idTrabajador": "77", "token": "[REDACTADO]"})
+        self.assertEqual(entry["directive"], "object-src")
+        self.assertNotIn("correlation_id", entry, "un bloqueo no es una petición: no debe anclar una traza")
+        self.assertEqual(len([e for e in self.recorder.entries if e.get("direction") == "request"]), 0,
+                         "el reporte no se registra como petición ni se reenvía al app")
+
+    def test_reporte_del_guardian_queda_como_bloqueo(self):
+        body = json.dumps({"kind": "window.open", "blocked_uri": "https://otro.example/x", "document_uri": "http://127.0.0.1:18080/home"})
+        status, _, _ = self._request("POST", "/__pepper/nav-report", body=body, headers={"Content-Type": "text/plain"})
+        self.assertEqual(status, 204)
+        entry = self.recorder.entries[-1]
+        self.assertEqual((entry["direction"], entry["kind"], entry["blocked_host"]), ("blocked", "window.open", "otro.example"))
+
+    def test_get_al_endpoint_de_reportes_no_se_reenvia(self):
+        status, _, _ = self._request("GET", "/__pepper/csp-report")
+        self.assertEqual(status, 404)
+        self.assertEqual(self.recorder.entries, [])
+
+    def test_el_bloqueo_lo_lee_el_parser_como_evidencia_protegida(self):
+        from pepper.proxy import blocked_record
+        entry = blocked_record("csp", {"csp-report": {"blocked-uri": "https://servidor-real.example/calc?a=1", "document-uri": "http://127.0.0.1/cita"}})
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "http.jsonl"
+            path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+            t0 = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
+            session = Session(session_id="s", flow_name="f", observed_start=t0, observed_end=t0 + timedelta(hours=1),
+                              tz=timezone.utc, collectors=[])
+            events, unparsed = HttpProxyParser().parse_file(path, "http.jsonl", session)
+        self.assertEqual(unparsed, [])
+        event = events[0]
+        self.assertEqual((event.event_type, event.severity, event.component), ("custom", "warn", "navegador"))
+        self.assertIsNone(event.correlation_id)
+        self.assertTrue(event.is_protected, "la reducción jamás descarta un bloqueo")
+        self.assertIn("servidor-real.example", event.operation)
 
     def test_el_jsonl_lo_lee_el_parser_del_nucleo(self):
         self._request("POST", "/rechazo", body=json.dumps({"citizenId": 7}),

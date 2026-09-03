@@ -49,6 +49,34 @@ Una sola secuencia, de arriba a abajo. ✋ = gate humano.
 
 Repite 5–8 por cada flujo que quieras entender.
 
+#### Qué te toca hacer a ti en el paso 5 (Observe), minuto a minuto
+
+Es el único paso donde **tú operas el sistema** y el agente solo mira. Si no queda claro qué se espera de ti, la evidencia sale pobre. Así va:
+
+| | Quién | Qué pasa |
+|---|---|---|
+| 1 | tú | Invocas `/pepper-observe <nombre del flujo>`. El nombre, en palabras de la oficina: `registro de solicitud`, `cumplir cita`. No es un identificador técnico. |
+| 2 | el agente | Verifica el aislamiento y comprueba que cada colector está emitiendo líneas **ahora**. Te dice por dónde entrar y con qué usuario. |
+| 3 | el agente | **Abre la ventana** y se queda quieto: no toca la aplicación ni genera tráfico. |
+| 4 | **tú** | **Ejecutas el flujo** en el navegador, como lo haría quien usa el sistema a diario. |
+| 5 | tú | Dices **"terminé"** y describes en una frase qué hiciste. |
+| 6 | el agente | Cierra la ventana, espera el margen, captura con `pepper collect` y te reporta qué quedó. |
+
+**Tres cosas que cambian la calidad de lo que se descubre:**
+
+- **Un flujo a la vez.** No abras otras pantallas en paralelo mientras la ventana está abierta: dos cosas al mismo tiempo son difíciles de separar después.
+- **Provoca al menos un rechazo.** Deja un campo obligatorio vacío, mete una fecha imposible, intenta guardar algo duplicado. **El rechazo es la evidencia más valiosa que existe**, porque dice qué condición exige el sistema de verdad — y eso es una regla de negocio. Un flujo que sale perfecto a la primera enseña la mitad.
+- **Lo que se atora también sirve.** Si no pudiste terminar, dilo: un flujo que se traba es evidencia igual de buena, y queda registrado.
+- **Si una pantalla sale en blanco o un botón no hace nada, no lo arregles: menciónalo.** Tu navegador está fuera de los contenedores, así que el ingress le impone una política que solo deja cargar desde `127.0.0.1`. Lo que el legacy intente traer de un servidor real (una calculadora en un `<iframe>`, un editor de documentos, un script) el navegador lo bloquea **antes de salir** y lo reporta: queda en la evidencia como una dependencia externa. Ese blanco es un hallazgo.
+
+**Qué decir al terminar.** Una frase basta, y va tal cual a la evidencia como `operator_note`:
+
+> *"Registré un trabajador de primera vez con su empresa, le saqué turno y lo atendí. Al guardar sin CURP me marcó error, lo corregí y ya pasó."*
+
+Con eso el agente sabe qué buscar en las 400 sentencias que capturó. **No apuntes nada mientras operas**: cada petición, cada consulta a la base y cada línea del servidor ya se están guardando.
+
+**¿Varios flujos?** Uno por sesión. Termina el que estás haciendo, deja que se capture, y vuelve a invocar `/pepper-observe` con el siguiente nombre. Cada uno queda en su propia carpeta (`flow-001`, `flow-002`, …) y se analiza por separado.
+
 ### Escalón 2 · el sistema ya corre
 
 Igual, sin 3 y 4: `/pepper-init` → `/pepper-observe <flujo>` → `/pepper-correlate` → `/pepper-discover` → `/pepper-export`. Si puedes, pon el proxy de PEPPER delante de la aplicación (`python3 -m pepper proxy --upstream <host:puerto> --out http.jsonl`): tendrás `correlation_id` igual que en un entorno rehidratado. Sin proxy delante, la correlación va por afinidad y ventana temporal, y el discovery fija confianzas más bajas. Si quieres parsers para sus logs, `/pepper-inspect` sobre lo que tengas del sistema te deja un borrador de perfil.
