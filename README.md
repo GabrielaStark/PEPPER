@@ -18,7 +18,7 @@ Clonas, corres `/pepper-init`, y la herramienta te lleva fase por fase: [empieza
 
 - **stark** — el framework Spec-Driven de la autora: convierte Claude Code en un equipo que trabaja con specs, con gates humanos y sellos. Hace **onboarding estático** de un legacy: código, documentación, configuración.
 - **PEPPER** — esta herramienta: **descubrimiento dinámico**. Agrega la fuente que el análisis estático no puede ver: el comportamiento real del sistema mientras corre. Es independiente de stark, y lo complementa: su salida es el análisis arqueológico que stark consume en reingeniería.
-- **El núcleo** (`pepper/`) — Python, sin dependencias: lo mecánico y repetible (parsear, reducir, correlacionar, empaquetar, validar). Las manos.
+- **El núcleo** (`pepper/`) — Python y biblioteca estándar para captura/correlación; `jsonschema` es obligatorio para validar y publicar. Hace lo mecánico y repetible. Las manos.
 - **Los agentes** (`.claude/`) — comandos `/pepper-*`, subagentes y skills, con la misma forma que stark: una fase por comando, un gate humano al final de cada una. La cabeza.
 
 > **PEPPER piensa antes de que stark actúe.**
@@ -103,7 +103,7 @@ y adentro:
 2. **`/pepper-inspect`** — el análisis del stack detectado, con cada afirmación citando evidencia.
 3. **`/pepper-rehydrate`** — te presenta el **plan** para levantarlo en local y se detiene ✋. Este gate es tuyo: si el plan dice WildFly y tú sabes que producción es Tomcat, aquí lo dices y se corrige. Nada se levanta hasta que apruebes. Ya aprobado: contenedores con las IPs y hostnames que el artefacto espera, respaldo restaurado, todo lo externo stubeado, y `pepper isolate --live` en verde — **aislado o no se sigue**.
 4. **`/pepper-observe <flujo>`** — tú usas la aplicación (un flujo a la vez); PEPPER captura todo con `correlation_id`.
-5. **`/pepper-correlate <session_id>`** — el núcleo amarra petición → SQL → log, reduce y empaqueta.
+5. **`/pepper-correlate <session_id>`** — el núcleo amarra petición → SQL → log, reduce y empaqueta. Antes de abrir Claude Code aplica un gate local de secretos/PII y deja un manifest externo obligatorio.
 6. **`/pepper-discover <session_id>`** → **`/pepper-export <session_id>`** — el entregable: flujos observados, reglas de negocio candidatas, contradicciones y desconocidos, cada uno con su evidencia, publicado en `docs/pepper/discovery/` y `docs/analysis/` (listo para stark).
 
 **Si truena** (va a pasar: cada legacy enseña algo): [`docs/documentacion/TROUBLESHOOTING.md`](docs/documentacion/TROUBLESHOOTING.md) primero; si es la herramienta, abre un issue en el repo de PEPPER con el reporte del error — **sin datos de tu legacy**.
@@ -127,7 +127,7 @@ En el workspace, además: `printf 'examples/\ntests/\nscripts/\n.github/\nrequir
 ```bash
 python3 -m pepper demo                                   # legacy de juguete con evidencia ya capturada
 cd pepper-out/legacy-demo/package && claude              # o codex — el paquete trae CLAUDE.md y AGENTS.md
-python3 -m pepper export pepper-out/legacy-demo/package --out pepper-out/legacy-demo/export
+python3 -m pepper export pepper-out/legacy-demo/package --manifest pepper-out/legacy-demo/package.evidence-manifest.json --out pepper-out/legacy-demo/export
 ```
 
 El juguete esconde tres cosas a propósito — una regla de negocio no documentada, una mentira en el manual y una rama que el flujo no ejercita. La clave de respuestas: [`examples/legacy-demo/expected/notes.md`](examples/legacy-demo/expected/notes.md).
@@ -174,13 +174,13 @@ pepper/
 │   └── cli.py                         ← python3 -m pepper …
 ├── profiles/                          ← el conocimiento de cada stack, como datos
 │   └── java-wildfly-postgres/         ← primer perfil (draft): profile.json + parsers/*.json
-├── schemas/                           ← 7 contratos JSON Schema: la interfaz entre todo
+├── schemas/                           ← 8 contratos JSON Schema: la interfaz entre todo
 ├── docs/
 │   ├── pepper/                        ← OUTPUT en tu workspace: stack-report, environment, discovery/
 │   └── documentacion/                 ← este manual + ARQUITECTURA, PERFILES, VISION, fases/
 ├── templates/NOTAS-LEGACY.md          ← lo que el humano sabe del legacy; init lo copia a legacy/NOTAS.md
 ├── examples/legacy-demo/              ← legacy de juguete: artefactos, evidencia, clave de respuestas
-├── tests/                             ← 107 tests del núcleo
+├── tests/                             ← 120 tests del núcleo
 ├── scripts/verificar.py               ← auto-verificación del framework (CI)
 ├── AGENTS.md · CLAUDE.md              ← la misma guía para Codex y para Claude Code
 ├── legacy/ · evidence/ · pepper-out/  ← en tu workspace: artefactos, capturas, intermedios (ignorados)
@@ -214,9 +214,9 @@ pepper/
 
 ## Reglas no negociables
 
-1. **Toda conclusión referencia evidencia.** IDs que resuelven a un evento o a una línea cruda. `pepper export` rechaza lo que no resuelve — no publica, no corrige.
+1. **Toda conclusión referencia evidencia íntegra.** IDs que resuelven a un evento o a una línea cruda; un manifest externo obligatorio amarra los bytes fuera del paquete. `pepper export` rechaza lo que no resuelve o fue alterado.
 2. **El legacy es solo lectura.** PEPPER descubre; no repara, no moderniza, no hace commit en el repo del legacy.
-3. **El entorno rehidratado no alcanza nada externo.** Red interna, stub para cada host del artefacto, servidores foráneos re-apuntados — y `pepper isolate` lo verifica antes de levantar y contra los contenedores. El legacy corre con credenciales de producción; la salida de red no es negociable.
+3. **El entorno rehidratado no alcanza nada externo.** Todos los contenedores, incluido el ingress, viven sólo en redes internas; el host entra por un puerto publicado en loopback. Stub para cada host del artefacto, servidores foráneos re-apuntados y `pepper isolate` antes y después de levantar. La salida de red no es negociable.
 4. **Lo determinístico lo hace el núcleo.** Misma evidencia → mismos bytes. La reducción se audita en `reduction.md`; el SQL nunca se deduplica; los errores y las escrituras nunca se descartan.
 5. **Lo observado no se mezcla con lo inferido.** `correlation_id` es lo que la fuente emitió; lo inferido va aparte con su base.
 6. **Cada fase termina en gate humano.** El plan de rehydrate se aprueba antes de ejecutarse; el flujo lo ejecuta el humano; el discovery se lee completo antes de publicarse.
@@ -244,10 +244,10 @@ pepper/
 | Pieza | Estado |
 |---|---|
 | Comandos, agentes y skills (`.claude/`) | escritos; ejercitados sobre un legacy real |
-| Núcleo — Correlate, Package, Export, detect, validate, isolate, proxy | **implementados y probados** (107 tests) |
+| Núcleo — Correlate, Package, Export, detect, validate, isolate, proxy | **implementados y probados** (120 tests) |
 | Núcleo — proxy HTTP con `correlation_id` (`pepper proxy`, el ingress) | **implementado y probado**; emite `http.jsonl` por stdout y redacta credenciales |
 | Núcleo — colector genérico de contenedores (`pepper collect`) | **implementado y probado**; las fuentes del perfil (archivos dentro de contenedores) las copia el agente |
-| Contratos (`schemas/`) | 7, definidos y validados |
+| Contratos (`schemas/`) | 8, definidos y validados |
 | Perfil `java-wildfly-postgres` | `draft`: parsers probados; receta de rehydrate sin ejecutar |
 | **Pipeline completo contra un legacy real** | **ejecutado (2026-09-02)**: init → inspect → rehydrate (AISLADO --live) → observe (proxy + collect) → correlate → discover → export publicado |
 | Fixture `examples/legacy-demo` | listo; evidencia **sintética** marcada como tal; entorno Docker de referencia sin verificar |
@@ -259,7 +259,7 @@ Roadmap en [`VISION.md` §35](docs/documentacion/VISION.md).
 ## Stack y requisitos
 
 - **Claude Code** (o Codex: ver [`AGENTS.md`](AGENTS.md))
-- **Python 3.9+** — el núcleo corre sin dependencias; `jsonschema` habilita la validación de contratos (`pip install -r requirements-dev.txt`)
+- **Python 3.9+** — captura y correlación usan stdlib; `jsonschema` es obligatorio para Export (`pip install -r requirements-dev.txt`)
 - **Docker** con Compose v2 — solo para Rehydrate (escalón 1)
 - Acceso a modelo Claude Opus (recomendado para los 4 subagentes)
 

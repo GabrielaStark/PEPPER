@@ -127,10 +127,12 @@ Sin subagente. `/pepper-correlate <session_id>` corre:
 
 ```bash
 python3 -m pepper correlate evidence/<session_id> --out pepper-out/<session_id>/correlated
-python3 -m pepper package pepper-out/<session_id>/correlated --legacy legacy/ --out pepper-out/<session_id>/package
+python3 -m pepper package pepper-out/<session_id>/correlated --legacy legacy/ --out pepper-out/<session_id>/package --data-mode remote
 ```
 
-Salida: `events.jsonl` (eventos normalizados), `flow.json` / `flow.md` (por petición, con la base de cada enlace), `reduction.md` (qué se descartó y por qué), y el paquete con `prompt.md`, `CLAUDE.md`, `AGENTS.md`, evidencia, legacy y `output/`.
+Salida: `events.jsonl` (eventos normalizados), `flow.json` / `flow.md` (por petición, con la base de cada enlace), `reduction.md` (qué se descartó y por qué), el paquete con `prompt.md`, `CLAUDE.md`, `AGENTS.md`, evidencia, legacy y `output/`, y `package.evidence-manifest.json` fuera del paquete.
+
+`--data-mode remote` bloquea secretos/PII y archivos no inspeccionables. `--allow-sensitive` y `--acknowledge-unscanned` requieren una autorización humana explícita; las excepciones quedan registradas. `--data-mode local` permite material sensible, pero ese paquete no puede abrirse con Claude Code/Codex remoto.
 
 ### Cómo validar
 
@@ -169,7 +171,7 @@ pepper-out/<session_id>/package/output/runtime-discovery.json and .md
 
 ## 7. Fase 6: Export y entrega a stark
 
-`/pepper-export <session_id>` corre `python3 -m pepper export … --out docs/pepper/discovery/<session_id>` y aplica las reglas del contrato: el JSON valida contra el schema; toda conclusión referencia evidencia declarada; toda evidencia resuelve a un `event_id` o a un `raw_ref` real; las confianzas están en el vocabulario; la sesión es la del paquete. Si algo falla, **no publica**: vuelves a Discover.
+`/pepper-export <session_id>` corre `python3 -m pepper export … --manifest pepper-out/<session_id>/package.evidence-manifest.json --out docs/pepper/discovery/<session_id>` y aplica las reglas del contrato: ambos manifests coinciden; la evidencia conserva sus hashes; el JSON valida contra el schema; toda conclusión referencia evidencia declarada; toda evidencia resuelve a un `event_id` o a un `raw_ref` real; las confianzas están en el vocabulario; la sesión es la del paquete. Si algo falla, **no publica**: vuelves a Discover.
 
 Publica: `runtime-discovery.json/.md`, `validation.md`, derivados (`flows.json`, `candidate-rules.json`, `contradictions.json`, `unknowns.json`, `evidence-map.json`) y copia de `events.jsonl` y `flow.json`.
 
@@ -194,9 +196,9 @@ python3 -m pepper isolate <compose> [--hosts a,b] [--live]    # ¿el entorno reh
 python3 -m pepper proxy --upstream <host:puerto> [--listen h:p] [--out f]  # el ingress: inyecta correlation_id, emite http.jsonl
 python3 -m pepper collect <compose> <session_id> --start <ISO> --end <ISO> [--margin 30]  # la ventana, desde los contenedores
 python3 -m pepper correlate <evidencia>/ --out <dir> [--profile <id>] [--tolerance-ms 500]
-python3 -m pepper package <correlated>/ --legacy <artefactos>/ --out <dir>
-python3 -m pepper export <paquete>/ --check                   # solo validar
-python3 -m pepper export <paquete>/ --out <dir>               # validar y publicar
+python3 -m pepper package <correlated>/ --legacy <artefactos>/ --out <dir> --data-mode remote
+python3 -m pepper export <paquete>/ --manifest <manifest-externo> --check      # solo validar
+python3 -m pepper export <paquete>/ --manifest <manifest-externo> --out <dir>  # validar y publicar
 python3 -m pepper demo                                        # correlate + package sobre examples/legacy-demo
 python3 -m unittest discover -s tests                         # la suite
 python3 scripts/verificar.py                                  # auto-verificación del framework

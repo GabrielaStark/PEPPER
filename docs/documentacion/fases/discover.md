@@ -27,9 +27,11 @@ Discover no opera sobre el sistema vivo sino sobre una carpeta autocontenida que
 └── output/                     aquí escribe el agente
 ```
 
+Junto al directorio, pero fuera de él, Package conserva `<paquete>.evidence-manifest.json`. Discover no lo toca; Export lo exige para detectar una edición simultánea de evidencia y manifest interno.
+
 ## Motor intercambiable
 
-El agente se ejecuta **dentro del paquete** ("aquí está la carpeta, corre tu agente"). PEPPER no invoca APIs específicas: la adaptación por agente son dos archivos de texto (`CLAUDE.md`, `AGENTS.md`). La salida se valida contra el schema venga de quien venga.
+El agente se ejecuta **dentro del paquete** ("aquí está la carpeta, corre tu agente"). PEPPER no invoca APIs específicas: la adaptación por agente son dos archivos de texto (`CLAUDE.md`, `AGENTS.md`). La salida se valida contra el schema venga de quien venga. Antes, Package registra si el destino es remoto o local y aplica el gate de datos; un paquete marcado `local` no se abre con Claude Code/Codex remoto.
 
 **Modo contraste (opcional):** correr dos agentes sobre el mismo paquete y comparar salidas. Coincidencia por caminos distintos sube la confianza de una regla; discrepancia genera un ítem de revisión humana.
 

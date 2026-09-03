@@ -10,14 +10,14 @@ Este comando arranca PEPPER sobre un legacy. NO analiza nada: orquesta el setup,
 ## 1. Verifica las herramientas
 
 - `python3 --version` (≥ 3.9) y `python3 -m pepper --version` — obligatorio: es el núcleo determinístico.
-- `python3 -c "import jsonschema"` — opcional; sin él no se validan los contratos. Si falta, recomienda `pip install -r requirements-dev.txt`.
+- `python3 -c "import jsonschema"` — obligatorio para Export; sin él no se publica. Si falta, recomienda `pip install -r requirements-dev.txt`.
 - `docker --version` y `docker compose version` — opcionales; sin Docker no hay Rehydrate (escalón 1), pero sí Observe sobre un sistema que ya corre (escalón 2).
 
 Reporta qué hay y qué falta. No instales nada tú.
 
 ## 2. Prepara el workspace
 
-Determina el modo: si la raíz contiene código de un proyecto ajeno a PEPPER (PEPPER está instalado **encima del repo** del legacy), los artefactos son el repo mismo y NO se crea `legacy/`; si no (PEPPER es el **workspace**), asegura `legacy/`. En ambos, asegura `evidence/` y `docs/pepper/`. Si no existe `legacy/NOTAS.md`, cópialo desde `templates/NOTAS-LEGACY.md` y pídele **explícitamente al humano** que lo llene con lo que sepa (servidor y versión de producción, base, cómo arranca, servicios externos, cómo se entra, flujos que importan, quién sabe del sistema): los agentes lo leen primero y lo citan como evidencia. Una línea suya vale horas de inferencia. No muevas ni copies artefactos tú: en modo workspace, si `$ARGUMENTS` trae una ruta, indícale **explícitamente al humano** que copie (o enlace con `ln -s`) sus artefactos dentro de `legacy/`. Recuérdale la regla de oro: `legacy/`, `evidence/` y `pepper-out/` no se versionan (contienen datos ajenos); `docs/pepper/` y `docs/analysis/` sí; la herramienta se ignora.
+Determina el modo: si la raíz contiene código de un proyecto ajeno a PEPPER (PEPPER está instalado **encima del repo** del legacy), los artefactos son el repo mismo y NO se crea `legacy/`; si no (PEPPER es el **workspace**), asegura `legacy/`. En ambos, asegura `evidence/` y `docs/pepper/`. Si no existe `legacy/NOTAS.md`, cópialo desde `templates/NOTAS-LEGACY.md` y pídele **explícitamente al humano** que lo llene con lo que sepa (servidor y versión de producción, base, cómo arranca, servicios externos, cómo se entra, flujos que importan, quién sabe del sistema): los agentes lo leen primero y lo citan como evidencia. Una línea suya vale horas de inferencia. No muevas ni copies artefactos tú: en modo workspace, si `$ARGUMENTS` trae una ruta, indícale **explícitamente al humano** que copie los archivos reales dentro de `legacy/`. **No uses symlinks:** Package los rechaza a cualquier profundidad porque pueden salir del perímetro y modificar o leer el original. Recuérdale la regla de oro: `legacy/`, `evidence/` y `pepper-out/` no se versionan (contienen datos ajenos); `docs/pepper/` y `docs/analysis/` sí; la herramienta se ignora.
 
 ## 3. Determina el escalón
 

@@ -41,7 +41,7 @@ def load_schema(name: str) -> dict:
 
 def validate_instance(instance: object, schema_name: str) -> List[str]:
     """→ lista de errores (vacía si valida). Lanza ImportError si falta jsonschema."""
-    import jsonschema  # noqa: WPS433 — dependencia opcional, se reporta al usuario si falta
+    import jsonschema  # noqa: WPS433 — dependencia de validación, se reporta al usuario si falta
 
     validator = jsonschema.Draft202012Validator(load_schema(schema_name))
     errors = sorted(validator.iter_errors(instance), key=lambda e: list(e.absolute_path))

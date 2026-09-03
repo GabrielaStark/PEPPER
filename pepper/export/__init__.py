@@ -80,15 +80,34 @@ def _verify_manifest(package_dir: Path, report: Report, external: Optional[Path]
             f"el paquete no tiene {evidence_manifest.MANIFEST_NAME}: sin manifest no hay integridad de evidencia — re-empaqueta con `pepper package`")
         return
     try:
-        manifests = [("manifest del paquete", evidence_manifest.load(internal))]
+        internal_manifest = evidence_manifest.load(internal)
     except ValueError as error:
         report.errors.append(str(error))
         return
-    if external is not None:
-        try:
-            manifests.append((f"manifest externo ({external})", evidence_manifest.load(external)))
-        except (OSError, ValueError) as error:
-            report.errors.append(f"manifest externo ilegible: {error}")
+    if external is None:
+        report.errors.append(
+            "falta el manifest externo: usa --manifest <package.evidence-manifest.json>; "
+            "el manifest interno está al alcance del agente y no es una raíz de confianza"
+        )
+        return
+    try:
+        external.resolve().relative_to(package_dir.resolve())
+    except ValueError:
+        pass
+    else:
+        report.errors.append("el manifest externo debe estar FUERA del paquete y del directorio de trabajo del agente")
+        return
+    try:
+        external_manifest = evidence_manifest.load(external)
+    except (OSError, ValueError) as error:
+        report.errors.append(f"manifest externo ilegible: {error}")
+        return
+    if internal_manifest != external_manifest:
+        report.errors.append("el manifest interno no coincide con el manifest externo conservado fuera del paquete")
+    manifests = [
+        ("manifest externo", external_manifest),
+        ("manifest del paquete", internal_manifest),
+    ]
     for label, manifest in manifests:
         for error in evidence_manifest.verify(package_dir, manifest, scopes=["evidence", "legacy"]):
             report.errors.append(f"{error} [{label}]")

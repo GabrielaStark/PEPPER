@@ -84,7 +84,7 @@ Errores y excepciones observados (`errors`), distinguiendo rechazos de negocio d
 
 ### Fase 7 — Escribir y auto-validar
 
-Escribe `output/runtime-discovery.json` y `output/runtime-discovery.md`, y ejecuta el checklist de la sección 5. Si tienes `python3` y el núcleo de PEPPER, valida con `python3 -m pepper export <paquete> --check`.
+Escribe `output/runtime-discovery.json` y `output/runtime-discovery.md`, y ejecuta el checklist de la sección 5. Si tienes `python3` y el núcleo de PEPPER, valida con `python3 -m pepper export <paquete> --manifest <paquete>.evidence-manifest.json --check`. El manifest está junto al paquete, fuera de él; úsalo como entrada y no lo modifiques.
 
 ## 4. La salida
 
@@ -119,7 +119,7 @@ La misma historia para lectura humana, en español:
 
 ## 5. Checklist de auto-validación
 
-- [ ] El JSON valida contra el schema (`pepper export --check` o revisión manual campo por campo).
+- [ ] El JSON valida contra el schema (`pepper export --manifest <manifest-externo> --check` o revisión manual campo por campo).
 - [ ] Todo ID de evidencia referenciado existe en el registro `evidence`, y toda entrada del registro resuelve a un `event_id` real o a un `raw_ref` real.
 - [ ] `flow.session_id` coincide con `session.json`.
 - [ ] Cada regla candidata tiene "parece", confianza del vocabulario y evidencia; las respaldadas por código tienen `code_refs`.

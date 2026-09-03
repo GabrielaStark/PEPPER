@@ -48,7 +48,7 @@ Escribe ambos archivos en `output/` desde el primer borrador. Muestra al humano 
 
 ### Fase 8 — Auto-validación y cierre
 
-1. `python3 -m pepper export <paquete> --check` — si rechaza, corrige y repite hasta que valide.
+1. `python3 -m pepper export <paquete> --manifest <paquete>.evidence-manifest.json --check` — si rechaza, corrige y repite hasta que valide. El manifest está junto al paquete, no dentro; úsalo pero no lo modifiques.
 2. Checklist del skill `discovery-runtime` ítem por ítem, ✅/❌ explícitos.
 3. Cierras solo con aprobación explícita del humano; el siguiente paso es `/pepper-export <session_id>`.
 

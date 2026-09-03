@@ -3,12 +3,13 @@
 Entrada: paquete controlado con `output/runtime-discovery.json` escrito por el agente.
 
 ```bash
-python3 -m pepper export <paquete>/ --check              # solo validar (el agente se auto-verifica)
-python3 -m pepper export <paquete>/ --out <publicación>/  # validar y publicar
+python3 -m pepper export <paquete>/ --manifest <manifest-externo> --check               # solo validar
+python3 -m pepper export <paquete>/ --manifest <manifest-externo> --out <publicación>/   # validar y publicar
 ```
 
 Valida contra [schemas/runtime-discovery.schema.json](../../schemas/runtime-discovery.schema.json) y aplica las reglas del contrato:
 
+- el manifest externo obligatorio coincide con el interno y conserva los hashes de evidencia/legacy;
 - toda conclusión referencia evidencia declarada;
 - toda evidencia resuelve a un `event_id` de `evidence/events.jsonl` o a un `raw_ref` real (archivo:línea dentro de `evidence/raw/`);
 - las confianzas están dentro del vocabulario;
