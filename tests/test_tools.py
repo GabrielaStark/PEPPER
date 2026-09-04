@@ -43,7 +43,7 @@ class DetectTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / ".claude" / "commands").mkdir(parents=True)
-            (root / ".claude" / "commands" / "pepper-init.md").write_text("---\ndescription: x\n---\n", encoding="utf-8")
+            (root / ".claude" / "commands" / "pepper.md").write_text("---\ndescription: x\n---\n", encoding="utf-8")
             (root / "examples" / "demo").mkdir(parents=True)
             (root / "examples" / "demo" / "pom.xml").write_text("<project/>", encoding="utf-8")
             (root / "examples" / "demo" / "standalone.xml").write_text("urn:jboss:domain", encoding="utf-8")

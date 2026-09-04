@@ -241,6 +241,130 @@ def _cmd_collect(args: argparse.Namespace) -> int:
     return 0 if captured else 1
 
 
+def _cmd_rehydrate(args: argparse.Namespace) -> int:
+    from pepper.profiles import load_profile
+    from pepper.rehydrate import Blocked, bring_up, make_plan, render, write_environment
+
+    profile = load_profile(args.profile)
+    notes = args.notes or (args.legacy / "NOTAS.md")
+    try:
+        plan = make_plan(args.legacy, profile, host_port=args.port, notes_path=notes)
+        written = render(plan, profile, args.out)
+    except Blocked as error:
+        print(f"rehydrate · BLOCKED · {error}")
+        args.docs.mkdir(parents=True, exist_ok=True)
+        (args.docs / "environment.json").write_text(json.dumps({
+            "schema_version": "0.1.0", "status": "BLOCKED", "profile_id": profile.id, "support_tier": 1,
+            "components": [], "validations": [], "missing_evidence": [{"missing": str(error)}], "notes": []},
+            ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return 1
+    print(f"rehydrate · plan · {plan.artifact.name} + {plan.dump.name} · perfil de configuración '{plan.spring_profile}'")
+    print(f"  base: postgres:{plan.postgres_version} en {plan.db_ip}:{plan.db_port}/{plan.db_name} (usuario {plan.db_user}); restaura con postgres:{plan.pg_restore_version}")
+    print(f"  app: {plan.server} → {plan.server_image} en {plan.app_ip}; ingress en http://127.0.0.1:{plan.host_port}")
+    print(f"  externos al stub ({plan.stub_ip}): {', '.join(plan.external_hosts) or 'ninguno'}; puertos {plan.stub_ports}")
+    if plan.external_by_ip:
+        print(f"  por IP directa (sin registro): {', '.join(plan.external_by_ip)}")
+    for d in plan.deviations:
+        print(f"  ! {d}")
+    print(f"  escrito: {', '.join(str(w.relative_to(args.out)) for w in written)} en {args.out}")
+    if not args.up:
+        print(f"  siguiente: {_invocation()} rehydrate {args.legacy} --profile {profile.id} --up   (o revisa el compose primero)")
+        return 0
+    status, validations, missing = bring_up(plan, profile, args.out, wait_s=args.wait)
+    env_path, val_path = write_environment(plan, profile, status, validations, missing, args.docs, args.out)
+    for v in validations:
+        print(f"  {'✓' if v['result'] == 'pass' else '✗'} {v['check']}: {v.get('detail', '')[:120]}")
+    print(f"rehydrate · {status} · {env_path} · {val_path}")
+    return 0 if status in ("READY", "PARTIAL") else 1
+
+
+def _cmd_explore(args: argparse.Namespace) -> int:
+    import json as _json
+    import re as _re
+    import time as _time
+    from datetime import datetime
+
+    from pepper.explore import Explorer, operator_note, write_session
+    from pepper.isolate import check_live, check_static, resolve_compose
+    from pepper.observe import collect
+    from pepper.profiles import load_profile
+
+    config = _json.loads(args.config.read_text(encoding="utf-8"))
+    system_map = _json.loads(args.map.read_text(encoding="utf-8")) if args.map else {"entrypoints": []}
+    out_dir = args.out / args.session
+    if out_dir.exists() and any(out_dir.iterdir()):
+        print(f"pepper explore: evidence/{args.session} ya existe; usa otro --session", file=sys.stderr)
+        return 2
+
+    # Fail-closed: el explorador solo corre sobre un entorno AISLADO verificado en vivo.
+    hosts = [h.strip() for h in (args.hosts or "").split(",") if h.strip()]
+    try:
+        compose, resolved = resolve_compose(args.compose)
+    except (RuntimeError, ValueError) as error:
+        print(f"pepper explore: {error}", file=sys.stderr)
+        return 2
+    report = check_static(compose, hosts, args.ingress, resolved=resolved, compose_dir=args.compose.resolve().parent)
+    report.findings.extend(check_live(args.compose, hosts, args.ingress).findings)
+    if report.verdict != "VERIFIED":
+        print(f"pepper explore: el entorno no está AISLADO (verificado): {report.verdict}. No se explora.", file=sys.stderr)
+        for finding in report.errors + report.unknowns:
+            print(f"  ✗ {finding.check}", file=sys.stderr)
+        return 1
+    print(f"explore · aislamiento verificado en vivo ({len([f for f in report.findings if f.level == 'ok'])} comprobaciones)")
+
+    plan = _json.loads(args.plan.read_text(encoding="utf-8")) if args.plan else None
+    started = datetime.now().astimezone()
+    with Explorer(config, system_map, out_dir, headless=not args.headed) as explorer:
+        if plan:
+            summary = explorer.run_plan(plan, docker_compose=args.compose)
+            kind = f"plan ({args.plan.name})"
+        else:
+            summary = explorer.walk(docker_compose=args.compose, submit=not args.no_submit)
+            kind = "recorrido automático por rol y pantalla"
+        actions = [a.record() for a in explorer.actions]
+    _time.sleep(args.settle)  # que el sistema termine lo que la última acción disparó
+    ended = datetime.now().astimezone()
+
+    print(f"explore · {len(actions)} acciones · {summary}")
+    # Captura: lo que el ingress y los contenedores vieron en la ventana. `docker logs`
+    # solo devuelve lo ya emitido: se espera el margen antes de pedirlo.
+    _time.sleep(args.margin)
+    captured = collect(compose, args.session, started, ended, args.out, margin_s=args.margin, ingress=args.ingress)
+    collectors = [{"source": "explorer", "kind": "generic", "file": "explore.jsonl",
+                   "note": "explore.jsonl del explorador de PEPPER: una línea por acción del navegador automático (rol, ruta, botón, resultado, mensajes, captura)."}]
+    profile = load_profile(args.profile) if args.profile else None
+    for item in captured:
+        if "file" not in item:
+            if "warning" in item:
+                print(f"  ! {item['warning']}")
+            continue
+        rel = item["file"].split("/", 1)[1] if "/" in item["file"] else item["file"]
+        print(f"  ✓ {item['service']:<10} → {rel} ({item['lines']} líneas)")
+        if rel == "http.jsonl":
+            collectors.append({"source": "http-proxy", "kind": "generic", "file": rel,
+                               "note": "stdout del ingress (pepper/proxy.py): una línea JSON por petición y por respuesta; origen del correlation_id; incluye direction=blocked del navegador."})
+            continue
+        source = None
+        for collector in (profile.data.get("collectors", []) if profile else []):
+            if rel.split("/")[-1] in (collector.get("location") or "") or collector.get("source") == item["service"]:
+                source = collector["source"]
+                break
+        if source:
+            collectors.append({"source": source, "kind": "profile", "file": rel,
+                               "note": f"docker logs --timestamps del servicio {item['service']} (prefijo RFC3339 UTC de Docker)."})
+        else:
+            print(f"  – {rel}: sin parser en el perfil; se conserva pero no se correlaciona")
+    note = operator_note(actions, summary, kind)
+    write_session(out_dir, args.session, args.flow_name or kind, started, ended,
+                  profile.id if profile else None, note, collectors)
+    print(f"  session.json: {out_dir / 'session.json'}")
+    print(f"  nota: {note[:300]}")
+    print(f"  capturas: {out_dir / 'screens'}")
+    print()
+    print(f"Siguiente: {_invocation()} correlate {out_dir} --out pepper-out/{args.session}/correlated")
+    return 0
+
+
 def _cmd_map(args: argparse.Namespace) -> int:
     import json as _json
 
@@ -350,6 +474,8 @@ COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
     "export": _cmd_export,
     "detect": _cmd_detect,
     "map": _cmd_map,
+    "rehydrate": _cmd_rehydrate,
+    "explore": _cmd_explore,
     "validate": _cmd_validate,
     "isolate": _cmd_isolate,
     "proxy": _cmd_proxy,
@@ -409,6 +535,32 @@ def build_parser() -> argparse.ArgumentParser:
     map_cmd.add_argument("--dump", type=Path, help="respaldo de la base (para inventariar datos y servidores foráneos)")
     map_cmd.add_argument("--evidence", type=Path, help="directorio de evidencia (evidence/<sid>) para medir cobertura observada")
     map_cmd.add_argument("--out", type=Path, default=Path("docs/pepper/system-map.json"), help="dónde escribir el mapa (default docs/pepper/system-map.json); la carpeta legible map/ queda al lado")
+
+    rehydrate = commands.add_parser("rehydrate", help="del artefacto y el respaldo a un entorno aislado corriendo: compose desde el perfil, restauración, arranque, verificación")
+    rehydrate.add_argument("legacy", type=Path, help="directorio con el desplegable, el respaldo y NOTAS.md")
+    rehydrate.add_argument("--profile", required=True, help="perfil con la receta (compose_template, restore_template, server_images)")
+    rehydrate.add_argument("--out", type=Path, default=Path("pepper-out/rehydrate"), help="dónde escribir compose, restore.sh, proxy, stub y .env")
+    rehydrate.add_argument("--docs", type=Path, default=Path("docs/pepper"), help="dónde escribir environment.json y validation.md")
+    rehydrate.add_argument("--notes", type=Path, help="NOTAS.md (default legacy/NOTAS.md)")
+    rehydrate.add_argument("--port", type=int, default=18080, help="puerto en loopback donde el ingress publica el app")
+    rehydrate.add_argument("--up", action="store_true", help="además de planear: levantar, restaurar, esperar, verificar y validar")
+    rehydrate.add_argument("--wait", type=int, default=300, help="segundos máximos de espera al arranque del app")
+
+    explore = commands.add_parser("explore", help="recorre el sistema solo: entra con cada rol, abre cada pantalla, provoca rechazos, llena y guarda; o ejecuta un plan del agente")
+    explore.add_argument("compose", type=Path, help="docker-compose.yml del entorno rehidratado (se verifica el aislamiento en vivo antes)")
+    explore.add_argument("--config", type=Path, required=True, help="explore.json: cómo entrar, roles y credenciales de la base desechable, pistas de llenado")
+    explore.add_argument("--map", type=Path, help="system-map.json: de ahí salen las rutas a recorrer")
+    explore.add_argument("--session", required=True, help="id de la sesión de evidencia (p. ej. explore-001)")
+    explore.add_argument("--flow-name", help="nombre del flujo (default: el modo)")
+    explore.add_argument("--plan", type=Path, help="plan.json escrito por el agente: pasos encadenados en vez del recorrido automático")
+    explore.add_argument("--profile", help="perfil cuyos colectores declaran los parsers de los logs capturados")
+    explore.add_argument("--hosts", help="hosts externos del artefacto (para isolate), separados por coma")
+    explore.add_argument("--ingress", default="ingress")
+    explore.add_argument("--out", type=Path, default=Path("evidence"), help="raíz de la evidencia (default evidence/)")
+    explore.add_argument("--no-submit", action="store_true", help="solo abrir y fotografiar pantallas; no apretar botones")
+    explore.add_argument("--headed", action="store_true", help="navegador visible (para depurar)")
+    explore.add_argument("--settle", type=int, default=12, help="segundos de espera al final antes de cerrar la ventana (default 12)")
+    explore.add_argument("--margin", type=int, default=30, help="margen de captura a cada lado (default 30)")
 
     validate = commands.add_parser("validate", help="valida archivos contra los contratos de schemas/")
     validate.add_argument("files", type=Path, nargs="+", help="profile.json, parsers/*.json, session.json, environment.json, flow.json, events.jsonl, system-map.json, funcional.json")

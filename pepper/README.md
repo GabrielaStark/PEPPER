@@ -12,6 +12,8 @@ python3 -m unittest discover -s tests       # la suite
 |---|---|---|
 | `detect` | `detect.py` | qué perfil aplica a unos artefactos, con qué señales |
 | `map` | `inspect/systemmap.py`, `inspect/pgdump.py` | todo lo que el sistema ES: rutas, jobs, pantallas, clases, tablas, catálogos, triggers → `system-map.json` + `map/*.md` |
+| `rehydrate` | `rehydrate.py` | del artefacto y el respaldo a un entorno aislado corriendo: lee la configuración embebida, rinde compose y restauración desde el perfil, restaura, arranca, verifica → `environment.json` |
+| `explore` | `explore.py` | el sistema se recorre solo: navegador headless local por el ingress, un usuario por rol, cada pantalla, rechazos provocados, llenado, planes encadenados → `evidence/<sid>/` |
 | `validate` | `validate.py` | instancias contra los contratos de `schemas/` |
 | `isolate` | `isolate.py` | el entorno rehidratado no alcanza nada externo (compose y, con `--live`, contenedores) |
 | `proxy` | `proxy.py` | el ingress: reenvía, inyecta `correlation_id`, emite `http.jsonl`, aísla al navegador; autocontenido (se monta solo en el contenedor) |
@@ -22,4 +24,4 @@ python3 -m unittest discover -s tests       # la suite
 
 Transversales: `cli.py`, `session.py` (session.json), `profiles.py`, `manifest.py` (hashes de evidencia), `sensitive.py` (gate de datos), `stub.py` (el sumidero HTTP de los hosts externos), `workspace.py`.
 
-Discover no está en el núcleo: lo hace el agente sobre el paquete, bajo la skill `discovery-funcional`, y el núcleo solo lo valida.
+Discover no está en el núcleo: lo hace el agente sobre el paquete, bajo la skill `discovery-funcional`, y el núcleo solo lo valida. `explore.json` (cómo entrar, un usuario por rol, cómo fijar la contraseña en la base desechable) y los planes también los escribe el agente, desde el mapa.

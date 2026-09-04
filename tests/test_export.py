@@ -106,7 +106,7 @@ class ExportTest(unittest.TestCase):
             project = Path(tmp) / "proyecto"
             for rel in (".claude/commands", "pepper", "docs/documentacion", "docs/pepper", "src", "pepper-out"):
                 (project / rel).mkdir(parents=True)
-            (project / ".claude" / "commands" / "pepper-init.md").write_text("---\ndescription: x\n---\n", encoding="utf-8")
+            (project / ".claude" / "commands" / "pepper.md").write_text("---\ndescription: x\n---\n", encoding="utf-8")
             (project / "src" / "App.java").write_text("class App {}", encoding="utf-8")
             (project / "docs" / "manual.md").write_text("# manual", encoding="utf-8")
             (project / "docs" / "documentacion" / "PRINCIPIOS.md").write_text("# tool", encoding="utf-8")

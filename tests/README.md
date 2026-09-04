@@ -57,3 +57,6 @@ Solo biblioteca estándar (`unittest`); `jsonschema` habilita las comprobaciones
 - Parsers de más stacks: cada perfil nuevo trae sus líneas de log como fixture.
 - Ventanas concurrentes: dos peticiones traslapadas resueltas por afinidad, y el caso ambiguo que debe quedar sin asignar.
 - La integración completa contra el legacy-demo **levantado de verdad**, comparando evidencia real contra la sintética.
+
+- `test_rehydrate.py` — del artefacto sintético y el respaldo escrito por el test al plan y al compose; BLOCKED cuando falta algo. Sin Docker.
+- `test_explore.py` — valores plausibles, la nota de sesión, el parser de `explore.jsonl`. Sin navegador.

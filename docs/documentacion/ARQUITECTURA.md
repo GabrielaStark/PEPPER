@@ -18,11 +18,12 @@ Todo conocimiento específico de un stack (cómo detectarlo, cómo levantarlo, c
                                          │ (datos, no código del núcleo)
                                          ▼
 ┌─────────┐   ┌───────────┐   ┌─────────┐   ┌───────────┐   ┌──────────┐   ┌──────────┐   ┌────────┐
-│ INSPECT │ → │ REHYDRATE │ → │ OBSERVE │ → │ CORRELATE │ → │ PACKAGE  │ → │ DISCOVER │ → │ EXPORT │
+│   MAP   │ → │ REHYDRATE │ → │ EXPLORE │ → │ CORRELATE │ → │ PACKAGE  │ → │ DISCOVER │ → │ EXPORT │
 └─────────┘   └───────────┘   └─────────┘   └───────────┘   └──────────┘   └──────────┘   └────────┘
- stack +       entorno en      evidencia     eventos y       carpeta        el agente       contrato
- MAPA del      contenedores    cruda de      peticiones      autocontenida  escribe QUÉ     validado,
- sistema       aislados        una ventana   con acción      mapa+evidencia HACE el sistema acumulado
+ lo que el     entorno en      el sistema    eventos y       carpeta        el agente       contrato
+ sistema ES    contenedores    se recorre    peticiones      autocontenida  escribe QUÉ     validado,
+               sin salida      solo (o una   con acción      mapa+evidencia HACE el sistema acumulado
+                               persona)
 ```
 
 Dos fuentes, no una. **El mapa** (`pepper map`, Inspect) dice lo que el sistema *es*: rutas, jobs, pantallas con campos y botones, clases con constantes y mensajes, tablas con conteo, triggers y funciones con cuerpo, catálogos completos (roles, menús, estados, tipos, parámetros) y distribuciones reales. **La evidencia** (Observe → Correlate) dice lo que el sistema *hace* cuando alguien lo opera: cada petición con su acción y campos, cada escritura, cada rechazo, cada job que corrió solo. Discover cruza las dos y escribe el documento funcional; Export lo valida y lo acumula.
@@ -32,8 +33,9 @@ Dos fuentes, no una. **El mapa** (`pepper map`, Inspect) dice lo que el sistema 
 | Módulo | Entrada | Salida | Dependencia de tecnología |
 |---|---|---|---|
 | `inspect` | artefacto + respaldo + perfil | `system-map.json` + `map/*.md` (`pepper map`); `pepper detect` | vía `extractors.json` del perfil (patrones) y lectores genéricos (zip, javap, pg_dump custom) |
-| `rehydrate` | artefactos + perfil | entorno corriendo + `environment.json`; `pepper isolate` verifica que no alcance nada externo | vía receta del perfil |
-| `observe` | entorno corriendo + ventana | evidencia cruda por fuente (`pepper proxy`, `pepper collect`) | colectores genéricos + del perfil |
+| `rehydrate` | artefacto + respaldo + perfil | `pepper rehydrate --up`: la red que el artefacto espera, restauración, arranque, `isolate` antes y en vivo → `environment.json` (`READY`/`PARTIAL`/`BLOCKED`/`FAILED`) | vía plantillas e imágenes del perfil; lectura genérica de la configuración embebida |
+| `explore` | entorno corriendo + mapa + `explore.json` | `pepper explore`: navegador headless local por el ingress; un usuario por rol; cada pantalla; rechazos; llenado; planes → `evidence/<sid>/` | ninguna (selectores y roles vienen de `explore.json`, que el agente escribe desde el mapa) |
+| `observe` | entorno corriendo + una persona | `pepper collect`: la ventana desde los contenedores | colectores genéricos + del perfil |
 | `correlate` | evidencia cruda | `events.jsonl` + `flow.json/md` (petición → acción → SQL/log) | vía parsers del perfil; correlación genérica |
 | `package` | correlated + mapa + legacy + discovery anterior | paquete controlado + manifest externo + gate de datos | ninguna |
 | `discover` | paquete controlado | `funcional.json/md` (lo escribe el agente) | ninguna |

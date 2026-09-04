@@ -4,3 +4,4 @@
 # verificar.py (sin él usa un parser mínimo de frontmatter).
 jsonschema>=4.17
 pyyaml==6.0.2
+playwright>=1.50   # pepper explore: el navegador headless local (python3 -m playwright install chromium)

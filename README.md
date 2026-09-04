@@ -4,274 +4,93 @@
 >
 > Por [@iamgabstark_](https://iamgabstark.com/) · complemento de [stark](https://github.com/GabrielaStark/stark) · [Principios](docs/documentacion/PRINCIPIOS.md)
 
-**PEPPER es descubrimiento dinámico de sistemas legacy: toma lo que quede de un sistema, saca todo lo que el sistema ES (pantallas, roles, catálogos, reglas en la base), lo vuelve a poner vivo en contenedores aislados, observa a alguien usándolo, y escribe QUÉ HACE — quién lo usa y qué puede hacer cada quien, los recorridos, los estados, las reglas de negocio, lo que corre solo, con qué habla, cuánto se usa y qué no se sabe — cada afirmación con su origen.**
+**Le das un binario y un respaldo de un sistema legacy. PEPPER saca todo lo que el sistema ES (pantallas, roles, catálogos, reglas en la base), lo levanta en contenedores sin salida, lo recorre solo con cada rol, y escribe QUÉ HACE: quién lo usa y qué puede hacer cada quien, los recorridos, los estados, las reglas de negocio, lo que corre solo, con qué habla y qué pasa si falla, cuánto se usa, y qué no se sabe — cada afirmación con su origen.** Es el documento con el que alguien empieza una reingeniería sin haber visto el sistema.
 
-**¿Por qué PEPPER?** **P**lataforma de **E**videncia y **P**rocesamiento para **P**atrones de **E**jecución y **R**eingeniería. Y sí: Pepper organiza la realidad antes de que Stark actúe.
+**¿Por qué PEPPER?** **P**lataforma de **E**videncia y **P**rocesamiento para **P**atrones de **E**jecución y **R**eingeniería. Pepper organiza la realidad antes de que Stark actúe.
 
-Donde stark lee el manual del coche, PEPPER lo enciende, lo maneja y te dice qué hace de verdad. Sirve para cualquier legacy: lo que la herramienta sabe de cada tecnología entra como datos (perfiles), nunca como código del núcleo.
-
-Clonas, corres `/pepper-init`, y la herramienta te lleva fase por fase: [empieza aquí →](docs/documentacion/QUICKSTART.md)
-
----
-
-## Las piezas: qué es cada cosa
-
-- **stark** — el framework Spec-Driven de la autora: convierte Claude Code en un equipo que trabaja con specs, con gates humanos y sellos. Hace **onboarding estático** de un legacy: código, documentación, configuración.
-- **PEPPER** — esta herramienta: **descubrimiento dinámico**. Agrega la fuente que el análisis estático no puede ver: el comportamiento real del sistema mientras corre. Es independiente de stark, y lo complementa: su salida es el análisis arqueológico que stark consume en reingeniería.
-- **El núcleo** (`pepper/`) — Python y biblioteca estándar para captura/correlación; `jsonschema` es obligatorio para validar y publicar. Hace lo mecánico y repetible. Las manos.
-- **Los agentes** (`.claude/`) — comandos `/pepper-*`, subagentes y skills, con la misma forma que stark: una fase por comando, un gate humano al final de cada una. La cabeza.
-
-> **PEPPER piensa antes de que stark actúe.**
-
-### El problema
-
-Entender un legacy no es solo leer código. Hay flujos que nadie documentó, reglas de negocio escondidas, dependencias que solo aparecen al ejecutar, ambientes que nadie sabe levantar, y documentación que afirma cosas que el sistema no hace. Cada fuente miente un poco. PEPPER contrasta las tres:
-
-```text
-lo que dice el código + lo que dice la documentación + lo que realmente hace el sistema
-```
-
-### Lo que PEPPER no es
-
-No es "una IA que lee logs". El agente interpreta; PEPPER prepara la realidad que debe interpretar: reconstruye el entorno, captura, normaliza, correlaciona, reduce el contexto, y valida que cada conclusión apunte a evidencia. No repara nada, no moderniza nada, y no promete levantar cualquier sistema — cuando no puede, dice exactamente qué falta.
-
----
-
-## Quick Start
-
-### Instalar
-
-Paso a paso, empezando de cero.
-
-**Requisitos**: `git`, `python3` (3.9+; el que trae macOS sirve), **Docker** (para levantar el legacy) y [Claude Code](https://claude.com/claude-code) o Codex — los comandos `/pepper-*` corren ahí.
-
-Dos formas, según dónde viva tu legacy:
-
-| Tu situación | Modo |
-|---|---|
-| Tienes artefactos sueltos (WAR, EXE, dist, dump, configs) sin repo | **Workspace** (lo que sigue) |
-| El legacy tiene su repo y ahí mismo vas a seguir con stark | **Encima del repo** (más abajo) |
-
-**Workspace:**
+## En tres pasos
 
 ```bash
-# 1. Descarga la herramienta con el nombre de TU proyecto
-git clone https://github.com/GabrielaStark/PEPPER.git sistema-nominas
-cd sistema-nominas
-
-# 2. IMPORTANTE — desconéctate del repo de la herramienta EMPEZANDO DE CERO.
-#    (quitar solo el remote NO basta: los archivos de PEPPER seguirían rastreados
-#    y un push a tu propio remoto versionaría toda la herramienta — regla de oro)
-rm -rf .git && git init
-
-#    (¿tu proyecto tiene remoto propio? git remote add origin <tu-repo>)
-
-# 3. Opcional, recomendado: validación de contratos y resolución de compose sin Docker
-pip install -r requirements-dev.txt
-
-# 4. Pon TODO lo que tengas del legacy en legacy/
-#    (la carpeta no viene en el clon: git no versiona carpetas vacías)
-mkdir -p legacy
-cp /ruta/a/lo-que-tengas/* legacy/
+git clone https://github.com/GabrielaStark/PEPPER.git mi-legacy && cd mi-legacy
+pip install -r requirements-dev.txt && python3 -m playwright install chromium
+# copia el WAR y el respaldo a legacy/ (y una línea en legacy/NOTAS.md si sabes algo)
+claude          # y adentro: /pepper
 ```
 
-Verifica antes del primer push a tu propio remoto: `git remote -v` no debe mencionar `GabrielaStark/PEPPER`, y `git ls-files | head` no debe listar archivos de la herramienta (con `rm -rf .git && git init` quedan sin rastrear hasta que el `.gitignore` decide).
+`/pepper` corre todo y no te pregunta nada salvo que se atore:
 
-**Encima del repo** (desde la raíz del repo del legacy):
+| Fase | Qué hace | Deja |
+|---|---|---|
+| **mapa** | abre el WAR y el respaldo: pantallas con botones y mensajes, clases con constantes, tablas con conteo, triggers y funciones con cuerpo, catálogos completos (roles, menús por rol, estados), distribuciones reales | `docs/pepper/system-map.json` + `map/*.md` |
+| **levantar** | fabrica la red que el artefacto espera (sus IPs, su base, su usuario), restaura el respaldo, manda todo host externo a un stub, verifica el aislamiento antes y en vivo | `docs/pepper/environment.json` |
+| **explorar** | entra con cada rol, abre cada pantalla, intenta guardar en vacío (rechazos), llena y guarda, fotografía; después recorre con planes los flujos encadenados | `evidence/explore-*/` |
+| **descubrir** | cruza lo observado con el mapa y escribe el documento | **`docs/pepper/funcional.md`** |
 
-```bash
-git clone --depth 1 https://github.com/GabrielaStark/PEPPER.git /tmp/pepper && \
-cp -r /tmp/pepper/.claude /tmp/pepper/pepper /tmp/pepper/schemas /tmp/pepper/profiles /tmp/pepper/templates . && \
-mkdir -p docs/pepper && cp -r /tmp/pepper/docs/documentacion docs/ && \
-[ -f CLAUDE.md ] || cp /tmp/pepper/CLAUDE.md . ; [ -f AGENTS.md ] || cp /tmp/pepper/AGENTS.md . ; \
-cp /tmp/pepper/LICENSE LICENSE.pepper && \
-printf '.claude/\npepper/\nschemas/\nprofiles/\ntemplates/\ndocs/documentacion/\nCLAUDE.md\nAGENTS.md\nLICENSE.pepper\npepper-out/\nevidence/\n' >> .gitignore && \
-rm -rf /tmp/pepper
-```
+Se detiene solo si el aislamiento no está en verde o falta un insumo (`BLOCKED`, con la lista de qué conseguir). Si hay quien conozca un flujo, `/pepper-observe <flujo>`: la persona opera, PEPPER captura, el documento se extiende.
 
-Aquí no hay remote que quitar: la herramienta llega copiada (no clonada) y gitignoreada; tu repo sigue apuntando a donde siempre. Si el repo ya tenía `.claude/`, `CLAUDE.md` o `AGENTS.md` propios, revisa antes: `cp -r` sobreescribe archivos del mismo nombre (los de PEPPER se llaman `pepper-*`, así que conviven con los de stark; los de la raíz no se pisan gracias al `[ -f … ] ||`). En este modo los artefactos son el repo mismo: `/pepper-inspect .`, y el núcleo excluye su propia herramienta al detectar y al empaquetar.
+**Nada del legacy sale de la máquina.** Los contenedores viven en una red sin salida; cada host externo del artefacto se resuelve a un stub; el navegador (del explorador o de una persona) solo habla con `127.0.0.1` y el ingress le bloquea todo lo demás; sin `pepper isolate --live` en verde no se levanta ni se explora nada. Si el artefacto trae credenciales de producción, se recrea *ese* ambiente adentro — jamás se toca el real.
 
-### Usarlo: tú mandas en cada gate
+Camino completo: [`docs/documentacion/QUICKSTART.md`](docs/documentacion/QUICKSTART.md).
 
-```bash
-claude          # (o codex) desde la raíz del workspace
-```
+## El entregable
 
-> **Desde la raíz, literalmente.** Los comandos `/pepper-*` se cargan de `.claude/commands/` del directorio donde abres Claude Code. Si lo abres un nivel arriba (o en una subcarpeta), verás `Unknown command: /pepper-init` sin más explicación.
+`docs/pepper/funcional.md`, doce secciones fijas: en una frase · quién lo usa (roles, personas, matriz opción × rol) · el recorrido principal · las otras puertas de entrada · estados con conteos reales · lo que pasa solo · acceso y sesión · sistemas externos y qué pasa si fallan · reportes · catálogos que definen el negocio · volumen real · **lo que no sé y a quién preguntarle**. Cada afirmación trae `[código]`, `[base]`, `[datos]`, `[observado]`, `[config]` o `[doc]`, y `pepper export` verifica que cada fuente exista. Es del sistema, no de una corrida: se acumula sesión a sesión. Contrato: [`schemas/functional-discovery.schema.json`](schemas/functional-discovery.schema.json).
 
-y adentro:
+## Las piezas
 
-1. **`/pepper-init`** — verifica herramientas, prepara carpetas, detecta qué perfil aplica y te deja `legacy/NOTAS.md`: **escribe ahí lo que sepas** (qué servidor corre en producción, versiones, cómo se levanta, servicios externos, flujos que importan). Tu nota manda sobre lo que la herramienta infiera.
-2. **`/pepper-inspect`** — el stack con evidencia, y el **mapa del sistema**: `pepper map` abre el WAR y el respaldo y saca pantallas con sus botones y mensajes, clases con sus constantes, tablas con conteo, triggers y funciones con cuerpo, catálogos completos (roles, menús, estados) y distribuciones reales.
-3. **`/pepper-rehydrate`** — te presenta el **plan** para levantarlo en local y se detiene ✋. Este gate es tuyo: si el plan dice WildFly y tú sabes que producción es Tomcat, aquí lo dices y se corrige. Nada se levanta hasta que apruebes. Ya aprobado: contenedores con las IPs y hostnames que el artefacto espera, respaldo restaurado, todo lo externo stubeado, y `pepper isolate --live` en verde — **aislado o no se sigue**.
-4. **`/pepper-observe <flujo>`** — tú usas la aplicación (un flujo a la vez); PEPPER captura todo con `correlation_id`.
-5. **`/pepper-correlate <session_id>`** — el núcleo amarra petición → acción del usuario → SQL → log, reduce y empaqueta junto con el mapa y el documento anterior. Antes de abrir Claude Code aplica un gate local de secretos/PII y deja un manifest externo obligatorio.
-6. **`/pepper-discover <session_id>`** → **`/pepper-export <session_id>`** — el entregable: **`docs/pepper/funcional.md`**, qué hace el sistema en 12 secciones (quién lo usa, recorridos, estados, reglas, lo automático, integraciones, reportes, catálogos, volúmenes, lo que no se sabe), cada afirmación con su origen, validado contra el contrato y acumulado sesión a sesión.
+- **El núcleo** (`pepper/`, Python 3.9+): `detect`, `map` (con lector propio del formato custom de `pg_dump`, sin PostgreSQL), `rehydrate`, `isolate`, `proxy` (el ingress), `explore` (Playwright, local), `collect`, `correlate`, `package`, `export`. Hace lo mecánico igual cada vez y **nunca conoce una tecnología**: lo específico de un stack entra como perfil.
+- **Los perfiles** (`profiles/<id>/`): detección, extractores del mapa, receta de rehydrate (plantillas de compose y restauración, imágenes por versión), colectores, parsers de logs, lectura de formularios. Datos, no código. Un stack nuevo es un perfil nuevo; el agente lo redacta como borrador y una persona lo valida.
+- **Los agentes** (`.claude/`): `/pepper` y `/pepper-observe`; el subagente `descubridor-funcional` escribe el documento desde el paquete controlado; `inspector-legacy` redacta perfiles cuando ninguno aplica. Sus constituciones son las skills.
+- **Los contratos** (`schemas/`): la interfaz entre todo; cualquier pieza es reemplazable mientras respete su schema.
 
-**Si truena** (va a pasar: cada legacy enseña algo): [`docs/documentacion/TROUBLESHOOTING.md`](docs/documentacion/TROUBLESHOOTING.md) primero; si es la herramienta, abre un issue en el repo de PEPPER con el reporte del error — **sin datos de tu legacy**.
+Arquitectura: [`ARQUITECTURA.md`](docs/documentacion/ARQUITECTURA.md) · perfiles: [`PERFILES.md`](docs/documentacion/PERFILES.md) · por qué: [`DECISIONES.md`](docs/documentacion/DECISIONES.md) · comandos del núcleo: [`REFERENCIA.md`](docs/documentacion/REFERENCIA.md) · problemas: [`TROUBLESHOOTING.md`](docs/documentacion/TROUBLESHOOTING.md).
 
-### La regla de oro: la herramienta no se commitea; el producto sí; los datos ajenos nunca
+## La regla de oro
 
 | | Qué es | ¿Va al git del proyecto? |
 |---|---|---|
-| **Herramienta** | `.claude/`, `pepper/`, `schemas/`, `profiles/`, `templates/`, `docs/documentacion/`, `CLAUDE.md`, `AGENTS.md`, `LICENSE.pepper` (y en el workspace: `examples/`, `tests/`, `scripts/`) | ❌ NO — se ignora; vive en tu disco y se actualiza recopiando |
-| **Producto** | `docs/pepper/` (stack-report, mapa, entorno, `funcional.md`, discovery/) y `docs/analysis/funcional.md` (la entrega a stark) | ✅ SÍ — es el conocimiento del legacy |
-| **Datos ajenos** | `legacy/` (artefactos, en el workspace), `evidence/` (capturas), `pepper-out/` (intermedios) | ❌ NUNCA — contienen datos que no son tuyos |
+| **Herramienta** | `.claude/`, `pepper/`, `schemas/`, `profiles/`, `templates/`, `docs/documentacion/`, `examples/`, `tests/`, `scripts/` | ❌ se ignora; se actualiza recopiando |
+| **Producto** | `docs/pepper/` (mapa, entorno, `funcional.md`, `discovery/`) y `docs/analysis/funcional.md` (la entrega a stark) | ✅ es el conocimiento del legacy |
+| **Datos ajenos** | `legacy/`, `evidence/`, `pepper-out/` | ❌ nunca |
 
-Un perfil nuevo que el agente redacte queda en `profiles/<id>/` — es herramienta: cópialo al repo de PEPPER para que sirva al siguiente legacy.
+Al terminar: `docker compose -f pepper-out/rehydrate/docker-compose.yml down -v`, borra la herramienta, instala stark; su `arqueologo-codigo` encuentra el discovery en `docs/analysis/`.
 
-**Al terminar con PEPPER**, borras la herramienta (`rm -rf .claude pepper schemas profiles docs/documentacion CLAUDE.md AGENTS.md LICENSE.pepper pepper-out evidence`, y quitas sus líneas del `.gitignore`), instalas stark, y su `arqueologo-codigo` encuentra el discovery en `docs/analysis/`. En el repo solo quedó lo que PEPPER produjo.
-
-En el workspace, además: `printf 'examples/\ntests/\nscripts/\n.github/\nrequirements-dev.txt\npyproject.toml\n' >> .gitignore` (lo demás ya viene ignorado).
-
-### Prueba en 5 minutos
+## Prueba en 5 minutos, sin legacy
 
 ```bash
-python3 -m pepper demo                                   # legacy de juguete con evidencia ya capturada
-cd pepper-out/legacy-demo/package && claude              # o codex — el paquete trae CLAUDE.md y AGENTS.md
-python3 -m pepper export pepper-out/legacy-demo/package --manifest pepper-out/legacy-demo/package.evidence-manifest.json --out pepper-out/legacy-demo/export --system-doc pepper-out/legacy-demo/docs
+python3 -m pepper demo        # correlate + package sobre examples/legacy-demo
+cd pepper-out/legacy-demo/package && claude     # o codex: el paquete trae CLAUDE.md y AGENTS.md
 ```
 
-El juguete esconde tres cosas a propósito — una regla de negocio no documentada, una mentira en el manual y una rama que el flujo no ejercita. La clave de respuestas: [`examples/legacy-demo/expected/notes.md`](examples/legacy-demo/expected/notes.md).
-
-### Documentación completa
-
-- 📖 [`docs/documentacion/PRINCIPIOS.md`](docs/documentacion/PRINCIPIOS.md) — filosofía: observar primero, inferir después, comparar al final
-- 🚀 [`docs/documentacion/QUICKSTART.md`](docs/documentacion/QUICKSTART.md) — **empieza aquí**: el camino feliz por escalón
-- 📋 [`docs/documentacion/REFERENCIA.md`](docs/documentacion/REFERENCIA.md) — qué esperar de cada agente y cómo validar
-- 🛟 [`docs/documentacion/TROUBLESHOOTING.md`](docs/documentacion/TROUBLESHOOTING.md) — problemas comunes
-- 🧭 [`docs/documentacion/DECISIONES.md`](docs/documentacion/DECISIONES.md) — por qué PEPPER decide lo que decide
-- 🏗 [`docs/documentacion/ARQUITECTURA.md`](docs/documentacion/ARQUITECTURA.md) · [`PERFILES.md`](docs/documentacion/PERFILES.md) — la especificación técnica
-
----
-
-## Arquitectura del framework
-
-```text
-pepper/
-├── .claude/
-│   ├── commands/                      ← 7 comandos slash /pepper-*
-│   │   ├── pepper-init.md             ← Fase 0
-│   │   ├── pepper-inspect.md          ← Fase 1
-│   │   ├── pepper-rehydrate.md        ← Fase 2
-│   │   ├── pepper-observe.md          ← Fase 3
-│   │   ├── pepper-correlate.md        ← Fase 4 (sin subagente: la hace el núcleo)
-│   │   ├── pepper-discover.md         ← Fase 5
-│   │   └── pepper-export.md           ← Fase 6
-│   ├── agents/                        ← 4 subagentes
-│   │   ├── inspector-legacy.md        ← artefactos → stack-report + borrador de perfil
-│   │   ├── rehidratador-legacy.md     ← receta → entorno desechable → environment.json
-│   │   ├── observador-runtime.md      ← colectores + ventana → evidence/<session_id>/
-│   │   └── descubridor-funcional.md   ← paquete → funcional.json/md: qué hace el sistema
-│   └── skills/                        ← 3 constituciones
-│       ├── evidencia-runtime/         ← disciplina de evidencia (todos los agentes)
-│       ├── perfil-stack/              ← cómo se redacta un perfil y sus parsers
-│       └── discovery-funcional/       ← estructura del discovery; viaja como prompt.md en cada paquete
-├── pepper/                            ← el núcleo (Python 3.9+, stdlib + jsonschema)
-│   ├── inspect/                       ← pepper map: systemmap.py + pgdump.py (lector del respaldo sin PostgreSQL)
-│   ├── correlate/                     ← parsers declarativos, reducción, correlación
-│   ├── package/ · export/             ← paquete controlado; validación contra el contrato + publicación
-│   ├── proxy.py · isolate.py          ← el ingress y la verificación de aislamiento
-│   ├── detect.py · validate.py        ← herramientas para los agentes
-│   └── cli.py                         ← python3 -m pepper …
-├── profiles/                          ← el conocimiento de cada stack, como datos
-│   ├── java-springboot-jsf-postgres/  ← perfil del primer legacy real (draft): extractores, receta, parsers
-│   └── java-wildfly-postgres/         ← primer perfil (draft): parsers
-├── schemas/                           ← 8 contratos JSON Schema: la interfaz entre todo
-├── docs/
-│   ├── pepper/                        ← OUTPUT en tu workspace: stack-report, system-map + map/, environment, funcional.md, discovery/
-│   └── documentacion/                 ← este manual + ARQUITECTURA, PERFILES, DECISIONES
-├── templates/NOTAS-LEGACY.md          ← lo que el humano sabe del legacy; init lo copia a legacy/NOTAS.md
-├── examples/legacy-demo/              ← legacy de juguete: artefactos, evidencia, clave de respuestas
-├── tests/                             ← la suite del núcleo (161 tests)
-├── scripts/verificar.py               ← auto-verificación del framework (CI)
-├── AGENTS.md · CLAUDE.md              ← la misma guía para Codex y para Claude Code
-├── legacy/ · evidence/ · pepper-out/  ← en tu workspace: artefactos, capturas, intermedios (ignorados)
-└── pyproject.toml
-```
-
----
-
-## Los escalones en una imagen
-
-```text
- ¿Hay perfil validado para el stack?
-        │
-   sí ──┼── no ──► ¿El sistema corre en algún lado accesible?
-        │                    │
-        ▼               sí ──┼── no
-   ESCALÓN 1                 │        │
-   inspect → rehydrate       ▼        ▼
-   → observe → correlate  ESCALÓN 2   ESCALÓN 3
-   → discover → export    observe con  inspect → BLOCKED con
-                          colectores   faltantes + borrador
-                          genéricos    de perfil
-                          → correlate  (que, validado, vuelve
-                          → discover   escalón 1 al siguiente
-                          → export     legacy de ese stack)
-```
-
-**Ningún legacy recibe "no soportado".** Los tres escalones producen un entregable.
-
----
-
-## Reglas no negociables
-
-1. **Toda conclusión referencia evidencia íntegra.** IDs que resuelven a un evento o a una línea cruda; un manifest externo obligatorio amarra los bytes fuera del paquete. `pepper export` rechaza lo que no resuelve o fue alterado.
-2. **El legacy es solo lectura.** PEPPER descubre; no repara, no moderniza, no hace commit en el repo del legacy.
-3. **El entorno rehidratado no alcanza nada externo.** Todos los contenedores del legacy viven sólo en redes internas; el único con una red de publicación es el ingress —el proxy de PEPPER, verificado por hash— y solo para que el host entre por un puerto en loopback (Docker no publica puertos desde una red `internal`). Y como tu navegador está fuera de los contenedores, el ingress le impone una política de contenido que solo permite cargar desde `127.0.0.1`: lo que el HTML del legacy apunte hacia fuera lo bloquea el navegador y queda como evidencia (D25). Stub para cada host del artefacto, servidores foráneos re-apuntados y `pepper isolate` antes y después de levantar. La salida de red no es negociable.
-4. **Lo determinístico lo hace el núcleo.** Misma evidencia → mismos bytes. La reducción se audita en `reduction.md`; el SQL nunca se deduplica; los errores y las escrituras nunca se descartan.
-5. **Lo observado no se mezcla con lo inferido.** `correlation_id` es lo que la fuente emitió; lo inferido va aparte con su base.
-6. **Cada fase termina en gate humano.** El plan de rehydrate se aprueba antes de ejecutarse; el flujo lo ejecuta el humano; el discovery se lee completo antes de publicarse.
-7. **Nada entra a stark como `confirmada`.** Lo más alto que PEPPER entrega es `inferida` (código **y** runtime); las contradicciones van a `en-duda`; los desconocidos, a preguntas abiertas. Solo una persona con nombre promueve una regla.
-8. **BLOCKED es un entregable.** Nunca se inventan insumos faltantes.
-
----
+El juguete esconde tres cosas: una regla no documentada, una mentira en el manual y una rama que el flujo no ejercita. La clave: [`examples/legacy-demo/expected/notes.md`](examples/legacy-demo/expected/notes.md); la salida de referencia: [`expected/funcional.md`](examples/legacy-demo/expected/funcional.md).
 
 ## Preguntas que casi siempre salen
 
-**¿Tengo que tener el código fuente?** No. Con un WAR y un respaldo, `pepper map` saca pantallas, clases (del bytecode), tablas, catálogos y triggers; Rehydrate lo levanta; Discover escribe qué hace con eso más la ejecución.
+**¿Tengo que tener el código fuente?** No. Con el WAR y el respaldo, `pepper map` saca pantallas, clases (del bytecode), tablas, catálogos y triggers; `rehydrate` lo levanta; `explore` lo recorre.
 
-**¿Y si mi stack no tiene perfil?** Escalón 2 o 3. Un perfil es un JSON con una regex por fuente de logs; el agente lo redacta como borrador durante Inspect y tú lo validas con el primer legacy. Ver [`PERFILES.md`](docs/documentacion/PERFILES.md).
+**¿Y si mi stack no tiene perfil?** `/pepper` para en el borrador que redacta `inspector-legacy`; lo revisas y corres de nuevo. Si el sistema ya corre en otro lado, `/pepper-observe` con colectores genéricos (menos profundidad, y así se declara).
 
-**¿Puedo observar producción en vez de rehidratar?** Sí (escalón 2), con dos límites: sin la observabilidad agresiva que un entorno desechable permite, y con datos reales en la evidencia — que por eso nunca se versiona. Si puedes rehidratar, rehidrata.
+**¿Puedo observar producción en vez de levantar?** Sí, con dos límites: sin la observabilidad agresiva de un entorno desechable, y con datos reales en la evidencia. Si puedes levantar, levanta.
 
-**¿Claude Code o Codex?** Los dos. Los comandos son archivos de instrucciones; el paquete de discovery trae `CLAUDE.md` y `AGENTS.md` apuntando al mismo prompt; la salida valida contra el mismo schema. Puedes correr ambos sobre la misma evidencia y contrastar.
+**¿Qué sabe el explorador que una persona no, y al revés?** El explorador descubre lo que el sistema *permite y rechaza* con cada rol, sin cansarse; no sabe cómo lo usa la oficina. Los datos reales dicen qué se usa; la sección 12 dice a quién preguntarle el resto.
 
-**¿Qué le entrega PEPPER a stark exactamente?** `funcional.md` en `docs/analysis/` (el input de `arqueologo-codigo` en reingeniería) y una lista de qué llevar a la sección 11 de `REGLAS_DE_NEGOCIO.md`, con el mapeo de confianza. Ver [`REFERENCIA.md` §7](docs/documentacion/REFERENCIA.md#7-fase-6-export-y-entrega-a-stark).
+**¿Claude Code o Codex?** Los dos. Los comandos son archivos de instrucciones; el paquete de discovery trae `CLAUDE.md` y `AGENTS.md` apuntando al mismo prompt; la salida valida contra el mismo schema.
 
----
-
-## Estado del proyecto
+## Estado
 
 | Pieza | Estado |
 |---|---|
-| Comandos, agentes y skills (`.claude/`) | escritos; ejercitados sobre un legacy real |
-| Núcleo — map (con lector de pg_dump), Correlate, Package, Export, detect, validate, isolate, proxy, collect | **implementados y probados** (161 tests) |
-| Núcleo — proxy HTTP con `correlation_id` (`pepper proxy`, el ingress) | **implementado y probado**; emite `http.jsonl` por stdout y redacta credenciales |
-| Núcleo — colector genérico de contenedores (`pepper collect`) | **implementado y probado**; las fuentes del perfil (archivos dentro de contenedores) las copia el agente |
-| Contratos (`schemas/`) | 8, definidos y validados (`functional-discovery` es el del entregable) |
-| Perfiles | `java-springboot-jsf-postgres` (draft, corrió el pipeline entero) · `java-wildfly-postgres` (draft, parsers) |
-| **Pipeline completo contra un legacy real** | **ejecutado (2026-09-02 → 2026-09-04)**: init → inspect (mapa) → rehydrate (AISLADO --live) → observe (proxy + collect) → correlate → discover → `funcional.md` publicado |
-| Fixture `examples/legacy-demo` | listo; evidencia **sintética** marcada como tal; entorno Docker de referencia sin verificar |
-
-Pendientes: promover un perfil a `validated`; un segundo perfil no-Java; CI con un E2E de Docker.
-
----
+| Núcleo: detect, map, rehydrate, isolate, proxy, explore, collect, correlate, package, export | implementados y probados (suite en `tests/`, `scripts/verificar.py`, CI) |
+| Perfil `java-springboot-jsf-postgres` | `draft`; corrió el pipeline entero contra un legacy real (mapa, levantar, explorar, descubrir) |
+| Perfil `java-wildfly-postgres` | `draft`; parsers |
+| Pendientes | promover un perfil a `validated`; un segundo perfil no-Java; CI con un E2E de Docker |
 
 ## Stack y requisitos
 
-- **Claude Code** (o Codex: ver [`AGENTS.md`](AGENTS.md))
-- **Python 3.9+** — captura y correlación usan stdlib; `jsonschema` es obligatorio para Export (`pip install -r requirements-dev.txt`)
-- **Docker** con Compose v2 — solo para Rehydrate (escalón 1)
-- Acceso a modelo Claude Opus (recomendado para los 4 subagentes)
+Claude Code (o Codex) · Python 3.9+ (`jsonschema` para publicar; `playwright` para explorar) · Docker con Compose v2 · JDK (`javap`) para el mapa de un artefacto JVM.
 
-El repo se auto-verifica: `python3 scripts/verificar.py` valida frontmatters, fences, links, nombres citados, scripts y contratos; `python3 -m unittest discover -s tests` corre la suite del núcleo. El CI ejecuta ambos en cada push.
-
----
+`python3 scripts/verificar.py` valida frontmatters, fences, links, nombres, scripts y contratos; `python3 -m unittest discover -s tests` corre la suite. El CI ejecuta ambos.
 
 ## Licencia y autoría
 
-PEPPER — herramienta creada por [iamgabstark_](https://github.com/GabrielaStark). Licencia **MIT**.
-
-Complemento independiente de **stark**, de la misma autora.
+PEPPER — herramienta creada por [iamgabstark_](https://github.com/GabrielaStark). Licencia **MIT**. Complemento independiente de **stark**, de la misma autora.

@@ -538,6 +538,8 @@ def _extract_views(artifact: Path, spec: Dict[str, Any], report: "MapReport") ->
     message_re = re.compile(spec.get("message_pattern", r"(?:requiredMessage|validatorMessage|converterMessage)=\"([^\"]+)\""))
     condition_re = re.compile(spec.get("condition_pattern", r"rendered=\"#\{([^}]*(?:rol|Rol|perfil|permiso|esUsuario|admin|ADMIN)[^}]*)\}\""))
     include_re = re.compile(spec.get("include_pattern", r"<ui:include[^>]*\bsrc=\"([^\"]+)\""))
+    input_re = re.compile(spec.get("input_pattern", r"<(?:p|h):(inputText|inputTextarea|password|selectOneMenu|selectOneRadio|selectBooleanCheckbox|calendar|datePicker|inputMask|autoComplete|inputNumber|fileUpload)\b[^>]*\bid=\"([^\"]+)\""))
+    form_re = re.compile(spec.get("form_pattern", r"<h:form\b([^>]*)>"))
     action_re = re.compile(r"\b(?:actionListener|action)=\"#\{(?:\w+\.)*(\w+)\s*(?:\(|\})")
     value_re = re.compile(r"\b(?:value|title)=\"([^\"]*)\"")
 
@@ -572,11 +574,17 @@ def _extract_views(artifact: Path, spec: Dict[str, Any], report: "MapReport") ->
         messages = list(dict.fromkeys(resolve(x) for x in message_re.findall(text)))
         conditions = list(dict.fromkeys(" ".join(x.split()) for x in condition_re.findall(text)))
         includes = list(dict.fromkeys(include_re.findall(text)))
+        forms: List[str] = []
+        for attrs in form_re.findall(text):
+            fid = re.search(r"\bid=\"([^\"]+)\"", attrs)
+            prepend = "prependId=\"false\"" not in attrs
+            forms.append((fid.group(1) if fid else "(sin id)") + ("" if prepend else " (prependId=false)"))
+        inputs = [f"{kind}#{iid}" for kind, iid in input_re.findall(text)]
         if not (title or headings or labels or buttons or messages):
             continue
         screen: Dict[str, Any] = {"path": name, "title": title, "headings": headings, "fields": labels,
-                                  "buttons": buttons, "messages": messages, "conditions": conditions,
-                                  "includes": includes, "evidence": f"{artifact.name}!{name}"}
+                                  "inputs": inputs[:80], "forms": forms, "buttons": buttons, "messages": messages,
+                                  "conditions": conditions, "includes": includes, "evidence": f"{artifact.name}!{name}"}
         report.screens.append(screen)
     report.labels = len(bundle)
 
@@ -755,6 +763,9 @@ def render_map(system_map: Dict[str, Any]) -> Dict[str, str]:
             lines.append(f"- **Encabezados:** {' · '.join(s['headings'])}")
         if s.get("fields"):
             lines.append(f"- **Campos:** {', '.join(s['fields'])}")
+        if s.get("inputs"):
+            lines.append("- **Controles (tipo#id):** " + ", ".join(s["inputs"]) +
+                         (f" · formularios: {', '.join(s['forms'])}" if s.get("forms") else ""))
         if s.get("buttons"):
             lines.append("- **Botones:** " + " · ".join(
                 f"{b.get('label') or '(sin texto)'}" + (f" → `{b['action']}()`" if b.get("action") else "") for b in s["buttons"]))

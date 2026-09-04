@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Set
 
-MARKER = Path(".claude/commands/pepper-init.md")
+MARKER = Path(".claude/commands/pepper.md")
 TOOL_DIRS = (
     ".claude", ".github", "pepper", "schemas", "profiles", "examples", "tests", "scripts",
     "docs/documentacion", "docs/pepper", "pepper-out", "evidence",

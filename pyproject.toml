@@ -9,6 +9,9 @@ dependencies = [
     "jsonschema>=4",
 ]
 
+[project.optional-dependencies]
+explore = ["playwright>=1.50"]
+
 [project.scripts]
 pepper = "pepper.cli:main"
 

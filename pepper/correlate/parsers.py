@@ -316,4 +316,63 @@ class HttpProxyParser:
         )
 
 
-BUILTIN_PARSERS = {HttpProxyParser.source: HttpProxyParser}
+class ExplorerParser:
+    """explore.jsonl del explorador de PEPPER: una línea por acción del navegador automático.
+
+    Cada acción es un evento `custom` del componente `explorador`; un rechazo
+    provocado queda con severidad warn (evidencia protegida: la reducción no lo
+    descarta). No trae correlation_id: la acción abarca varias peticiones, que
+    Correlate ancla por ventana temporal."""
+
+    source = "explorer"
+    name = "explorer (núcleo)"
+    noise: List[Dict[str, Any]] = []
+    affinity_keys: List[str] = []
+
+    def __init__(self, http_spec: Optional[Dict[str, Any]] = None):
+        pass
+
+    def parse_file(self, path: Path, raw_prefix: str, session: Session) -> Tuple[List[Event], List[Unparsed]]:
+        events: List[Event] = []
+        unparsed: List[Unparsed] = []
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if not line.strip():
+                continue
+            raw_ref = f"{raw_prefix}:{number}"
+            try:
+                record = json.loads(line)
+                events.append(self._event(record, raw_ref, session))
+            except (ValueError, KeyError) as error:
+                unparsed.append((raw_ref, f"{line}  ← {error}"))
+        return events, unparsed
+
+    def _event(self, record: Dict[str, Any], raw_ref: str, session: Session) -> Event:
+        kind, result = record.get("kind", "?"), record.get("result", "?")
+        label = record.get("label") or ""
+        head = f"[{record.get('role', '?')}] {kind} {record.get('route', '')} {label}".strip()
+        messages = record.get("messages") or []
+        message = f"{head} → {result}" + (f" · {' | '.join(m[:80] for m in messages[:3])}" if messages else "")
+        metadata = {key: record[key] for key in
+                    ("role", "route", "kind", "label", "result", "url_after", "status", "messages", "screenshot", "ended")
+                    if key in record}
+        if isinstance(record.get("detail"), dict):
+            detail = record["detail"]
+            for key in ("filled", "error", "buttons", "fields", "headings", "title"):
+                if key in detail:
+                    metadata[f"detail_{key}"] = detail[key]
+        return Event(
+            timestamp=parse_datetime(record["ts"], session.tz),
+            session_id=session.session_id,
+            source=self.source,
+            component="explorador",
+            event_type="custom",
+            operation=f"{kind}:{result}",
+            correlation_id=None,
+            message=message,
+            severity="warn" if result in ("rejected", "error", "forbidden") else "info",
+            raw_ref=raw_ref,
+            metadata=metadata,
+        )
+
+
+BUILTIN_PARSERS = {HttpProxyParser.source: HttpProxyParser, ExplorerParser.source: ExplorerParser}

@@ -39,6 +39,7 @@ class TocEntry:
     defn: str
     has_data: bool
     data_pos: int
+    owner: str = ""
 
 
 @dataclass
@@ -61,6 +62,14 @@ class DumpInfo:
 
     def by_desc(self, desc: str) -> List[TocEntry]:
         return [e for e in self.entries if e.desc == desc]
+
+    def owners(self) -> List[str]:
+        """Roles que el respaldo referencia como dueños (hay que crearlos, sin login, antes de restaurar)."""
+        seen: List[str] = []
+        for entry in self.entries:
+            if entry.owner and entry.owner not in seen:
+                seen.append(entry.owner)
+        return seen
 
     def table_data(self, table: str) -> Optional[TocEntry]:
         for entry in self.entries:
@@ -156,13 +165,13 @@ def read_toc(path: Path) -> DumpInfo:
             r.str()  # tableam
         if version >= (1, 16, 0):
             r.int()  # relkind
-        r.str()  # owner
+        owner = r.str() or ""
         r.str()  # withOids (siempre "false")
         while r.str() is not None:  # dependencias, terminadas por NULL
             pass
         _, pos = r.offset()  # extra del formato custom: posición del bloque de datos
         info.entries.append(TocEntry(dump_id=dump_id, desc=desc, tag=tag, namespace=namespace,
-                                     defn=defn, has_data=bool(has_dumper), data_pos=pos))
+                                     defn=defn, has_data=bool(has_dumper), data_pos=pos, owner=owner))
     return info
 
 

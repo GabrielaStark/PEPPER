@@ -1,27 +1,31 @@
 ---
-description: Fase 3 · Observa una ejecución real de un flujo funcional - prepara los colectores, delimita la ventana mientras el humano opera la aplicación y captura la evidencia cruda en evidence/<session_id>/.
+description: Observa a una persona usando el sistema levantado por PEPPER - abre una ventana, la persona opera, se captura todo y la sesión entra al discovery como una más. Úsalo cuando haya quien conozca un flujo; si no, /pepper lo explora solo.
 argument-hint: "<nombre-del-flujo>"
 ---
 
-Lee `docs/documentacion/PRINCIPIOS.md` y aplica sus reglas como restricciones duras antes de actuar.
+Lee `docs/documentacion/PRINCIPIOS.md` y `.claude/skills/evidencia-runtime/SKILL.md`: reglas duras.
 
-Pre-condición: un sistema corriendo — el reconstruido por PEPPER (`docs/pepper/environment.json` en `READY` o `PARTIAL`) o uno accesible en otro ambiente (escalón 2). Si no hay ninguno, detente e indica `/pepper-rehydrate`.
+Pre-condición: `docs/pepper/environment.json` en `READY`/`PARTIAL` (si no, `/pepper levantar`). Verifica antes de abrir la ventana:
 
-Use the observador-runtime subagent to capture the flow "$ARGUMENTS" into `evidence/<session_id>/` (`session.json` más la evidencia cruda de cada colector).
+```bash
+python3 -m pepper isolate pepper-out/rehydrate/docker-compose.yml --hosts "<hosts externos>" --live
+```
 
-**El flujo lo ejecuta el humano** ✋: el agente prepara y verifica los colectores antes de la ventana, marca el inicio, espera a que el humano opere la aplicación, marca el fin y captura. El agente nunca opera la aplicación ni ejecuta el flujo por su cuenta.
+`NO AISLADO` o `NO VERIFICADO` → detente.
 
-**Dile al humano exactamente qué se espera de él**, antes de abrir la ventana y otra vez al abrirla — es el único paso donde opera el sistema, y si no lo sabe la evidencia sale pobre:
+## La ventana
 
-1. **Por dónde entra y con qué usuario** (URL publicada por el ingress y credencial disponible).
-2. **Un flujo a la vez**: nada de abrir otras pantallas en paralelo mientras la ventana esté abierta.
-3. **Que provoque al menos un rechazo** — un campo obligatorio vacío, un dato imposible, un duplicado. El rechazo dice qué condición exige el sistema, y esa es una regla de negocio. Un flujo perfecto a la primera enseña la mitad.
-4. **Que avise al terminar** con una palabra. La nota de lo que pasó la redacta el agente a partir de la evidencia (rutas, escrituras, rechazos, bloqueos) y se la muestra; el humano solo corrige o añade el caso de negocio si quiere. El agente no le pregunta nada que la evidencia ya responda.
-5. **Que no apunte nada** mientras opera: la captura es completa.
-6. **Que una pantalla en blanco o un botón mudo no es un fallo suyo**: el ingress bloquea en el navegador todo lo que el legacy intente cargar de un servidor real (D25) y lo registra como dependencia externa. Que lo mencione en su nota.
+1. Dile a la persona por dónde entrar (`http://127.0.0.1:18080`, con qué usuario: `docs/pepper/explore.json` trae uno por rol con la contraseña de prueba) y tres cosas: un flujo a la vez; que provoque al menos un rechazo (un campo vacío, un dato imposible); que diga "terminé" y nada más. Una pantalla en blanco es un recurso externo bloqueado por el ingress: es hallazgo, no fallo.
+2. Marca el inicio (`date` con zona). No generes tráfico mientras la ventana esté abierta.
+3. Cuando diga que terminó, espera a que el stdout del ingress lleve ~10 s sin peticiones y marca el fin.
+4. Captura:
 
-Mientras la ventana esté abierta, **no generes tráfico**: ni comprobaciones, ni peticiones de cortesía. Cualquier verificación va antes de abrirla o después de cerrarla.
+```bash
+python3 -m pepper collect pepper-out/rehydrate/docker-compose.yml <session_id> --start <ISO con zona> --end <ISO con zona>
+```
 
-Gate humano ✋: el humano confirma que la ventana cubre el flujo completo (incluidos los intentos fallidos, que son la evidencia más valiosa) y que la evidencia capturada es la esperada. Sin evidencia, Correlate no tiene material.
+5. Escribe `evidence/<session_id>/session.json` (contrato `schemas/session.schema.json`; un colector por archivo capturado con el `source` del parser del perfil; `http.jsonl` es `http-proxy`) y valida con `python3 -m pepper validate`. La `operator_note` la redactas **tú desde la evidencia** (rutas, escrituras, rechazos, bloqueos) y se la muestras en tres líneas; solo si quiere añade el caso de negocio. **No le preguntes nada que la evidencia ya responda.**
 
-Siguiente: `/pepper-correlate <session_id>`.
+## Después
+
+`/pepper descubrir` con esa sesión: correlate → package (con `--previous`) → discovery → export. El documento del sistema se extiende con lo que la persona hizo.

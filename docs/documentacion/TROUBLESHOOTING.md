@@ -1,85 +1,51 @@
 # Troubleshooting de PEPPER
 
-Problemas que salen y qué hacer. Si algo no está aquí, el detalle de cada fase está en [`REFERENCIA.md`](REFERENCIA.md).
+Problemas que salen y qué hacer. El detalle de cada fase está en [`REFERENCIA.md`](REFERENCIA.md).
 
-## Núcleo
+## Levantar
 
-**`pepper correlate: sin parser para las fuentes: X`** — `session.json` declara un colector cuyo `source` no tiene parser: ni es el builtin `http-proxy` ni el perfil lo declara con `parser`. Redacta el parser declarativo (skill `perfil-stack`), declara el colector en `profile.json` y repite. No edites la evidencia para "quitar" la fuente.
+**`rehydrate · BLOCKED · ningún perfil de configuración dentro del artefacto trae url, usuario y contraseña del datasource`** — el artefacto no dice a qué conectarse. Consigue la configuración externa del ambiente (el `application-*.yml`, el `standalone.xml` con el datasource) y ponla en `legacy/`; o escribe en `NOTAS.md` host, base y usuario y pide el perfil que los lea.
 
-**`reduction.md` reporta líneas sin parsear** — la regex del parser no cubre esas líneas. Míralas: si son basura (banners, líneas vacías con formato raro), documéntalo; si son eventos reales, amplía `line_pattern` o agrega `continuation`. Objetivo: 0 o explicadas.
+**`BLOCKED · el artefacto no trae descriptor de servidor y NOTAS.md no dice en qué corre`** — una línea en `legacy/NOTAS.md` ("producción es WildFly 21") resuelve. El perfil declara qué imagen corresponde a cada versión (`rehydrate.server_images`); si la versión no está, se usa la más cercana y se declara como desviación.
 
-**Eventos "sin asignar: ambiguo, N peticiones concurrentes"** — dos peticiones se traslaparon y la fuente no tiene afinidad (`thread`, `pid`) que las separe. Opciones: declarar `affinity` en el parser si la fuente sí trae un identificador; o repetir la observación ejecutando una acción a la vez. Nunca asignes a mano.
+**`FAILED · el servidor de aplicaciones arrancó: sin señal de arranque en 300 s`** — `docker compose -f pepper-out/rehydrate/docker-compose.yml logs app`. Lo típico: la imagen del servidor no es la que el WAR necesita (APIs javax vs jakarta), o el WAR espera un archivo/ruta que no existe. Corrige el perfil (no el WAR) y repite con `--wait 600`.
 
-**0 peticiones en `flow.json`** — no hubo colector HTTP con `correlation_id`. La correlación se hizo solo por afinidad y ventana temporal; es válida pero más débil, y el discovery debe reflejarlo en confianzas más bajas. En un entorno levantado por PEPPER esto no debería pasar: el ingress es `pepper proxy` y `docker logs` del ingress es el `http.jsonl` — verifica que Observe lo haya copiado a `evidence/<session_id>/` y declarado con `source: http-proxy`. En un entorno ajeno (escalón 2), pon `python3 -m pepper proxy --upstream <app>` delante de la aplicación, o genera un `http.jsonl` desde el access log del servidor con un parser.
+**`isolate · NO AISLADO` o `NO VERIFICADO`** — nada se levanta ni se explora hasta que esté en verde. Los mensajes dicen qué servicio tiene salida, a qué red se conectó, qué `dns:` falta o qué montaje sobra. Con `--live`, si Docker no está corriendo sale NO VERIFICADO: arráncalo.
 
-**Las fuentes no se alinean en el tiempo** — una fuente trae hora local sin zona y `session.json` declara otra `timezone`. Corrige `timezone` (es la que se aplica a las fuentes que no traen zona) y repite Correlate. Si dos fuentes están en zonas distintas, la que difiere necesita `%z` en su `timestamp.format`.
+**Los contenedores quedaron `Exited (255)` y `docker logs` no trae nada nuevo** — Docker murió (suspensión, actualización): el stream de logs se pierde aunque el contenedor reviva. `docker compose -f pepper-out/rehydrate/docker-compose.yml up -d --force-recreate` (los datos están en el volumen) y vuelve a verificar con `isolate --live`.
 
-**`pepper export: RECHAZADO · referencia a evidencia inexistente`** — el agente citó un ID que no declaró en `evidence`, o un `raw_ref` que no existe. Vuelve a `/pepper-discover`: el agente corrige; tú no editas el JSON.
+**La restauración reporta errores** — `transaction_timeout` y parecidos son un `SET` de un `pg_dump` moderno que un servidor viejo no reconoce; benignos. Errores de roles: el respaldo referencia dueños que no existen; `restore.sh` los crea sin login antes de restaurar (los saca del TOC del respaldo).
 
-**`pepper export: RECHAZADO · candidate_rules/0/evidence: [] is too short`** — una conclusión sin evidencia. Misma respuesta: al agente. Si no puede señalar evidencia, la conclusión va a desconocidos.
+## Explorar
 
-**`falta jsonschema`** — `pip install -r requirements-dev.txt`. Sin él todo corre, pero nada valida contra los contratos; Export lo avisa.
+**`pepper explore` no entra (`login → rejected`)** — o el selector del campo/botón no es el del DOM (mira `map/screens.md`: `prependId=false` quita el prefijo del formulario), o la credencial no se fijó (`credentials.sql` falló: revisa el mensaje `credentials → error` en `explore.jsonl`; el encoder del app está en `code.md`, clase de login).
 
-**`pepper package: el directorio del paquete ya existe y no está vacío`** — hay un discovery anterior en `output/`. Muévelo o bórralo a propósito; PEPPER no pisa paquetes.
+**Todos los botones salen `(botón sin nombre)` en `flow.md`** — el framework les pone ids generados y el perfil no declara `http.action_fields`; el explorador igual los identifica por su texto en `explore.jsonl`.
 
-**`pepper package: … es un symlink`** — copia el archivo o directorio real dentro de `legacy/`. Package no sigue enlaces, ni siquiera anidados: no puede demostrar que el destino permanezca dentro del perímetro ni garantizar que el original no se modifique.
+**`filled_submit → rejected` con "el valor no es válido"** — el formulario se re-dibujó por un ajax después de llenar un select (cascadas estado → municipio → colonia, o una CURP que dispara una consulta). No es un fallo del sistema ni del explorador: es un rechazo de validación que queda registrado. Para un guardado coherente escribe un plan con valores del catálogo en el orden correcto.
 
-**`pepper package: datos sensibles detectados`** — el modo remoto encontró credenciales, llave privada, CURP o correo. El mensaje muestra ubicaciones, no valores. Sanea la fuente y repite. `--allow-sensitive` existe sólo cuando el responsable del dato autoriza explícitamente el procesamiento remoto; Claude Code no debe agregarlo por su cuenta.
+**El explorador tarda** — cada pantalla con formulario cuesta ~1 min por rol (abrir, guardar vacío, llenar, guardar). Pon `submit: false` a los roles de consulta y deja los formularios a dos o tres roles.
 
-**`pepper package: hay archivos que PEPPER no puede inspeccionar`** — un WAR, dump, binario o archivo grande no puede declararse limpio automáticamente. Revísalo y, si el responsable acepta enviarlo al modelo remoto, repite con `--acknowledge-unscanned`; la excepción queda en el manifest. Alternativa: `--data-mode local` y un modelo realmente local.
+**Necesito ver qué hace** — `--headed` abre el navegador; las capturas quedan en `evidence/<sid>/screens/`.
 
-**`pepper export: falta el manifest externo`** — Package crea `<paquete>.evidence-manifest.json` junto al paquete. Pásalo con `--manifest`; el interno no lo reemplaza porque el agente puede escribir dentro del paquete. Si se perdió, vuelve a empaquetar: no fabriques otro a partir del contenido actual.
+## Correlacionar y descubrir
 
-## Agentes
+**`correlate: sin parser para las fuentes: X`** — `session.json` declara un colector cuyo `source` no tiene parser: ni es builtin (`http-proxy`, `explorer`) ni el perfil lo declara. Redacta el parser (skill `perfil-stack`) y decláralo en `profile.json`.
 
-**`Unknown command: /pepper-init`** — Claude Code no está abierto en la raíz del workspace: los comandos se cargan de `<cwd>/.claude/commands/`. Cierra y vuelve a abrir desde la carpeta que contiene `.claude/`, `pepper/` y `legacy/`. Mientras tanto, cualquier agente puede ejecutar la fase leyendo `.claude/commands/pepper-<fase>.md` (es lo que manda `AGENTS.md`).
+**`reduction.md` reporta líneas sin parsear** — la regex del parser no cubre esas líneas. Si son basura, documéntalo; si son eventos, amplía `line_pattern` o `continuation`.
 
-**Una dependencia externa por IP directa no aparece en el stub** — el stub intercepta **por nombre** (alias DNS en la red interna). Si el artefacto llama a `http://10.20.30.40:8080/`, esa IP no se puede aliasear: la llamada falla sin salir de la red (seguro), pero el stub no la registra. Si necesitas la evidencia, agrega esa IP al stub con una segunda subred interna que la contenga; si no, declárala como flujo no observable en `environment.json`.
+**Eventos "sin asignar: ambiguo"** — peticiones concurrentes sin afinidad que las separe; el explorador va de una en una, así que esto pasa con ventanas de personas: una acción a la vez.
 
-**Inspect dice "desconocida" en todas las versiones** — los artefactos no las contienen. Es correcto. Consigue notas del servidor original, el `MANIFEST.MF`, un `pg_dump` con cabecera, o pregúntale a quien lo operaba — y dáselo al agente.
+**`package: datos sensibles detectados`** — un legacy real trae credenciales y datos personales. Las banderas `--allow-sensitive` / `--acknowledge-unscanned` son la decisión del humano de analizar con modelo remoto; se registran en el manifest. No las agregues por tu cuenta.
 
-**Rehydrate termina en `BLOCKED`** — es un entregable: `docs/pepper/missing-evidence.md` dice qué falta y qué artefacto lo resolvería. Consíguelo y repite. No le pidas al agente que "invente algo para que arranque".
+**`export · RECHAZADO`** — los errores dicen qué fuente no resuelve (`map:…` que no existe, event_id inexistente, archivo fuera del paquete) o qué falta (desconocidos vacíos, sin `.md`, la sesión no está en `sessions`). El subagente corrige sobre la evidencia; nadie edita la salida a mano.
 
-**Rehydrate termina en `FAILED`** — era viable pero algo falló técnicamente (imagen inexistente para esa versión, script de restauración roto). El agente debe decir qué. Frecuente: la versión exacta no existe como imagen — decide con el humano la más cercana y regístrala como desviación.
-
-**`ClassFormatError: Absent Code attribute in method that is not native or abstract`** — el artefacto trae en `WEB-INF/lib` un jar de API de compilación sin código (`javaee-api-*.jar`, `jsf-api-*.jar`) que sombrea a la implementación real; cuál gana depende del orden del zip. En un servidor de aplicaciones real no importa (sus APIs ganan): despliega ahí (D20). Si de verdad corre con `java -jar` en producción, la copia de trabajo del WAR — nunca `legacy/` — se reordena o se le quitan los stubs, y se documenta como hallazgo del legacy.
-
-**`ReflectionsException: could not create Vfs.Dir from url … [war:file:…]`** — JoinFaces (o cualquier escáner basado en Reflections) no sabe leer un WAR ejecutable con `java -jar`. Ese artefacto se despliega en su servidor (D20).
-
-**`isolate · NO AISLADO`** — el reporte dice qué servicio y por qué red. Lo típico: una red sin `internal: true`, un servicio sin `networks:` (cae en `default`, que tiene salida), un `extra_hosts` apuntando a una IP real, un segundo servicio en la red de publicación del ingress, o un host externo del artefacto sin alias al stub. Corrige el compose y repite; no levantes nada mientras esté en rojo.
-
-**El puerto publicado no responde (`curl 127.0.0.1:<puerto>` → connection refused) aunque el ingress esté arriba** — el ingress solo está en la red `internal`, y Docker no publica puertos desde ahí. Conéctalo además a la red `edge` (solo a él) y repite `isolate`.
-
-**Una pantalla del legacy sale en blanco, un botón no hace nada, o el navegador dice «bloqueado»** — es la política de contenido que el ingress impone al navegador (D25): esa pantalla intentó cargar algo de un host real del artefacto (un `<object>`, un `<iframe>`, un script, una imagen) y el navegador se negó antes de resolver el nombre. **Es un hallazgo, no un fallo**: la dependencia queda en `evidence/<sid>/http.jsonl` como `direction: "blocked"` con host y ruta, y Correlate la conserva como evidencia protegida. Anótalo en la nota del operador.
-
-**`isolate · NO AISLADO` por «NO impone la política del navegador»** — el ingress que corre no es el proxy actual (la política vive en `pepper/proxy.py`). Recopia el archivo a `pepper-out/rehydrate/proxy/proxy.py`, recrea el ingress (`docker compose up -d --force-recreate ingress`) y repite.
-
-**`isolate · NO AISLADO` por «conexiones abiertas fuera del entorno» hacia la puerta de enlace (`172.x.0.1`) justo mientras alguien usa el sistema** — versiones anteriores contaban las conexiones *entrantes* del navegador al puerto publicado como si fueran salidas. Actualiza PEPPER: el chequeo ya distingue entrante de saliente.
-
-**`isolate · NO VERIFICADO` por «sin `dns:`»** — sin un resolver fijado, el DNS embebido de Docker reenvía al resolver de tu máquina cualquier nombre que no sea alias de la red; con VPN, esa consulta llega al DNS institucional (una huella con el nombre de un host de producción, aunque ningún paquete de datos salga). Declara en cada servicio `dns: ["<IP libre dentro de la subred interna>"]`, p. ej. la `.254`: los alias siguen resolviendo al stub y todo lo demás muere ahí.
-
-**`isolate` no puede resolver el compose** — necesita `docker compose config` (o `pyyaml` como respaldo). Verifica que Docker esté instalado; el daemon no hace falta para la comprobación estática, solo para `--live`.
-
-**Una vista o función alcanzó una base de producción** — el respaldo trae `pg_foreign_server` / `USER MAPPING` con host y contraseña reales, y la máquina tiene VPN. La receta re-apunta los servidores foráneos al stub y la red es `internal` (D19); si lo ves en un compose viejo, `docker compose down` y regenera.
-
-**Contenedor `running`, aplicación sin responder** — por eso `READY` exige validaciones, no solo `docker ps`. Mira los logs de arranque: deployment fallido, datasource sin driver, puerto equivocado.
-
-**El agente de discovery listó el SMTP como dependencia** — lo leyó en la configuración, no lo vio ejecutarse. Es la trampa clásica y viola el skill `discovery-funcional` regla 6. Pídele que lo mueva a contradicción (si la documentación lo afirma) o a desconocido.
-
-**El agente describió una rama del código como observada** — el flujo no la ejercitó. Va a desconocidos, con la recomendación de qué observar.
-
-**El agente "corrigió" una contradicción** — las contradicciones no se resuelven solas: se reportan con causas posibles y las decide el humano.
+**El documento dice "observado" de algo que ninguna sesión ejecutó** — viola la regla 3 del skill `discovery-funcional`. Pídele al subagente que lo baje a `en_codigo`/`sustentada` y lo mande a la sección 12.
 
 ## Workspace
 
-**¿Puedo observar producción directamente (escalón 2)?** — Técnicamente sí, si tienes acceso a sus logs. Dos límites: no podrás activar la observabilidad agresiva (`log_statement=all`, DEBUG) que un entorno rehidratado permite, y la evidencia traerá datos reales de personas — `evidence/` no se versiona y se trata como sensible. Si puedes rehidratar, rehidrata.
+**`Unknown command: /pepper`** — Claude Code se abrió en otra carpeta; los comandos viven en `.claude/commands/` de la raíz del workspace.
 
-**Tengo un WAR pero no el código fuente** — Inspect y Rehydrate funcionan con el WAR. Discover trabajará solo con evidencia y documentación: sin `code_refs` ni comparación runtime ↔ código, pero con reglas candidatas y contradicciones contra la documentación.
+**`pepper detect` ve `pom.xml` del fixture como si fuera del legacy** — estás encima del repo del legacy y el núcleo no reconoció la herramienta; verifica que exista `.claude/commands/pepper.md` (es el marcador).
 
-**Tengo un stack sin perfil y sin tiempo de redactarlo** — escalón 2 o 3. Los colectores genéricos (logs de contenedores, log de BD) funcionan sin perfil; lo que pierdes es el parser de los logs de aplicación. Redactar el parser (una regex) suele tardar menos que pelear sin él.
-
-**¿Puedo poner PEPPER encima del repo del legacy en vez de clonar un workspace?** — Sí; es el modo pensado para seguir con stark en el mismo repo: copias la herramienta gitignoreada (comando en el README), inspeccionas con `/pepper-inspect .`, y al terminar borras la herramienta e instalas stark. `pepper detect .` y `pepper package --legacy .` excluyen la herramienta solos.
-
-**¿Se commitea `pepper-out/`?** — No. Ni `legacy/` ni `evidence/`. Solo `docs/pepper/` y los perfiles nuevos. `.gitignore` ya lo trae.
-
-**`verificar.py` marca "nombre citado inexistente"** — escribiste un nombre de comando, agente o skill que no existe en disco (o con errata). Es a propósito: los nombres que se citan en la documentación deben existir.
+**Playwright: `Executable doesn't exist`** — `python3 -m playwright install chromium`. Es una descarga neutral (el navegador), no toca el legacy.
