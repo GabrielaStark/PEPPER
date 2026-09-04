@@ -110,7 +110,7 @@ class ValidateTest(unittest.TestCase):
             ROOT / "profiles" / "java-wildfly-postgres" / "profile.json",
             *sorted((ROOT / "profiles" / "java-wildfly-postgres" / "parsers").glob("*.json")),
             FIXTURE / "raw-evidence" / "session.json",
-            FIXTURE / "expected" / "runtime-discovery.json",
+            FIXTURE / "expected" / "funcional.json",
         ]
         for path in files:
             self.assertEqual(validate_file(path), [], path)

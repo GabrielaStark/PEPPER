@@ -64,7 +64,7 @@ Problemas que salen y qué hacer. Si algo no está aquí, el detalle de cada fas
 
 **Contenedor `running`, aplicación sin responder** — por eso `READY` exige validaciones, no solo `docker ps`. Mira los logs de arranque: deployment fallido, datasource sin driver, puerto equivocado.
 
-**El agente de discovery listó el SMTP como dependencia** — lo leyó en la configuración, no lo vio ejecutarse. Es la trampa clásica y viola el skill `discovery-runtime` regla 6. Pídele que lo mueva a contradicción (si la documentación lo afirma) o a desconocido.
+**El agente de discovery listó el SMTP como dependencia** — lo leyó en la configuración, no lo vio ejecutarse. Es la trampa clásica y viola el skill `discovery-funcional` regla 6. Pídele que lo mueva a contradicción (si la documentación lo afirma) o a desconocido.
 
 **El agente describió una rama del código como observada** — el flujo no la ejercitó. Va a desconocidos, con la recomendación de qué observar.
 

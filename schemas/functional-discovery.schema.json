@@ -1,0 +1,315 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pepper/functional-discovery.schema.json",
+  "title": "FunctionalDiscovery",
+  "description": "Contrato de salida de PEPPER: QUÉ HACE el sistema, para alguien que no lo conoce. Es un documento del SISTEMA (acumulativo entre sesiones), no de una ventana. Cada afirmación cita fuentes del registro `sources`; cada fuente es de un tipo cerrado (código, base, datos, observado, config, doc, humano) y resuelve a algo verificable. Lo desconocido se declara en `unknowns`, no se omite ni se rellena.",
+  "type": "object",
+  "required": ["schema_version", "system", "engine", "sessions", "summary", "actors", "permissions", "journeys", "states", "rules", "automation", "integrations", "unknowns", "sources"],
+  "additionalProperties": false,
+  "$defs": {
+    "refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string"},
+      "description": "IDs del registro `sources` que sustentan esta afirmación."
+    },
+    "basis": {
+      "type": "string",
+      "enum": ["observado", "en_codigo", "en_base", "en_datos", "en_config", "en_doc", "humano"],
+      "description": "Tipo de la fuente más fuerte: observado = se vio ejecutar; en_codigo = está en el artefacto; en_base = definición de la base (trigger, función, catálogo); en_datos = se infiere de las filas reales; en_config = configuración; en_doc = documentación heredada o NOTAS.md; humano = lo dijo una persona (se cita con nombre o rol)."
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["confirmada", "sustentada", "inferida", "contradicha", "desconocida"],
+      "description": "confirmada = observado + código/base coinciden; sustentada = una sola fuente sólida (código, base o datos); inferida = interpretación sobre indicios; contradicha = dos fuentes se contradicen (queda para el humano); desconocida = solo la pregunta."
+    }
+  },
+  "properties": {
+    "schema_version": {"type": "string"},
+    "system": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string", "description": "Cómo se llama el sistema (nombre del artefacto si no hay otro)."},
+        "artifact": {"type": "string"},
+        "profile_id": {"type": ["string", "null"]}
+      }
+    },
+    "engine": {
+      "type": "object",
+      "required": ["agent"],
+      "additionalProperties": false,
+      "properties": {
+        "agent": {"type": "string"},
+        "model": {"type": "string"},
+        "analyzed_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "sessions": {
+      "type": "array",
+      "description": "Ventanas de observación que alimentaron este documento (la de este paquete y las anteriores).",
+      "items": {
+        "type": "object",
+        "required": ["session_id", "flow_name"],
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {"type": "string"},
+          "flow_name": {"type": "string"},
+          "observed_start": {"type": "string"},
+          "observed_end": {"type": "string"},
+          "operator": {"type": "string", "enum": ["humano", "agente"]},
+          "what_it_covered": {"type": "string"}
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["one_sentence", "sources"],
+      "additionalProperties": false,
+      "properties": {
+        "one_sentence": {"type": "string", "description": "Qué es y para quién, en una frase."},
+        "context": {"type": "string", "description": "Dónde opera, cuántas unidades, desde cuándo."},
+        "sources": {"$ref": "#/$defs/refs"}
+      }
+    },
+    "actors": {
+      "type": "array",
+      "description": "Quién usa el sistema: roles/perfiles, cuántas personas, qué son.",
+      "items": {
+        "type": "object",
+        "required": ["name", "description", "sources"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "description": {"type": "string"},
+          "active": {"type": "boolean"},
+          "users": {"type": "integer"},
+          "sources": {"$ref": "#/$defs/refs"}
+        }
+      }
+    },
+    "permissions": {
+      "type": "array",
+      "description": "Qué puede hacer cada actor: una entrada por capacidad (opción de menú, acción), con los actores que la tienen.",
+      "items": {
+        "type": "object",
+        "required": ["capability", "actors", "sources"],
+        "additionalProperties": false,
+        "properties": {
+          "capability": {"type": "string"},
+          "description": {"type": "string"},
+          "actors": {"type": "array", "items": {"type": "string"}},
+          "sources": {"$ref": "#/$defs/refs"}
+        }
+      }
+    },
+    "journeys": {
+      "type": "array",
+      "description": "Los recorridos: qué pasa de principio a fin, paso por paso, en palabras del negocio.",
+      "items": {
+        "type": "object",
+        "required": ["name", "steps", "sources"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "trigger": {"type": "string", "description": "Qué lo inicia (un trabajador llega, una cita agendada, un job)."},
+          "outcome": {"type": "string", "description": "Cómo termina y qué queda registrado."},
+          "observed": {"type": "boolean", "description": "true si al menos una sesión lo vio ejecutar de punta a punta."},
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["actor", "action", "sources"],
+              "additionalProperties": false,
+              "properties": {
+                "actor": {"type": "string"},
+                "action": {"type": "string"},
+                "effect": {"type": "string", "description": "Qué cambia: estado, registro, documento, notificación."},
+                "sources": {"$ref": "#/$defs/refs"}
+              }
+            }
+          },
+          "sources": {"$ref": "#/$defs/refs"}
+        }
+      }
+    },
+    "states": {
+      "type": "array",
+      "description": "Ciclos de vida: de qué cosa, qué estados existen, qué significan, cuántos hay en la realidad, y qué los mueve.",
+      "items": {
+        "type": "object",
+        "required": ["subject", "states", "sources"],
+        "additionalProperties": false,
+        "properties": {
+          "subject": {"type": "string"},
+          "states": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "meaning"],
+              "additionalProperties": false,
+              "properties": {
+                "name": {"type": "string"},
+                "meaning": {"type": "string"},
+                "count": {"type": "integer", "description": "Filas reales en ese estado, si se sabe."}
+              }
+            }
+          },
+          "transitions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["from", "to", "trigger"],
+              "additionalProperties": false,
+              "properties": {
+                "from": {"type": "string"},
+                "to": {"type": "string"},
+                "trigger": {"type": "string"},
+                "sources": {"$ref": "#/$defs/refs"}
+              }
+            }
+          },
+          "note": {"type": "string"},
+          "sources": {"$ref": "#/$defs/refs"}
+        }
+      }
+    },
+    "rules": {
+      "type": "array",
+      "description": "Reglas de negocio en prosa: validaciones, cálculos, derivaciones automáticas, condiciones de acceso.",
+      "items": {
+        "type": "object",
+        "required": ["id", "statement", "kind", "basis", "confidence", "sources"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "statement": {"type": "string", "description": "Cómo se lo explicarías a alguien de la oficina."},
+          "kind": {"type": "string", "enum": ["validacion", "calculo", "derivacion", "acceso", "automatica", "notificacion", "integracion", "otra"]},
+          "where": {"type": "string", "description": "En qué pantalla/recorrido aplica."},
+          "basis": {"$ref": "#/$defs/basis"},
+          "confidence": {"$ref": "#/$defs/confidence"},
+          "hidden": {"type": "boolean", "description": "true si vive donde nadie la vería (trigger de base, constante, texto libre)."},
+          "sources": {"$ref": "#/$defs/refs"}
+        }
+      }
+    },
+    "automation": {
+      "type": "array",
+      "description": "Lo que pasa sin que nadie haga clic.",
+      "items": {
+        "type": "object",
+        "required": ["when", "what", "sources"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "when": {"type": "string", "description": "En palabras: 'cada minuto', 'a las 23:00', 'fin de año'."},
+          "what": {"type": "string"},
+          "observed": {"type": "boolean"},
+          "sources": {"$ref": "#/$defs/refs"}
+        }
+      }
+    },
+    "integrations": {
+      "type": "array",
+      "description": "Sistemas externos: para qué se usan y qué pasa si fallan.",
+      "items": {
+        "type": "object",
+        "required": ["name", "purpose", "sources"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "purpose": {"type": "string"},
+          "on_failure": {"type": "string"},
+          "observed": {"type": "boolean", "description": "true si dejó rastro en alguna ventana (llamada, error, bloqueo)."},
+          "sources": {"$ref": "#/$defs/refs"}
+        }
+      }
+    },
+    "reports": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "sources"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "description": {"type": "string"},
+          "sources": {"$ref": "#/$defs/refs"}
+        }
+      }
+    },
+    "catalogs": {
+      "type": "array",
+      "description": "Los catálogos que definen el negocio (motivos, tipos, resultados), con sus valores.",
+      "items": {
+        "type": "object",
+        "required": ["name", "values", "sources"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "meaning": {"type": "string"},
+          "values": {"type": "array", "items": {"type": "string"}},
+          "sources": {"$ref": "#/$defs/refs"}
+        }
+      }
+    },
+    "volumes": {
+      "type": "array",
+      "description": "Hechos de la operación real sacados de los datos: cuántos, cómo se reparten.",
+      "items": {
+        "type": "object",
+        "required": ["fact", "sources"],
+        "additionalProperties": false,
+        "properties": {
+          "fact": {"type": "string"},
+          "sources": {"$ref": "#/$defs/refs"}
+        }
+      }
+    },
+    "contradictions": {
+      "type": "array",
+      "description": "Dos fuentes que no cuadran. Siempre quedan para el humano.",
+      "items": {
+        "type": "object",
+        "required": ["expected", "observed", "sources"],
+        "additionalProperties": false,
+        "properties": {
+          "expected": {"type": "string"},
+          "observed": {"type": "string"},
+          "sources": {"$ref": "#/$defs/refs"}
+        }
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "description": "Lo que no se sabe: la pregunta, por qué, y a quién o qué observar.",
+      "items": {
+        "type": "object",
+        "required": ["question", "why", "ask"],
+        "additionalProperties": false,
+        "properties": {
+          "question": {"type": "string"},
+          "why": {"type": "string"},
+          "ask": {"type": "string", "description": "A quién preguntarle o qué ventana observar."}
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "description": "Registro de fuentes. `kind` cerrado; `ref` verificable: para observado, un event_id de events.jsonl o archivo:línea de evidence/raw; para código/base/datos, un elemento del mapa (clase, tabla, catálogo, pantalla, distribución); para config/doc, archivo:línea.",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "ref"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "description": "p. ej. S-001."},
+          "kind": {"$ref": "#/$defs/basis"},
+          "ref": {"type": "string"},
+          "session_id": {"type": "string", "description": "Solo para observado: de qué ventana."},
+          "description": {"type": "string"}
+        }
+      }
+    }
+  }
+}

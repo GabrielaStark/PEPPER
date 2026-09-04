@@ -21,7 +21,7 @@ raw-evidence/    evidencia de una ejecución del flujo "Registrar solicitud"
 
 expected/        la clave de respuestas
 ├── notes.md                  qué debe encontrar PEPPER y cómo se evalúa
-├── runtime-discovery.json    salida de referencia (golden file)
+├── funcional.json / .md      salida de referencia (golden file): qué hace el sistema
 └── reference-environment/    lo que Rehydrate debería generar
 ```
 

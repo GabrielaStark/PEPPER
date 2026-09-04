@@ -112,6 +112,48 @@ class CorrelateFixtureTest(unittest.TestCase):
                 self.assertEqual((self.out / name).read_bytes(), (again / name).read_bytes(), name)
 
 
+class AccionDelFormularioTest(unittest.TestCase):
+    """El resumen de una petición dice QUÉ hizo el usuario, no solo la ruta.
+
+    El perfil declara qué campo nombra el botón y qué campos son ruido del
+    framework; el núcleo solo aplica los patrones (Principio 4).
+    """
+
+    def _parser(self):
+        from pepper.correlate.parsers import HttpProxyParser
+
+        return HttpProxyParser({"action_fields": ["javax.faces.source"],
+                                "noise_field_pattern": r"^javax\.faces\.|ViewState|_SUBMIT$|:j_idt\d+$",
+                                "field_name_pattern": r"([A-Za-z]\w*)$"})
+
+    def test_accion_y_campos_en_el_resumen(self):
+        from datetime import timezone
+
+        from pepper.session import Session
+
+        session = Session(session_id="s", flow_name="f", observed_start=None, observed_end=None,
+                          tz=timezone.utc, collectors=[])
+        record = {"ts": "2026-09-03T22:21:18.000+00:00", "direction": "request", "method": "POST", "path": "/cita",
+                  "correlation_id": "req-1", "client": "x",
+                  "body": {"javax.faces.partial.ajax": "true", "javax.faces.source": "formCita:btnGuardar",
+                           "javax.faces.ViewState": "abc", "formCita_SUBMIT": "1",
+                           "formCita:txtCurp": "XXXX", "formCita:txtNombre": "N", "formCita:password": "[REDACTADO]"}}
+        event = self._parser()._event(record, "http.jsonl:1", session)
+        self.assertEqual(event.metadata["action"], "btnGuardar")
+        self.assertEqual(event.metadata["fields"], ["txtCurp", "txtNombre", "password"])
+        self.assertIn("acción: btnGuardar", event.message)
+        self.assertIn("campos: txtCurp, txtNombre, password", event.message)
+
+    def test_boton_sin_nombre_se_dice(self):
+        action, _ = self._parser().describe_form({"javax.faces.source": "formGrowl:j_idt38"})
+        self.assertEqual(action, "(botón sin nombre)")
+
+    def test_sin_perfil_no_inventa(self):
+        from pepper.correlate.parsers import HttpProxyParser
+
+        self.assertEqual(HttpProxyParser().describe_form({"a": "1"}), (None, ["a"]))
+
+
 class ContencionExactaTest(unittest.TestCase):
     """Un recorrido rápido: peticiones de milisegundos separadas por milisegundos.
 

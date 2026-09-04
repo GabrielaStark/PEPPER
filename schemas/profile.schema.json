@@ -16,6 +16,16 @@
       "enum": ["draft", "validated"],
       "description": "draft: redactado (posiblemente por el agente durante Inspect), aún sin validación humana; nunca corre sin supervisión. validated: probado con un legacy real; habilita el escalón 1."
     },
+    "http": {
+      "type": "object",
+      "description": "Cómo leer los formularios del http.jsonl para describir cada petición en términos del usuario: qué campo nombra la acción (el botón), qué campos son ruido del framework y cómo acortar el nombre de un campo. Datos, no código: el núcleo no sabe de JSF ni de ningún framework.",
+      "additionalProperties": false,
+      "properties": {
+        "action_fields": { "type": "array", "items": { "type": "string" }, "description": "Campos del cuerpo cuyo valor identifica el botón/acción, en orden de preferencia (p. ej. javax.faces.source)." },
+        "noise_field_pattern": { "type": "string", "description": "Regex de campos que no aportan (estado de vista, tokens, ids generados)." },
+        "field_name_pattern": { "type": "string", "description": "Regex con un grupo que extrae el nombre corto de un campo (p. ej. el último segmento de form:panel:campo)." }
+      }
+    },
     "stack": {
       "type": "object",
       "additionalProperties": false,

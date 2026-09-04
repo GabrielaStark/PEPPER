@@ -1,7 +1,3 @@
-"""Fase — Inspect: identificación del stack y mapa exhaustivo de la superficie.
+"""Fase Inspect: `pepper detect` (perfiles) y `pepper map` (todo lo que el sistema es)."""
 
-`pepper detect` (en pepper/detect.py) elige perfil; `pepper map` (systemmap.py)
-enumera todo lo que el sistema puede hacer.
-"""
-
-from pepper.inspect.systemmap import MAP_NAME, build_map, coverage  # noqa: F401
+from pepper.inspect.systemmap import MAP_DIR, MAP_NAME, build_map, coverage, render_map  # noqa: F401

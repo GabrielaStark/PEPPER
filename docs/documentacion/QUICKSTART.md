@@ -40,14 +40,14 @@ Una sola secuencia, de arriba a abajo. ✋ = gate humano.
 
 1. `/pepper-init` — verifica herramientas, prepara `legacy/`, `evidence/`, `docs/pepper/`.
 2. **Pon tus artefactos** en `legacy/` — lo que tengas, como esté. Ordenar el desorden es trabajo de PEPPER. Y **llena `legacy/NOTAS.md`** (init lo deja listo desde `templates/NOTAS-LEGACY.md`) con lo que sepas: servidor y versión de producción, base, cómo arranca, flujos que importan. Una línea tuya ahorra horas.
-3. `/pepper-inspect` — stack con evidencia, dependencias, faltantes, perfil (o borrador) → `docs/pepper/stack-report.md`. ✋
+3. `/pepper-inspect` — stack con evidencia, dependencias, faltantes, perfil (o borrador) → `docs/pepper/stack-report.md`; y el **mapa del sistema** (`pepper map`: pantallas, clases, tablas, catálogos, triggers) → `docs/pepper/system-map.json` + `map/`. ✋
 4. `/pepper-rehydrate` — plan de reconstrucción ✋ → **aislamiento verificado** (`pepper isolate`) → contenedores → validación → `docs/pepper/environment.json`. ✋ (`BLOCKED` y `FAILED` son entregables: paras ahí, con la lista de qué falta.)
 5. `/pepper-observe <flujo>` — colectores listos → **tú ejecutas el flujo** → `evidence/<session_id>/`. ✋
-6. `/pepper-correlate <session_id>` — el núcleo normaliza, reduce y correlaciona; arma el paquete. Revisas `flow.md`. ✋
-7. `/pepper-discover <session_id>` — el agente analiza el paquete → `runtime-discovery.json/md`. Lo lees completo. ✋
-8. `/pepper-export <session_id>` — validación contra el contrato → `docs/pepper/discovery/<session_id>/` → entrega a stark si aplica. ✋
+6. `/pepper-correlate <session_id>` — el núcleo normaliza, reduce y correlaciona; arma el paquete con el mapa y el documento anterior. Te resume `flow.md` en tres líneas. ✋
+7. `/pepper-discover <session_id>` — el agente escribe **qué hace el sistema** → `funcional.md` (12 secciones: quién lo usa, recorridos, estados, reglas, lo automático, integraciones, volúmenes, lo que no se sabe). Lo lees completo. ✋
+8. `/pepper-export <session_id>` — validación contra el contrato → `docs/pepper/discovery/<session_id>/` y **`docs/pepper/funcional.md`**, el documento vigente del sistema. ✋
 
-Repite 5–8 por cada flujo que quieras entender.
+Repite 5–8 por cada flujo: el documento crece, no se reemplaza. La sección 12 ("lo que no sé") te dice qué flujo observar después.
 
 #### Qué te toca hacer a ti en el paso 5 (Observe), minuto a minuto
 
@@ -89,7 +89,7 @@ El repo trae un legacy de juguete con evidencia ya capturada y su clave de respu
 python3 -m pepper demo                        # correlate + package sobre examples/legacy-demo
 ```
 
-Después `/pepper-discover legacy-demo` (el paquete quedó en `pepper-out/legacy-demo/package/`) y `/pepper-export legacy-demo`. Califica al agente contra [`examples/legacy-demo/expected/notes.md`](../../examples/legacy-demo/expected/notes.md): tres trampas sembradas — una regla escondida, una contradicción y un desconocido — y tiene que encontrarlas donde deben quedar.
+Después `/pepper-discover legacy-demo` (el paquete quedó en `pepper-out/legacy-demo/package/`) y `/pepper-export legacy-demo`. Califica al agente contra [`examples/legacy-demo/expected/notes.md`](../../examples/legacy-demo/expected/notes.md): tres trampas sembradas — una regla escondida, una contradicción y un desconocido — y tiene que encontrarlas donde deben quedar. La salida de referencia es [`expected/funcional.md`](../../examples/legacy-demo/expected/funcional.md).
 
 ---
 
@@ -98,14 +98,14 @@ Después `/pepper-discover legacy-demo` (el paquete quedó en `pepper-out/legacy
 | Fase | Comando | Produce |
 |---|---|---|
 | 0. Init | `/pepper-init` | workspace listo, escalón |
-| 1. Inspect | `/pepper-inspect` | `docs/pepper/stack-report.md`, borrador de perfil |
+| 1. Inspect | `/pepper-inspect` | `docs/pepper/stack-report.md`, `docs/pepper/system-map.json` + `map/`, borrador de perfil |
 | 2. Rehydrate | `/pepper-rehydrate` | `docs/pepper/environment.json`, `docs/pepper/isolation.md` |
 | 3. Observe | `/pepper-observe <flujo>` | `evidence/<session_id>/` |
 | 4. Correlate | `/pepper-correlate <session_id>` | `pepper-out/<session_id>/{correlated,package}` |
-| 5. Discover | `/pepper-discover <session_id>` | `…/package/output/runtime-discovery.*` |
-| 6. Export | `/pepper-export <session_id>` | `docs/pepper/discovery/<session_id>/` |
+| 5. Discover | `/pepper-discover <session_id>` | `…/package/output/funcional.md` + `.json` |
+| 6. Export | `/pepper-export <session_id>` | `docs/pepper/discovery/<session_id>/` y `docs/pepper/funcional.md` |
 
-Bajo los comandos está el núcleo, usable a mano: `python3 -m pepper {detect,validate,isolate,correlate,package,export,demo}`.
+Bajo los comandos está el núcleo, usable a mano: `python3 -m pepper {detect,map,validate,isolate,proxy,collect,correlate,package,export,demo}`.
 
 ---
 
@@ -116,8 +116,8 @@ Bajo los comandos está el núcleo, usable a mano: `python3 -m pepper {detect,va
 - Tras **inspect**: confirmas stack, escalón y veredicto.
 - Tras el **plan de rehydrate**: apruebas antes de que se levante un solo contenedor. Tras la ejecución: solo `READY` (o `PARTIAL` con tu acuerdo) sigue.
 - En **observe**: el flujo lo ejecutas tú; el agente solo captura.
-- Tras **correlate**: confirmas que `flow.md` es lo que hiciste.
-- Tras **discover**: lees el discovery completo; el agente itera sobre la evidencia, nunca "ajusta" conclusiones.
+- Tras **correlate**: ves el resumen de `flow.md`; corriges solo si algo no cuadra.
+- Tras **discover**: lees `funcional.md` completo; el agente itera sobre la evidencia, nunca "ajusta" conclusiones.
 - En **export**: la máquina valida que toda conclusión resuelve a evidencia; tú decides qué se convierte en conocimiento. Nada de PEPPER entra a stark como `confirmada`: eso lo hace una persona con nombre.
 
 Una fase a la vez, un flujo por sesión, tú apruebas.

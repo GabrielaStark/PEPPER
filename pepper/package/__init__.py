@@ -2,12 +2,14 @@
 
 Contenido:
   README.md, CLAUDE.md, AGENTS.md   puertas de entrada (todas llevan a prompt.md)
-  prompt.md                          la skill discovery-runtime, sin frontmatter
+  prompt.md                          la skill discovery-funcional, sin frontmatter
   session.json
   evidence/                          events.jsonl, flow.json, flow.md, reduction.md, raw/
+  map/                               lo que el sistema ES: system-map.json + surface/db/catalogs/screens/code.md
+  previous/                          funcional.json del discovery anterior, si lo hay (se extiende, no se repite)
   legacy/                            artefactos del legacy (source, configuration, docs, ...)
-  schemas/runtime-discovery.schema.json
-  output/                            aquí escribe el agente
+  schemas/functional-discovery.schema.json
+  output/                            aquí escribe el agente: funcional.json y funcional.md
 """
 
 from __future__ import annotations
@@ -25,6 +27,9 @@ from pepper.workspace import is_tool_path, tool_paths
 
 _EVIDENCE_FILES = ("events.jsonl", "flow.json", "flow.md", "reduction.md")
 _LEGACY_IGNORE = shutil.ignore_patterns("target", ".git", "node_modules", "__pycache__", "*.class", ".DS_Store")
+SCHEMA_NAME = "functional-discovery.schema.json"
+OUTPUT_JSON = "funcional.json"
+OUTPUT_MD = "funcional.md"
 
 
 def _legacy_ignore(legacy_dir: Path):
@@ -42,7 +47,7 @@ def _legacy_ignore(legacy_dir: Path):
     return ignore
 
 
-DISCOVERY_SKILL = SKILLS_DIR / "discovery-runtime" / "SKILL.md"
+DISCOVERY_SKILL = SKILLS_DIR / "discovery-funcional" / "SKILL.md"
 
 
 def strip_frontmatter(text: str) -> str:
@@ -52,23 +57,24 @@ def strip_frontmatter(text: str) -> str:
     return parts[2].lstrip("\n") if len(parts) == 3 else text
 
 
-def _adapter(has_source: bool, data_mode: str) -> str:
+def _adapter(has_map: bool, has_previous: bool, data_mode: str) -> str:
     lines = [
         "# Instrucciones para el agente",
         "",
         "Lee `prompt.md` y síguelo al pie de la letra.",
         "",
     ]
-    if has_source:
-        lines += [
-            "Hay código fuente en `legacy/source/`: aplica también la sección",
-            "«Comparación runtime ↔ código» de `prompt.md`.",
-            "",
-        ]
+    if has_map:
+        lines += ["Hay mapa del sistema en `map/`: es tu fuente principal para roles, pantallas, estados, "
+                  "catálogos, reglas en la base y jobs. La evidencia de `evidence/` confirma lo que se vio ejecutar.", ""]
+    else:
+        lines += ["No hay mapa del sistema (`map/`): solo tienes la ejecución. Declara en `unknowns` todo lo que un mapa habría respondido.", ""]
+    if has_previous:
+        lines += ["Hay un discovery anterior en `previous/funcional.json`: **extiéndelo**. Conserva lo que sigue siendo cierto, "
+                  "corrige lo que esta sesión contradiga (y dilo en `contradictions`), y agrega lo nuevo.", ""]
     lines += [
         "Trabajas en modo **solo lectura** sobre este paquete. Tu único destino de escritura es `output/`:",
-        "`output/runtime-discovery.json` (válido contra `schemas/runtime-discovery.schema.json`)",
-        "y `output/runtime-discovery.md`.",
+        f"`output/{OUTPUT_JSON}` (válido contra `schemas/{SCHEMA_NAME}`) y `output/{OUTPUT_MD}`.",
         "",
     ]
     if data_mode == "local":
@@ -82,7 +88,7 @@ def _adapter(has_source: bool, data_mode: str) -> str:
 
 def _readme(session: Dict[str, Any], flow: Dict[str, Any], legacy_dirs: List[str],
             data_mode: str, sensitive_count: int, unscanned_count: int,
-            overrides: List[str]) -> str:
+            overrides: List[str], has_map: bool, has_previous: bool) -> str:
     stats = flow.get("stats", {})
     lines = [
         f"# Paquete controlado — {session.get('session_id')}",
@@ -104,18 +110,27 @@ def _readme(session: Dict[str, Any], flow: Dict[str, Any], legacy_dirs: List[str
         f"- Archivos no inspeccionables automáticamente: **{unscanned_count}**",
         f"- Excepciones autorizadas explícitamente: **{', '.join(overrides) if overrides else 'ninguna'}**",
         "",
-        "## Evidencia",
+        "## Qué hay",
         "",
-        "- `evidence/flow.md` — la secuencia correlacionada, legible; **empieza por aquí**",
+    ]
+    if has_map:
+        lines += [
+            "- `map/` — **lo que el sistema ES**, sacado del artefacto y del respaldo: `surface.md` (rutas, jobs, hosts), "
+            "`db.md` (tablas, triggers y funciones con cuerpo, vistas), `catalogs.md` (roles, menús, estados, tipos, "
+            "parámetros; distribuciones reales), `screens.md` (pantallas con campos, botones y mensajes), "
+            "`code.md` (clases con métodos, constantes y cadenas). `system-map.json` es lo mismo, estructurado.",
+        ]
+    else:
+        lines.append("- sin `map/`: no se corrió `pepper map`; el análisis se limita a la ejecución.")
+    if has_previous:
+        lines.append("- `previous/funcional.json` — el documento del sistema hasta la sesión anterior; se extiende.")
+    lines += [
+        "- `evidence/flow.md` — la secuencia observada, legible: cada petición con su acción y lo que disparó",
         f"- `evidence/flow.json` — lo mismo, estructurado: {len(flow.get('traces', []))} peticiones, "
         f"{stats.get('assigned', 0)} eventos asignados, {stats.get('unassigned', 0)} sin asignar",
         f"- `evidence/events.jsonl` — los {stats.get('events', 0)} eventos normalizados de la ventana (uno por línea)",
         "- `evidence/reduction.md` — qué se descartó como ruido y por qué",
         "- `evidence/raw/` — la evidencia cruda; cada evento la referencia con `raw_ref` (archivo:línea)",
-        "",
-        "Los eventos traen `correlation_id` solo cuando la fuente lo emitió. Cuando PEPPER lo infirió,",
-        "está en `metadata.inferred_correlation_id` junto con `metadata.correlation_basis`, que dice",
-        "qué sustenta el enlace (correlation_id explícito > afinidad por thread/pid > ventana temporal).",
         "",
     ]
     if session.get("synthetic"):
@@ -125,18 +140,17 @@ def _readme(session: Dict[str, Any], flow: Dict[str, Any], legacy_dirs: List[str
         ]
     lines += ["## Legacy", ""]
     if legacy_dirs:
-        lines += [f"- `legacy/{name}/`" for name in legacy_dirs]
+        lines += [f"- `legacy/{name}`" for name in legacy_dirs]
     else:
-        lines.append("Sin artefactos del legacy en este paquete: el análisis se limita a la evidencia de ejecución.")
+        lines.append("Sin artefactos del legacy en este paquete.")
     lines += [
         "",
         "## Salida",
         "",
-        "Escribe en `output/`: `runtime-discovery.json` (contrato en `schemas/`) y `runtime-discovery.md`.",
+        f"Escribe en `output/`: `{OUTPUT_JSON}` (contrato en `schemas/{SCHEMA_NAME}`) y `{OUTPUT_MD}`.",
         "",
     ]
     return "\n".join(lines)
-
 
 
 _CREDENTIAL_LINE_RE = re.compile(r"(?im)^(\s*(?:pass\w*|contrase\w*|clave|secret\w*|token|pwd)\s*[:=]\s*)(\S.*)$")
@@ -173,9 +187,7 @@ def _outside_package(path: Path, out_dir: Path) -> bool:
 def _redact_notes(package_legacy: Path) -> List[str]:
     """Redacta valores tipo credencial en las notas del humano copiadas al paquete.
 
-    NOTAS.md dice \"sin credenciales aquí\", pero si el humano las puso, no pueden
-    viajar a un agente externo en claro (auditoría C-03). Se redacta en la COPIA;
-    el original en legacy/ no se toca. Devuelve los archivos donde redactó.
+    Se redacta en la COPIA; el original en legacy/ no se toca. Devuelve los archivos donde redactó.
     """
     touched: List[str] = []
     if not package_legacy.is_dir():
@@ -196,10 +208,33 @@ def _redact_notes(package_legacy: Path) -> List[str]:
     return touched
 
 
+def _copy_map(system_map: Path, out_dir: Path) -> str:
+    """system-map.json + la carpeta map/ legible (se regenera si falta)."""
+    if not system_map.is_file():
+        raise FileNotFoundError(f"mapa inexistente: {system_map} (córrelo con `pepper map`)")
+    from pepper.inspect import render_map
+
+    target = out_dir / "map"
+    target.mkdir()
+    shutil.copy2(system_map, target / "system-map.json")
+    rendered_dir = system_map.parent / "map"
+    data = json.loads(system_map.read_text(encoding="utf-8"))
+    for name, text in render_map(data).items():
+        source = rendered_dir / name
+        if source.is_file():
+            shutil.copy2(source, target / name)
+        else:
+            (target / name).write_text(text, encoding="utf-8")
+    return (f"map/ ({len(data.get('screens', []))} pantallas, {len(data.get('classes', []))} clases, "
+            f"{len(data.get('catalogs', []))} catálogos)")
+
+
 def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = None,
              data_mode: str = "remote", allow_sensitive: bool = False,
              acknowledge_unscanned: bool = False,
-             manifest_out: Optional[Path] = None) -> Dict[str, Any]:
+             manifest_out: Optional[Path] = None,
+             system_map: Optional[Path] = None,
+             previous: Optional[Path] = None) -> Dict[str, Any]:
     if data_mode not in ("local", "remote"):
         raise ValueError("data_mode debe ser 'local' o 'remote'")
     for name in ("session.json", "events.jsonl", "flow.json"):
@@ -209,6 +244,8 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
         raise FileExistsError(f"el directorio del paquete ya existe y no está vacío: {out_dir}")
     if legacy_dir is not None and not legacy_dir.is_dir():
         raise FileNotFoundError(f"directorio del legacy inexistente: {legacy_dir}")
+    if previous is not None and not previous.is_file():
+        raise FileNotFoundError(f"discovery anterior inexistente: {previous}")
     _assert_no_symlinks(correlated_dir, "correlated")
     if legacy_dir is not None:
         _assert_no_symlinks(legacy_dir, "legacy", _legacy_ignore(legacy_dir))
@@ -232,10 +269,10 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
     roots = [("evidence", correlated_dir, None)]
     if legacy_dir is not None:
         roots.append(("legacy", legacy_dir, _legacy_ignore(legacy_dir)))
+    if system_map is not None and system_map.is_file():
+        roots.append(("map", system_map.parent / "map", None))
     data_report = scan_sensitive(roots)
-    # `synthetic` lo escribe quien produce session.json (el agente, en Observe): informa,
-    # pero NO exime del gate — con esa bandera un WAR y un dump reales viajaban a un
-    # agente remoto sin revisión (auditoría 2026-09-03). El demo pasa con flags explícitos.
+    # `synthetic` lo escribe quien produce session.json: informa, pero NO exime del gate.
     synthetic = bool(session.get("synthetic"))
     if data_mode == "remote":
         if data_report.sensitive and not allow_sensitive:
@@ -268,6 +305,13 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
     if (correlated_dir / "raw").is_dir():
         shutil.copytree(correlated_dir / "raw", evidence / "raw")
 
+    map_summary = _copy_map(system_map, out_dir) if system_map is not None else ""
+    previous_summary = ""
+    if previous is not None:
+        (out_dir / "previous").mkdir()
+        shutil.copy2(previous, out_dir / "previous" / OUTPUT_JSON)
+        previous_summary = f"previous/{OUTPUT_JSON}"
+
     legacy_dirs: List[str] = []
     if legacy_dir is not None:
         ignore = _legacy_ignore(legacy_dir)
@@ -279,19 +323,17 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
                 continue
             if child.is_dir():
                 shutil.copytree(child, out_dir / "legacy" / child.name, ignore=ignore)
-                legacy_dirs.append(child.name)
+                legacy_dirs.append(child.name + "/")
             elif child.is_file():
-                # el caso de uso central es "me queda un WAR y un dump" sueltos (auditoría H-03)
                 (out_dir / "legacy").mkdir(exist_ok=True)
                 shutil.copy2(child, out_dir / "legacy" / child.name)
                 legacy_dirs.append(child.name)
-    has_source = "source" in legacy_dirs
 
-    shutil.copy2(SCHEMAS_DIR / "runtime-discovery.schema.json", out_dir / "schemas" / "runtime-discovery.schema.json")
+    shutil.copy2(SCHEMAS_DIR / SCHEMA_NAME, out_dir / "schemas" / SCHEMA_NAME)
     prompt = strip_frontmatter(DISCOVERY_SKILL.read_text(encoding="utf-8"))
     (out_dir / "prompt.md").write_text(prompt, encoding="utf-8")
 
-    adapter = _adapter(has_source, data_mode)
+    adapter = _adapter(bool(map_summary), bool(previous_summary), data_mode)
     (out_dir / "CLAUDE.md").write_text(adapter, encoding="utf-8")
     (out_dir / "AGENTS.md").write_text(adapter, encoding="utf-8")
     overrides = []
@@ -301,27 +343,31 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
         overrides.append("archivos no inspeccionados")
     (out_dir / "README.md").write_text(
         _readme(session, flow, legacy_dirs, data_mode, len(data_report.sensitive),
-                len(data_report.unscanned), overrides),
+                len(data_report.unscanned), overrides, bool(map_summary), bool(previous_summary)),
         encoding="utf-8",
     )
 
     # El manifest viaja con el paquete, re-mapeado a su layout, y cada copia se
     # verifica contra el hash original: la evidencia del paquete queda amarrada a
-    # la salida de Correlate (auditoría C-02). El agente solo escribe en output/.
+    # la salida de Correlate. El mapa, el discovery anterior y el legacy también
+    # se amarran: el agente solo escribe en output/.
     package_files: Dict[str, str] = {}
     for original_rel, digest in source_manifest.get("files", {}).items():
         package_rel = original_rel if original_rel == "session.json" else f"evidence/{original_rel}"
         copied = out_dir / package_rel
         if not copied.is_file():
-            continue  # flow.md/reduction.md pueden no existir; lo copiado es lo que se amarra
+            continue
         actual = evidence_manifest.sha256_file(copied)
         if actual != digest:
             raise ValueError(f"la copia de {original_rel} no coincide con el manifest de Correlate: {package_rel}")
         package_files[package_rel] = digest
     redacted_notes = _redact_notes(out_dir / "legacy")
-    for path in sorted((out_dir / "legacy").rglob("*")) if (out_dir / "legacy").is_dir() else []:
-        if path.is_file() and not path.is_symlink():
-            package_files[path.relative_to(out_dir).as_posix()] = evidence_manifest.sha256_file(path)
+    for scope in ("legacy", "map", "previous"):
+        base = out_dir / scope
+        if base.is_dir():
+            for path in sorted(base.rglob("*")):
+                if path.is_file() and not path.is_symlink():
+                    package_files[path.relative_to(out_dir).as_posix()] = evidence_manifest.sha256_file(path)
     manifest = dict(source_manifest)
     manifest["files"] = package_files
     manifest["data_policy"] = {
@@ -342,6 +388,8 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
         "events": flow.get("stats", {}).get("events", 0),
         "traces": len(flow.get("traces", [])),
         "legacy": legacy_dirs,
+        "map": map_summary,
+        "previous": previous_summary,
         "data_mode": data_mode,
         "sensitive_findings": len(data_report.sensitive),
         "unscanned_files": len(data_report.unscanned),

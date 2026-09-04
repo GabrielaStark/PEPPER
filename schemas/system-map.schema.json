@@ -2,30 +2,24 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "pepper/system-map.schema.json",
   "title": "PepperSystemMap",
-  "description": "Inventario EXHAUSTIVO de la superficie de un sistema legacy, extraído del artefacto de forma determinística (no de la observación). Enumera todo lo que el sistema puede hacer: cada entrada HTTP, cada job, cada dependencia externa, cada almacén de datos, cada perfil. La observación en vivo confirma flujos concretos y se mide como COBERTURA contra este mapa. Todo elemento cita evidencia (archivo!miembro, archivo:línea o comando determinístico).",
+  "description": "Todo lo que un sistema legacy ES, extraído del artefacto y del respaldo de forma determinística (no de la observación): entradas HTTP, jobs, dependencias externas, objetos de datos con su definición, catálogos completos (tablas chicas), distribuciones de columnas de estado, clases con sus métodos/constantes/cadenas y pantallas con campos, botones y mensajes. La observación en vivo confirma flujos concretos contra este universo. Todo elemento cita evidencia (archivo!miembro, archivo:línea o herramienta determinística). Sin timestamp: mismo artefacto → mismos bytes.",
   "type": "object",
-  "required": ["schema_version", "profile_id", "complete", "entrypoints", "jobs", "external_dependencies", "data_stores", "roles"],
+  "required": ["schema_version", "profile_id", "complete", "entrypoints", "jobs", "external_dependencies", "data_stores", "catalogs", "distributions", "classes", "screens"],
   "additionalProperties": false,
   "properties": {
     "schema_version": {"type": "string"},
     "profile_id": {"type": ["string", "null"], "description": "Perfil aplicado, o null si el mapa se hizo sin perfil."},
     "artifact": {
       "type": "object",
-      "description": "El artefacto inspeccionado.",
       "additionalProperties": true,
       "properties": {"name": {"type": "string"}, "sha256": {"type": "string"}}
     },
     "generated_by": {"type": "string"},
-    "created": {"type": "string"},
     "complete": {
       "type": "boolean",
-      "description": "false si algún extractor no pudo correr (p. ej. faltó javap o pg_restore): el mapa está INCOMPLETO y coverage_gaps dice qué falta. Fail-honest: un mapa parcial se declara parcial."
+      "description": "false si algún extractor no pudo correr o ninguno cubre una superficie: el mapa está INCOMPLETO y coverage_gaps dice qué falta. Un mapa parcial se declara parcial."
     },
-    "coverage_gaps": {
-      "type": "array",
-      "description": "Qué no se pudo extraer y por qué. Vacío cuando complete=true.",
-      "items": {"type": "string"}
-    },
+    "coverage_gaps": {"type": "array", "items": {"type": "string"}},
     "entrypoints": {
       "type": "array",
       "description": "Toda entrada HTTP: rutas MVC, endpoints REST, pantallas, rutas públicas.",
@@ -35,9 +29,9 @@
         "additionalProperties": false,
         "properties": {
           "kind": {"type": "string", "enum": ["http_route", "rest_endpoint", "screen", "public_route"]},
-          "method": {"type": "string", "description": "GET, POST, … o vacío si no aplica."},
+          "method": {"type": "string"},
           "path": {"type": "string"},
-          "handler": {"type": "string", "description": "Clase/método que atiende, si se pudo determinar."},
+          "handler": {"type": "string"},
           "auth": {"type": "string", "enum": ["public", "authenticated", "unknown"], "default": "unknown"},
           "evidence": {"type": "string"}
         }
@@ -52,8 +46,8 @@
         "additionalProperties": false,
         "properties": {
           "name": {"type": "string"},
-          "schedule": {"type": "string", "description": "Expresión cron o intervalo."},
-          "signature": {"type": "string", "description": "Regex con que se reconoce este job en la evidencia (muchos no dejan log propio y solo se delatan por sus consultas). Sin ella, la cobertura de jobs se declara no medible en vez de reportar 0."},
+          "schedule": {"type": "string"},
+          "signature": {"type": "string", "description": "Regex con que se reconoce este job en la evidencia. Sin ella, la cobertura de jobs se declara no medible en vez de reportar 0."},
           "detail": {"type": "string"},
           "evidence": {"type": "string"}
         }
@@ -61,7 +55,6 @@
     },
     "external_dependencies": {
       "type": "array",
-      "description": "Todo sistema fuera del legacy que el artefacto invoca: REST, bases foráneas, buses, SMTP, editores, archivos.",
       "items": {
         "type": "object",
         "required": ["name", "kind", "evidence"],
@@ -69,7 +62,7 @@
         "properties": {
           "name": {"type": "string"},
           "kind": {"type": "string", "enum": ["rest", "db", "foreign_db", "smtp", "bus", "web", "file", "other"]},
-          "target": {"type": "string", "description": "Host/URL o identificador."},
+          "target": {"type": "string"},
           "endpoints": {"type": "array", "items": {"type": "string"}},
           "detail": {"type": "string"},
           "evidence": {"type": "string"}
@@ -78,7 +71,7 @@
     },
     "data_stores": {
       "type": "array",
-      "description": "Objetos de datos del respaldo: tablas, vistas, funciones, triggers, secuencias y SERVIDORES FORÁNEOS (interconexiones a otras bases).",
+      "description": "Objetos del respaldo: tablas (con columnas y conteo), vistas, funciones y triggers (con definición), secuencias y servidores foráneos.",
       "items": {
         "type": "object",
         "required": ["kind", "evidence"],
@@ -87,26 +80,86 @@
           "kind": {"type": "string", "enum": ["table", "view", "function", "trigger", "sequence", "foreign_server", "extension", "summary"]},
           "name": {"type": "string"},
           "count": {"type": "integer"},
+          "columns": {"type": "array", "items": {"type": "string"}},
+          "definition": {"type": "string", "description": "DDL/cuerpo completo (funciones, triggers, vistas)."},
           "detail": {"type": "string"},
           "evidence": {"type": "string"}
         }
       }
     },
-    "roles": {
+    "catalogs": {
       "type": "array",
-      "description": "Perfiles/roles del sistema.",
+      "description": "Tablas chicas completas — roles, menús, estados, tipos, parámetros — con valores redactados donde parecen datos de personas o credenciales.",
       "items": {
         "type": "object",
-        "required": ["name", "evidence"],
+        "required": ["table", "columns", "count", "rows", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "table": {"type": "string"},
+          "columns": {"type": "array", "items": {"type": "string"}},
+          "count": {"type": "integer"},
+          "rows": {"type": "array", "items": {"type": "array", "items": {"type": ["string", "null"]}}},
+          "evidence": {"type": "string"}
+        }
+      }
+    },
+    "distributions": {
+      "type": "array",
+      "description": "Conteo de valores de columnas de estado/tipo en tablas grandes: cómo se reparte la realidad.",
+      "items": {
+        "type": "object",
+        "required": ["table", "column", "total", "distinct", "values", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "table": {"type": "string"},
+          "column": {"type": "string"},
+          "total": {"type": "integer"},
+          "distinct": {"type": "integer"},
+          "values": {"type": "array", "items": {"type": "object", "required": ["value", "count"], "additionalProperties": false,
+                                                 "properties": {"value": {"type": ["string", "null"]}, "count": {"type": "integer"}}}},
+          "evidence": {"type": "string"}
+        }
+      }
+    },
+    "classes": {
+      "type": "array",
+      "description": "Clases del sistema (no de librerías): métodos públicos, constantes y cadenas del bytecode.",
+      "items": {
+        "type": "object",
+        "required": ["name", "kind", "methods", "constants", "strings", "evidence"],
         "additionalProperties": false,
         "properties": {
           "name": {"type": "string"},
-          "active": {"type": "boolean"},
-          "detail": {"type": "string"},
+          "kind": {"type": "string"},
+          "methods": {"type": "array", "items": {"type": "string"}},
+          "constants": {"type": "object", "additionalProperties": {"type": "string"}},
+          "strings": {"type": "array", "items": {"type": "string"}},
           "evidence": {"type": "string"}
         }
       }
     },
+    "screens": {
+      "type": "array",
+      "description": "Pantallas: título, encabezados, campos, botones con su acción, mensajes de validación, condiciones por rol e inclusiones.",
+      "items": {
+        "type": "object",
+        "required": ["path", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "path": {"type": "string"},
+          "title": {"type": "string"},
+          "headings": {"type": "array", "items": {"type": "string"}},
+          "fields": {"type": "array", "items": {"type": "string"}},
+          "buttons": {"type": "array", "items": {"type": "object", "required": ["label"], "additionalProperties": false,
+                                                  "properties": {"label": {"type": "string"}, "action": {"type": "string"}}}},
+          "messages": {"type": "array", "items": {"type": "string"}},
+          "conditions": {"type": "array", "items": {"type": "string"}},
+          "includes": {"type": "array", "items": {"type": "string"}},
+          "evidence": {"type": "string"}
+        }
+      }
+    },
+    "labels": {"type": "integer", "description": "Cuántas etiquetas de interfaz (bundle i18n) se resolvieron."},
     "notes": {"type": "array", "items": {"type": "string"}}
   }
 }

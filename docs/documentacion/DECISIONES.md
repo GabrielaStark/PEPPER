@@ -2,7 +2,7 @@
 
 > ADR que congela las decisiones detrás de PEPPER. Fuente de verdad sobre el **porqué** de la arquitectura, los agentes y el núcleo. Si un artefacto diverge de este documento, este documento manda hasta que se actualice. Formato: **Decisión · Por qué · Consecuencia aceptada**.
 
-La visión original completa está en [`VISION.md`](VISION.md); este documento registra lo que se decidió al construirla y dónde se corrigió.
+Este documento registra lo que se decidió al construir PEPPER y dónde se corrigió.
 
 ## D1. Dos capas: agentes por fase + núcleo determinístico
 
@@ -54,7 +54,7 @@ La visión original completa está en [`VISION.md`](VISION.md); este documento r
 
 ## D9. El agente es intercambiable; el paquete es la interfaz
 
-- **Decisión**: Discover trabaja sobre una carpeta autocontenida con `prompt.md` (el skill `discovery-runtime` sin frontmatter), `CLAUDE.md` y `AGENTS.md` apuntando a él, evidencia, legacy, schema y `output/`. Sin APIs por agente. La salida valida contra el mismo schema venga de Claude Code o de Codex.
+- **Decisión**: Discover trabaja sobre una carpeta autocontenida con `prompt.md` (el skill `discovery-funcional` sin frontmatter), `CLAUDE.md` y `AGENTS.md` apuntando a él, evidencia, legacy, schema y `output/`. Sin APIs por agente. La salida valida contra el mismo schema venga de Claude Code o de Codex.
 - **Por qué**: el requisito de usar ambos agentes, y el bonus del modo contraste: dos análisis independientes sobre la misma evidencia.
 - **Consecuencia aceptada**: el paquete copia el legacy (código, configuración, docs) y la evidencia cruda completa. Extraer solo los tramos referenciados queda pendiente para cuando los logs pesen.
 
@@ -157,3 +157,9 @@ La visión original completa está en [`VISION.md`](VISION.md); este documento r
 - **Decisión**: `pepper package` clasifica el destino como `remote` o `local` y escanea antes de copiar. En modo remoto, credenciales, llaves privadas y PII de alta confianza bloquean; binarios, archivos grandes e ilegibles se declaran no inspeccionados y también bloquean. Las excepciones requieren flags explícitos del humano y quedan registradas en el manifest. En modo local se permite el material, pero `CLAUDE.md` prohíbe abrir ese paquete con Claude Code/Codex remoto. Todo symlink se rechaza a cualquier profundidad.
 - **Por qué**: escribir “este paquete puede contener datos reales” no evita que se envíen. La auditoría reprodujo un symlink anidado que hizo que el redactor modificara un archivo fuera del paquete y pudo leer cualquier destino accesible. También demostró que un WAR, dump o log puede transportar datos que un scanner de texto no ve; declararlo limpio habría sido falso.
 - **Consecuencia aceptada**: el scanner no promete anonimización ni cobertura total. Reporta categorías y ubicaciones, nunca valores. Un WAR/dump real normalmente requerirá revisión y `--acknowledge-unscanned`; usar `--allow-sensitive` significa que una persona asumió explícitamente la decisión de procesamiento remoto.
+
+## D26. El entregable es QUÉ HACE el sistema, y el mapa es la mitad de la fuente (2026-09-04)
+
+- **Decisión**: el discovery deja de producir "reglas candidatas con IDs de evidencia" y produce un **documento funcional** (`funcional.md/json`, contrato `functional-discovery.schema.json`) con secciones fijas: quién lo usa y qué puede hacer cada quien, el recorrido principal y las otras puertas de entrada, los estados con sus conteos reales, las reglas en prosa de negocio, lo automático, las integraciones y qué pasa si fallan, reportes, catálogos, volúmenes, contradicciones y lo que no se sabe con a quién preguntarle. Cada afirmación cita fuentes tipadas (`observado`, `en_codigo`, `en_base`, `en_datos`, `en_config`, `en_doc`, `humano`) que Export verifica: un event_id o archivo:línea de la evidencia, un elemento del mapa (`map:<colección>:<nombre>`) o un archivo del paquete. El documento es del **sistema** y se acumula: cada sesión recibe el anterior (`previous/`) y lo extiende. Para que el agente pueda escribirlo, `pepper map` crece hasta sacar todo lo que el sistema ES —pantallas con campos, botones y mensajes; clases con métodos, constantes y cadenas; tablas con conteo; triggers y funciones con cuerpo; catálogos completos y distribuciones de estado— con un lector propio del formato custom de `pg_dump` (sin PostgreSQL) y `javap` por lotes, y el paquete lo lleva en `map/`. El proxy ya capturaba formularios; ahora el perfil declara qué campo nombra la acción (`http.action_fields`) y `flow.md` dice "POST /cita · acción: registraCita · campos: …" en vez de "27 × POST /cita".
+- **Por qué**: en el primer ejercicio real la herramienta entregó un reporte técnico —HTTP 200 vs 401, 185 SELECTs, un error de E/S— y la humana lo llamó "una jalada": ella necesita saber flujos, roles, permisos y reglas, y no conoce el sistema para narrarlo. La mitad de esa información vive en catálogos de la base y constantes del código que el discovery nunca abría; el WAR y el respaldo viajaban como "contexto". Un documento funcional escrito a mano con esas fuentes le sirvió; ese documento es el contrato.
+- **Consecuencia aceptada**: el mapa pesa (≈0.7 MB de JSON, miles de líneas legibles) y tarda ~20 s; el agente tiene más que leer, pero lo lee por secciones (`map/*.md`). Las fuentes `en_codigo` sin mapa se limitan a rutas de archivos del paquete. Se borraron los contratos y documentos del formato anterior (`runtime-discovery`, `VISION.md`, `fases/`): el repo describe lo que la herramienta hace hoy, no lo que iba a hacer.

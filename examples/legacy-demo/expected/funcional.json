@@ -1,0 +1,116 @@
+{
+  "schema_version": "0.2.0",
+  "system": {"name": "Sistema de Solicitudes (legacy-demo)", "artifact": "solicitudes.war", "profile_id": "java-wildfly-postgres"},
+  "engine": {"agent": "golden-fixture", "analyzed_at": "2026-09-04T00:00:00-06:00"},
+  "sessions": [
+    {"session_id": "flow-001", "flow_name": "Registrar solicitud", "observed_start": "2026-08-25T13:20:30.000-06:00",
+     "observed_end": "2026-08-25T13:22:14.000-06:00", "operator": "humano",
+     "what_it_covered": "Dos intentos de registro desde ventanilla: uno rechazado (ciudadano suspendido) y uno exitoso."}
+  ],
+  "summary": {
+    "one_sentence": "Ventanilla registra solicitudes de trámite de ciudadanos: consulta el padrón, asigna un folio y guarda la solicitud con su historial.",
+    "context": "Una sola dependencia; el manual heredado es de 2018 y quien lo escribió ya no está.",
+    "sources": ["S-001", "S-010"]
+  },
+  "actors": [
+    {"name": "Ventanilla", "description": "Personal que atiende al ciudadano y envía la solicitud con el identificador del ciudadano y el tipo de trámite.", "sources": ["S-010", "S-001"]}
+  ],
+  "permissions": [
+    {"capability": "Registrar solicitud", "description": "POST /api/applications", "actors": ["Ventanilla"], "sources": ["S-001", "S-012"]}
+  ],
+  "journeys": [
+    {
+      "name": "Registrar solicitud",
+      "trigger": "Un ciudadano presenta un trámite en ventanilla.",
+      "outcome": "Solicitud guardada con folio SOL-<año>-<consecutivo> y un primer renglón de historial en estado REGISTERED; la ventanilla recibe el folio.",
+      "observed": true,
+      "steps": [
+        {"actor": "Ventanilla", "action": "Envía la solicitud (ciudadano y tipo de trámite).", "sources": ["S-001", "S-006"]},
+        {"actor": "Sistema", "action": "Consulta al ciudadano en el padrón.", "effect": "Lee estado y nacionalidad.", "sources": ["S-003", "S-008", "S-011"]},
+        {"actor": "Sistema", "action": "Si el ciudadano no está ACTIVO, rechaza: 'El ciudadano no se encuentra activo'.", "effect": "Nada se escribe.", "sources": ["S-004", "S-005", "S-011"]},
+        {"actor": "Sistema", "action": "Toma el siguiente consecutivo y arma el folio.", "effect": "Folio SOL-2026-000042.", "sources": ["S-009", "S-013"]},
+        {"actor": "Sistema", "action": "Guarda la solicitud y su historial inicial.", "effect": "INSERT en application y application_history (REGISTERED).", "sources": ["S-014", "S-015", "S-016"]},
+        {"actor": "Sistema", "action": "Devuelve el folio a la ventanilla.", "sources": ["S-017"]}
+      ],
+      "sources": ["S-001", "S-017"]
+    }
+  ],
+  "states": [
+    {
+      "subject": "Ciudadano (padrón)",
+      "states": [
+        {"name": "ACTIVE", "meaning": "Puede registrar solicitudes."},
+        {"name": "SUSPENDED", "meaning": "Sus solicitudes se rechazan."},
+        {"name": "INACTIVE", "meaning": "Declarado en el manual; no se observó su efecto."}
+      ],
+      "note": "El manual dice que el estado es estadístico; el sistema lo usa para decidir.",
+      "sources": ["S-010", "S-011", "S-004"]
+    },
+    {
+      "subject": "Solicitud",
+      "states": [{"name": "REGISTERED", "meaning": "Recién registrada; único estado observado."}],
+      "sources": ["S-015", "S-016"]
+    }
+  ],
+  "rules": [
+    {"id": "R-001", "statement": "Solo un ciudadano ACTIVO puede registrar una solicitud; si está SUSPENDIDO se rechaza antes de escribir nada.",
+     "kind": "validacion", "where": "Registrar solicitud", "basis": "observado", "confidence": "confirmada", "hidden": false,
+     "sources": ["S-004", "S-005", "S-011"]},
+    {"id": "R-002", "statement": "El folio se forma con SOL, el año en curso y un consecutivo de la base (folio_seq).",
+     "kind": "calculo", "where": "Registrar solicitud", "basis": "observado", "confidence": "confirmada", "hidden": false,
+     "sources": ["S-009", "S-013", "S-018"]},
+    {"id": "R-003", "statement": "Cada solicitud nueva deja además un primer renglón de historial en estado REGISTERED, en la misma operación.",
+     "kind": "derivacion", "where": "Registrar solicitud", "basis": "observado", "confidence": "confirmada", "hidden": false,
+     "sources": ["S-015", "S-016", "S-019"]},
+    {"id": "R-004", "statement": "Un ciudadano que no sea mexicano sigue otro camino (revisión consular pendiente).",
+     "kind": "validacion", "where": "Registrar solicitud", "basis": "en_codigo", "confidence": "sustentada", "hidden": false,
+     "sources": ["S-020"]}
+  ],
+  "automation": [],
+  "integrations": [
+    {"name": "PostgreSQL (base solicitudes)", "purpose": "Padrón de ciudadanos, folios y solicitudes.", "on_failure": "No se puede registrar.", "observed": true, "sources": ["S-003", "S-014"]},
+    {"name": "Correo SMTP institucional", "purpose": "Según el manual, confirmación al ciudadano con el folio.", "on_failure": "Desconocido: no se observó ningún envío.", "observed": false, "sources": ["S-010", "S-021"]}
+  ],
+  "reports": [],
+  "catalogs": [
+    {"name": "Estados del ciudadano", "meaning": "Estado en el padrón", "values": ["ACTIVE", "SUSPENDED", "INACTIVE"], "sources": ["S-010"]}
+  ],
+  "volumes": [
+    {"fact": "El consecutivo de folios iba en 42 y la solicitud creada recibió el id 87: hay solicitudes que no pasaron por este flujo, o el consecutivo se reinició.", "sources": ["S-009", "S-016"]}
+  ],
+  "contradictions": [
+    {"expected": "El manual (§3 paso 5) y la configuración (notificaciones.habilitado=true) dicen que se envía un correo de confirmación.",
+     "observed": "No hay rastro de correo ni de conexión SMTP en la ventana; en el código el envío nunca se invoca.",
+     "sources": ["S-010", "S-021", "S-022", "S-017"]},
+    {"expected": "El manual (§4) dice que el estado del ciudadano es estadístico.",
+     "observed": "El estado decide si la solicitud se registra o se rechaza.",
+     "sources": ["S-010", "S-004", "S-011"]}
+  ],
+  "unknowns": [
+    {"question": "¿Qué pasa con un ciudadano extranjero?", "why": "El código lo manda a una revisión consular pendiente, pero ninguna ventana lo ejercitó.", "ask": "Observar un registro con el ciudadano 1005 (BR)."},
+    {"question": "¿Qué pasa si el ciudadano no existe en el padrón?", "why": "El código responde 404; no se observó.", "ask": "Observar un registro con un identificador inexistente."},
+    {"question": "¿El correo de confirmación se envía en otro momento, o nunca?", "why": "Solo se probó que no ocurre durante el registro.", "ask": "Quien opere el sistema: ¿los ciudadanos reciben correo?"}
+  ],
+  "sources": [
+    {"id": "S-001", "kind": "observado", "ref": "http.jsonl:3", "session_id": "flow-001", "description": "POST /api/applications, ciudadano 1003."},
+    {"id": "S-003", "kind": "observado", "ref": "database/postgresql.log:2", "session_id": "flow-001", "description": "SELECT sobre citizen (1003)."},
+    {"id": "S-004", "kind": "observado", "ref": "application/server.log:5", "session_id": "flow-001", "description": "WARN ciudadano 1003 rechazado, status SUSPENDED."},
+    {"id": "S-005", "kind": "observado", "ref": "http.jsonl:4", "session_id": "flow-001", "description": "HTTP 409 'El ciudadano no se encuentra activo'."},
+    {"id": "S-006", "kind": "observado", "ref": "http.jsonl:7", "session_id": "flow-001", "description": "POST /api/applications, ciudadano 1001."},
+    {"id": "S-008", "kind": "observado", "ref": "database/postgresql.log:5", "session_id": "flow-001", "description": "SELECT sobre citizen (1001)."},
+    {"id": "S-009", "kind": "observado", "ref": "database/postgresql.log:7", "session_id": "flow-001", "description": "SELECT nextval('folio_seq') → 42."},
+    {"id": "S-010", "kind": "en_doc", "ref": "legacy/docs/manual-tecnico.md", "description": "Manual técnico heredado (2018)."},
+    {"id": "S-011", "kind": "en_codigo", "ref": "legacy/source/src/main/java/gob/demo/solicitudes/service/ApplicationService.java:35", "description": "if (!\"ACTIVE\".equals(citizen.getStatus())) → rechazo."},
+    {"id": "S-012", "kind": "en_codigo", "ref": "legacy/source/src/main/java/gob/demo/solicitudes/rest/ApplicationsResource.java", "description": "Recurso REST de solicitudes."},
+    {"id": "S-013", "kind": "observado", "ref": "application/server.log:10", "session_id": "flow-001", "description": "'Folio generated: SOL-2026-000042'."},
+    {"id": "S-014", "kind": "observado", "ref": "database/postgresql.log:8", "session_id": "flow-001", "description": "INSERT INTO application."},
+    {"id": "S-015", "kind": "observado", "ref": "database/postgresql.log:10", "session_id": "flow-001", "description": "INSERT INTO application_history (REGISTERED)."},
+    {"id": "S-016", "kind": "observado", "ref": "E-014", "session_id": "flow-001", "description": "Historial de la solicitud 87."},
+    {"id": "S-017", "kind": "observado", "ref": "http.jsonl:8", "session_id": "flow-001", "description": "HTTP 201 con el folio."},
+    {"id": "S-018", "kind": "en_codigo", "ref": "legacy/source/src/main/java/gob/demo/solicitudes/dao/ApplicationDao.java:28", "description": "String.format(\"SOL-%d-%06d\", anio, consecutivo)."},
+    {"id": "S-019", "kind": "en_codigo", "ref": "legacy/source/src/main/java/gob/demo/solicitudes/service/ApplicationService.java:47", "description": "Alta del historial inicial."},
+    {"id": "S-020", "kind": "en_codigo", "ref": "legacy/source/src/main/java/gob/demo/solicitudes/service/ApplicationService.java:40", "description": "Bifurcación processForeignApplication para nacionalidad ≠ MX."},
+    {"id": "S-021", "kind": "en_config", "ref": "legacy/configuration/application.properties", "description": "notificaciones.habilitado=true y SMTP declarados."},
+    {"id": "S-022", "kind": "en_codigo", "ref": "legacy/source/src/main/java/gob/demo/solicitudes/service/NotificationService.java", "description": "sendRegistrationEmail existe y nadie lo invoca."}
+  ]
+}
