@@ -1,27 +1,43 @@
 {
-  "extractor_version": "0.1.0",
-  "description": "Cómo `pepper map` enumera la superficie de un WAR de Spring Boot + JSF + PostgreSQL. Cada bloque declara un MECANISMO del núcleo y sus patrones (datos, no código). El núcleo no sabe de Java; este perfil sí.",
+  "extractor_version": "0.2.0",
+  "description": "Cómo `pepper map` saca todo lo que un WAR de Spring Boot + JSF + PostgreSQL ES. Cada bloque declara un MECANISMO del núcleo y sus patrones (datos, no código). El núcleo no sabe de Java ni de JSF; este perfil sí.",
   "extractors": [
     {
       "mechanism": "jvm_route_annotations",
       "description": "Rutas @RequestMapping/@Get/@PostMapping y jobs @Scheduled del bytecode, vía javap.",
       "class_root": "WEB-INF/classes",
-      "package_prefixes": [
-        "mx/com/edomex/siat/controller/",
-        "mx/com/edomex/siat/rest/",
-        "mx/com/edomex/siat/cron/"
-      ],
-      "job_signatures": {
-        "RevisionCitasSchedule": "dsestatuscita\\s*=\\$1|date\\(c\\.fechacita\\)\\s*=\\s*current_date",
-        "CatalogosSidecoSchedule": "sincronizaci|estatusSolicitudSideco|seguimientoSolicitudes",
-        "CatalogosPjSchedule": "CatalogosPj|catalogos.*_pj|ResponseCatalogos"
-      }
+      "package_prefixes": ["controller/", "rest/", "cron/", "schedule", "job"],
+      "job_signatures": {}
+    },
+    {
+      "mechanism": "jvm_class_inventory",
+      "description": "Por clase: métodos públicos, constantes static final y cadenas del bytecode (mensajes, estados, JPQL). Cubre las clases del WAR y las de sus jars propios (no las librerías).",
+      "class_root": "WEB-INF/classes",
+      "include_own_libs": true,
+      "package_prefixes": ["controller/", "rest/", "cron/", "beans/", "service/", "repository/", "utils/constantes", "domain/beans"],
+      "class_kinds": {
+        "pantalla (controller/bean JSF)": "\\.(controller|beans)\\.",
+        "servicio": "\\.service\\.",
+        "repositorio (consultas)": "\\.repository\\.",
+        "job": "\\.cron\\.",
+        "constantes": "constantes",
+        "rest": "\\.rest\\."
+      },
+      "max_strings_per_class": 80
+    },
+    {
+      "mechanism": "view_templates",
+      "description": "Pantallas JSF/Facelets: título, encabezados, campos (outputLabel), botones y su acción, mensajes de validación, condiciones `rendered` por rol e inclusiones. Resuelve #{lbl['clave']} con el bundle.",
+      "member_patterns": ["\\.xhtml$"],
+      "exclude_patterns": ["WEB-INF/plantillas/", "Template", "layout\\.xhtml$", "site_min"],
+      "bundle_patterns": ["WEB-INF/classes/.*messages.*\\.properties$"],
+      "bundle_ref_pattern": "#\\{lbl\\['(?P<key>[^']+)'\\]\\}"
     },
     {
       "mechanism": "config_hosts",
       "description": "Hosts/URLs en los perfiles application*.yml embebidos.",
       "config_patterns": ["WEB-INF/classes/application.*\\.(yml|yaml|properties)$", "application.*\\.(yml|yaml|properties)$"],
-      "host_key_pattern": "(?i)(url|host|smtp|uri|endpoint|bus|sideco|renapo|calculadora|editor)"
+      "host_key_pattern": "(?i)(url|host|smtp|uri|endpoint|bus|renapo|calculadora|editor)"
     },
     {
       "mechanism": "archive_url_scan",
@@ -34,14 +50,19 @@
       ],
       "kind_hints": {
         "bus": ["bus\\.", "desabus\\."],
-        "rest": ["sideco", "ademservicios", "\\d+\\.\\d+\\.\\d+\\.\\d+"],
+        "rest": ["\\d+\\.\\d+\\.\\d+\\.\\d+"],
         "smtp": ["smtp"],
-        "web": ["strabajo", "edomex\\.gob\\.mx"]
+        "web": ["gob\\.mx"]
       }
     },
     {
-      "mechanism": "db_dump_toc",
-      "description": "Inventario del respaldo con pg_restore -l: tablas, funciones, triggers, vistas y servidores foráneos (dblink/postgres_fdw)."
+      "mechanism": "pg_dump_custom",
+      "description": "El respaldo de PostgreSQL (formato custom) leído en Python: tablas con conteo y columnas, funciones y triggers con cuerpo, vistas, catálogos completos (tablas de hasta 300 filas, sin tablas de personas) y distribuciones de columnas de estado.",
+      "catalog_max_rows": 300,
+      "catalog_include_patterns": ["^(ct_?|cat|rl_|dt_tipo|estatus|indice|video)"],
+      "catalog_exclude_patterns": ["(?i)usuario|user|persona|trabajador|empleado|cliente|testigo|beneficiario|patron|empresa|jueces"],
+      "state_column_pattern": "(?i)estatus|status|estado$|^tipo|_tipo|tipo_|nivel|sector|rol$|turno$|asistencia|calasesoria|gpovulnerable|motasesoria",
+      "distribution_top": 15
     }
   ]
 }

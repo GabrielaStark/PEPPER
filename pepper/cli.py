@@ -1,4 +1,4 @@
-"""Línea de comandos: `pepper correlate | package | export | detect | validate | isolate | demo`."""
+"""Línea de comandos: `pepper detect | map | validate | isolate | proxy | collect | correlate | package | export | demo`."""
 
 from __future__ import annotations
 
@@ -41,10 +41,14 @@ def _cmd_package(args: argparse.Namespace) -> int:
         allow_sensitive=args.allow_sensitive,
         acknowledge_unscanned=args.acknowledge_unscanned,
         manifest_out=args.manifest_out,
+        system_map=args.map,
+        previous=args.previous,
     )
     print(f"package · {summary['session_id']} · {summary['files']} archivos")
     print(f"  evidencia: {summary['events']} eventos, {summary['traces']} peticiones")
     print(f"  legacy: {', '.join(summary['legacy']) if summary['legacy'] else 'sin artefactos (usa --legacy)'}")
+    print(f"  mapa: {summary['map'] or 'sin mapa (usa --map docs/pepper/system-map.json): el agente solo verá la ejecución'}")
+    print(f"  discovery anterior: {summary['previous'] or 'ninguno (primer documento del sistema)'}")
     print(f"  datos: modo {summary['data_mode']} · {summary['sensitive_findings']} hallazgo(s) sensible(s) · "
           f"{summary['unscanned_files']} archivo(s) no inspeccionado(s)")
     print(f"  paquete: {args.out}")
@@ -77,30 +81,29 @@ def _cmd_export(args: argparse.Namespace) -> int:
         _print_report(report, "corrige y vuelve a comprobar")
         if report.errors:
             return 1
-        stats = report.stats
-        print(
-            f"export · válido · {stats.get('steps', 0)} pasos, {stats.get('candidate_rules', 0)} reglas candidatas, "
-            f"{stats.get('contradictions', 0)} contradicciones, {stats.get('unknowns', 0)} desconocidos, "
-            f"{stats.get('evidence', 0)} evidencias (sin publicar)"
-        )
+        print(f"export · válido · {_stats_line(report.stats)} (sin publicar)")
         return 0
 
     if args.out is None:
         print("pepper export: indica --out <dir> (o usa --check para solo validar)", file=sys.stderr)
         return 2
-    report = publish(args.package, args.out, args.manifest)
+    report = publish(args.package, args.out, args.manifest, system_doc_dir=args.system_doc)
     _print_report(report, "no se publicó nada")
     if report.errors:
         print(f"  detalle: {args.package / 'output' / 'validation.md'}")
         return 1
-    stats = report.stats
-    print(
-        f"export · publicado · {stats.get('steps', 0)} pasos, {stats.get('candidate_rules', 0)} reglas candidatas, "
-        f"{stats.get('contradictions', 0)} contradicciones, {stats.get('unknowns', 0)} desconocidos, "
-        f"{stats.get('evidence', 0)} evidencias"
-    )
+    print(f"export · publicado · {_stats_line(report.stats)}")
     print(f"  salida: {args.out}")
+    if args.system_doc:
+        print(f"  documento del sistema: {args.system_doc / 'funcional.md'} (y funcional.json)")
     return 0
+
+
+def _stats_line(stats: Dict[str, int]) -> str:
+    return (f"{stats.get('actors', 0)} actores, {stats.get('journeys', 0)} recorridos, {stats.get('rules', 0)} reglas, "
+            f"{stats.get('states', 0)} ciclos de estado, {stats.get('automation', 0)} automáticos, "
+            f"{stats.get('integrations', 0)} integraciones, {stats.get('unknowns', 0)} desconocidos, "
+            f"{stats.get('sources', 0)} fuentes")
 
 
 def _cmd_detect(args: argparse.Namespace) -> int:
@@ -241,7 +244,7 @@ def _cmd_collect(args: argparse.Namespace) -> int:
 def _cmd_map(args: argparse.Namespace) -> int:
     import json as _json
 
-    from pepper.inspect import build_map, coverage
+    from pepper.inspect import build_map, coverage, render_map
     from pepper.profiles import load_profile
 
     extractors: List[Dict] = []
@@ -266,13 +269,22 @@ def _cmd_map(args: argparse.Namespace) -> int:
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(_json.dumps(system_map, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    map_dir = args.out.parent / "map"
+    map_dir.mkdir(exist_ok=True)
+    for name, text in render_map(system_map).items():
+        (map_dir / name).write_text(text, encoding="utf-8")
 
     ep = system_map["entrypoints"]
     routes = [e for e in ep if e["kind"] in ("http_route", "rest_endpoint")]
+    tables = [d for d in system_map["data_stores"] if d["kind"] == "table"]
+    rules_in_db = [d for d in system_map["data_stores"] if d["kind"] in ("trigger", "function")]
     print(f"map · {args.artifact.name} · perfil {profile_id}")
     print(f"  entradas HTTP: {len(routes)} ({sum(1 for e in ep if e['kind']=='rest_endpoint')} REST) · "
-          f"jobs: {len(system_map['jobs'])} · dependencias externas: {len(system_map['external_dependencies'])} · "
-          f"objetos de datos: {len(system_map['data_stores'])}")
+          f"jobs: {len(system_map['jobs'])} · hosts externos: {len(system_map['external_dependencies'])}")
+    print(f"  pantallas: {len(system_map['screens'])} · clases propias: {len(system_map['classes'])} · "
+          f"etiquetas: {system_map.get('labels', 0)}")
+    print(f"  tablas: {len(tables)} · catálogos completos: {len(system_map['catalogs'])} · "
+          f"distribuciones: {len(system_map['distributions'])} · triggers+funciones: {len(rules_in_db)}")
     if system_map["complete"]:
         print("  mapa COMPLETO")
     else:
@@ -298,7 +310,7 @@ def _cmd_map(args: argparse.Namespace) -> int:
             print(f"    dependencias vistas en ejecución: {', '.join(cov['dependencies_confirmed'])}")
         if cov["not_observed"]:
             print(f"    sin observar aún: {len(cov['not_observed'])} rutas (ver {args.out})")
-    print(f"  salida: {args.out}")
+    print(f"  salida: {args.out} + {map_dir}/ (surface, db, catalogs, screens, code)")
     return 0
 
 
@@ -326,7 +338,7 @@ def _cmd_demo(args: argparse.Namespace) -> int:
     print()
     print("Y cuando termine, valida y publica su resultado:")
     print(f"  {_invocation()} export {package} --manifest {package_summary['external_manifest']} "
-          f"--out {args.out / 'export'}")
+          f"--out {args.out / 'export'} --system-doc {args.out / 'docs'}")
     print()
     print(f"Clave de respuestas: {fixture / 'expected' / 'notes.md'}")
     return 0
@@ -373,10 +385,16 @@ def build_parser() -> argparse.ArgumentParser:
                          help="autoriza explícitamente binarios/archivos grandes no inspeccionables en modo remote")
     package.add_argument("--manifest-out", type=Path,
                          help="manifest externo; default <paquete>.evidence-manifest.json, siempre fuera del paquete")
+    package.add_argument("--map", type=Path,
+                         help="system-map.json de `pepper map` (se copia con su carpeta map/ legible); sin él el agente solo ve la ejecución")
+    package.add_argument("--previous", type=Path,
+                         help="funcional.json publicado por un discovery anterior: el nuevo lo extiende en vez de empezar de cero")
 
     export = commands.add_parser("export", help="valida la salida del agente y la publica")
-    export.add_argument("package", type=Path, help="paquete controlado con output/runtime-discovery.json")
-    export.add_argument("--out", type=Path, help="directorio de publicación")
+    export.add_argument("package", type=Path, help="paquete controlado con output/funcional.json y funcional.md")
+    export.add_argument("--out", type=Path, help="directorio de publicación de esta sesión")
+    export.add_argument("--system-doc", type=Path,
+                        help="directorio del documento del SISTEMA (p. ej. docs/pepper): ahí queda funcional.md/json acumulado")
     export.add_argument("--check", action="store_true", help="solo validar (deja output/validation.md), sin publicar")
     export.add_argument("--manifest", type=Path, required=True,
                         help="evidence-manifest.json conservado FUERA del paquete; obligatorio como raíz de confianza")
@@ -385,16 +403,16 @@ def build_parser() -> argparse.ArgumentParser:
     detect.add_argument("artifacts", type=Path, help="directorio con los artefactos del legacy")
     detect.add_argument("--json", action="store_true", help="salida en JSON")
 
-    map_cmd = commands.add_parser("map", help="enumera la superficie completa del artefacto: rutas, jobs, dependencias, datos, roles")
+    map_cmd = commands.add_parser("map", help="saca todo lo que el sistema ES: rutas, jobs, pantallas, clases, tablas, catálogos, triggers")
     map_cmd.add_argument("artifact", type=Path, help="el artefacto desplegable (WAR/JAR/zip o directorio)")
     map_cmd.add_argument("--profile", required=True, help="perfil cuyos extractores aplicar (declara cómo minar este stack)")
     map_cmd.add_argument("--dump", type=Path, help="respaldo de la base (para inventariar datos y servidores foráneos)")
     map_cmd.add_argument("--evidence", type=Path, help="directorio de evidencia (evidence/<sid>) para medir cobertura observada")
-    map_cmd.add_argument("--out", type=Path, default=Path("docs/pepper/system-map.json"), help="dónde escribir el mapa (default docs/pepper/system-map.json)")
+    map_cmd.add_argument("--out", type=Path, default=Path("docs/pepper/system-map.json"), help="dónde escribir el mapa (default docs/pepper/system-map.json); la carpeta legible map/ queda al lado")
 
     validate = commands.add_parser("validate", help="valida archivos contra los contratos de schemas/")
-    validate.add_argument("files", type=Path, nargs="+", help="profile.json, parsers/*.json, session.json, environment.json, flow.json, events.jsonl, runtime-discovery.json")
-    validate.add_argument("--schema", choices=("event", "environment", "flow", "parser", "profile", "runtime-discovery", "session", "system-map"), help="fuerza el schema (si el nombre del archivo no lo delata)")
+    validate.add_argument("files", type=Path, nargs="+", help="profile.json, parsers/*.json, session.json, environment.json, flow.json, events.jsonl, system-map.json, funcional.json")
+    validate.add_argument("--schema", choices=("event", "environment", "flow", "functional-discovery", "parser", "profile", "session", "system-map"), help="fuerza el schema (si el nombre del archivo no lo delata)")
 
     isolate = commands.add_parser("isolate", help="verifica que un entorno rehidratado no pueda alcanzar nada externo")
     isolate.add_argument("compose", type=Path, help="docker-compose.yml del entorno rehidratado")

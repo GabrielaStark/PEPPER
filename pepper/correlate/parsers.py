@@ -192,12 +192,55 @@ class PatternParser:
 
 
 class HttpProxyParser:
-    """http.jsonl del proxy de PEPPER: una línea JSON por petición y por respuesta."""
+    """http.jsonl del proxy de PEPPER: una línea JSON por petición y por respuesta.
+
+    El perfil puede declarar (`http` en profile.json) qué campo del formulario
+    nombra la ACCIÓN del usuario (el botón) y qué campos son ruido del framework;
+    así "POST /cita" se vuelve "POST /cita · guardar · trabajador, patrón, motivo".
+    El núcleo no sabe de JSF ni de ningún framework: solo aplica los patrones.
+    """
 
     source = "http-proxy"
     name = "http-proxy (núcleo)"
     noise: List[Dict[str, Any]] = []
     affinity_keys: List[str] = []
+
+    def __init__(self, http_spec: Optional[Dict[str, Any]] = None):
+        spec = http_spec or {}
+        self.action_fields: List[str] = list(spec.get("action_fields") or [])
+        self.noise_re = re.compile(spec["noise_field_pattern"]) if spec.get("noise_field_pattern") else None
+        self.field_name_re = re.compile(spec["field_name_pattern"]) if spec.get("field_name_pattern") else None
+
+    def describe_form(self, body: Any) -> Tuple[Optional[str], List[str]]:
+        """→ (acción, campos capturados) a partir del cuerpo de un formulario."""
+        if not isinstance(body, dict):
+            return None, []
+        action = None
+        for key in self.action_fields:
+            value = body.get(key)
+            if isinstance(value, str) and value:
+                action = value
+                break
+        fields: List[str] = []
+        for key, value in body.items():
+            if key in self.action_fields or (self.noise_re and self.noise_re.search(key)):
+                continue
+            if value in ("", None, [], "[REDACTADO]") and value != "[REDACTADO]":
+                continue
+            name = key
+            if self.field_name_re:
+                m = self.field_name_re.search(key)
+                if m:
+                    name = m.group(1) if m.groups() else m.group(0)
+            if name not in fields:
+                fields.append(name)
+        if action and self.noise_re and self.noise_re.search(action):
+            action = "(botón sin nombre)"  # el framework le puso un id generado; la pantalla del mapa dice cuál es
+        elif action and self.field_name_re:
+            m = self.field_name_re.search(action)
+            if m:
+                action = m.group(1) if m.groups() else m.group(0)
+        return action, fields
 
     def parse_file(self, path: Path, raw_prefix: str, session: Session) -> Tuple[List[Event], List[Unparsed]]:
         events: List[Event] = []
@@ -250,6 +293,13 @@ class HttpProxyParser:
             event_type, message = "http_response", f"{operation} -> {status}"
         else:
             severity, event_type, message = "info", "http_request", operation
+            action, fields = self.describe_form(record.get("body"))
+            if action:
+                metadata["action"] = action
+                message += f" · acción: {action}"
+            if fields:
+                metadata["fields"] = fields
+                message += f" · campos: {', '.join(fields[:12])}" + (" …" if len(fields) > 12 else "")
 
         return Event(
             timestamp=parse_datetime(record["ts"], session.tz),

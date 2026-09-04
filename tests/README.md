@@ -25,7 +25,7 @@ Solo biblioteca estándar (`unittest`); `jsonschema` habilita las comprobaciones
 **`test_export.py`** — Package y Export:
 
 - el paquete tiene todo lo que el agente necesita y se niega a sobrescribir;
-- la salida de referencia (`expected/runtime-discovery.json`) es aceptada y publicada con sus derivados;
+- la salida de referencia (`expected/funcional.json` + `funcional.md`) es aceptada y publicada, por sesión y como documento del sistema;
 - se rechazan: referencias a evidencia inexistente, `raw_ref` fuera de rango, conclusiones sin evidencia, confianzas fuera del vocabulario, sesión equivocada, salida ausente — y una salida rechazada **no se publica**.
 
 **`test_isolate.py`** — el entorno rehidratado no alcanza nada externo:

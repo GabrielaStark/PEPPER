@@ -51,7 +51,8 @@ def resolve_parsers(session: Session, profile: Optional[Profile]) -> Dict[str, A
         if collector.source in parsers:
             continue
         if collector.source in BUILTIN_PARSERS:
-            parsers[collector.source] = BUILTIN_PARSERS[collector.source]()
+            http_spec = (profile.data.get("http") if profile else None) or {}
+            parsers[collector.source] = BUILTIN_PARSERS[collector.source](http_spec)
             continue
         spec_path = profile.parser_spec_for(collector.source) if profile else None
         if spec_path is None:

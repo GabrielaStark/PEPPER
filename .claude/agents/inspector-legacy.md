@@ -42,7 +42,7 @@ Cuando la ruta es la raíz de un repo con PEPPER instalado encima (`.`), la herr
 ## 1. Inventario                 qué hay, clasificado
 ## 2. Stack identificado         tabla: capa · tecnología · versión · evidencia (archivo:línea)
 ## 3. Dependencias detectadas    datasources, servicios externos, colas, certificados, variables
-## 3.5 Mapa de superficie        `docs/pepper/system-map.json` (si el perfil trae extractores): rutas, jobs, dependencias, datos, roles — el universo completo
+## 3.5 Mapa del sistema          `docs/pepper/system-map.json` + `map/`: rutas, jobs, pantallas, clases, tablas, catálogos, triggers — lo que el sistema ES
 ## 4. Faltantes                  qué falta · qué artefacto lo resolvería · ¿bloquea?
 ## 5. Perfil                     aplicable (id, estado, puntaje) o borrador creado
 ## 6. Escalón y veredicto        1/2/3 · READY-candidato / PARTIAL / BLOCKED · por qué
@@ -72,7 +72,7 @@ Lenguaje, frameworks, servidor de aplicaciones, motor de base de datos, sistema 
 
 Cuando una versión no está en ningún lado, escribe "desconocida" y qué artefacto la resolvería. Nunca "probablemente la última" ni "lo común en esa época".
 
-### Fase 3.5 — Mapa exhaustivo de la superficie (obligatoria si el perfil trae extractores)
+### Fase 3.5 — Mapa del sistema (obligatoria si el perfil trae extractores)
 
 Lo mecánico no se enumera a mano: lo hace el núcleo, completo e igual cada vez (Principio 3). Si el perfil declara `extractors.json`, corre:
 
@@ -80,9 +80,9 @@ Lo mecánico no se enumera a mano: lo hace el núcleo, completo e igual cada vez
 python3 -m pepper map <artefacto> --profile <id> --dump <respaldo> --out docs/pepper/system-map.json
 ```
 
-Produce el **universo completo** del sistema —cada ruta HTTP, cada endpoint REST, cada job, cada dependencia externa, cada servidor foráneo de la base, cada rol— validado contra `schemas/system-map.schema.json`. Es la enumeración exhaustiva que Observe **no** puede dar (Observe solo ve lo que se ejercita): sin este mapa, "todos los flujos y todas las dependencias" queda a medias sin que nadie lo note. **Si el mapa sale `INCOMPLETO`** (`complete: false`), léelo: falta una herramienta (javap/pg_restore) o Docker; resuélvelo o declara explícitamente qué quedó sin enumerar. Un mapa parcial se reporta parcial, nunca como completo.
+Produce **lo que el sistema ES**: cada ruta HTTP y job, cada pantalla con sus campos, botones y mensajes, cada clase propia con sus métodos, constantes y cadenas, cada tabla con su conteo, los triggers y funciones de la base con su cuerpo, los catálogos completos (roles, menús, estados, tipos, parámetros) y las distribuciones reales de las columnas de estado. Queda en `system-map.json` (contrato `schemas/system-map.schema.json`) y en `docs/pepper/map/` legible (`surface.md`, `db.md`, `catalogs.md`, `screens.md`, `code.md`). Es el insumo principal del Discover: sin él, el agente solo ve la ejecución.
 
-El mapa es la base de la **cobertura**: cada sesión de Observe confirma unas entradas del mapa; Discover reporta observadas vs totales. Así "a medias" se vuelve visible y medible, no una omisión silenciosa.
+**Si el mapa sale `INCOMPLETO`** (`complete: false`), léelo: falta `javap`, el respaldo no es formato custom, o ningún extractor cubre una superficie; resuélvelo o declara explícitamente qué quedó sin enumerar. Un mapa parcial se reporta parcial, nunca como completo. El mapa no lleva datos personales ni credenciales: las tablas de personas no se vuelcan y los valores que lo parecen se redactan — revisa `catalogs.md` de todos modos antes de dejarlo en `docs/pepper/`.
 
 ### Fase 4 — Dependencias y faltantes
 

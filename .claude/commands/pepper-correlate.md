@@ -23,10 +23,12 @@ Pregunta al humano dónde se ejecutará Discover:
 - `local` — modelo íntegramente local; el paquete queda marcado para que no se abra por accidente con un agente remoto.
 
 ```bash
-python3 -m pepper package pepper-out/$ARGUMENTS/correlated --legacy legacy/ --out pepper-out/$ARGUMENTS/package --data-mode remote
+python3 -m pepper package pepper-out/$ARGUMENTS/correlated --legacy legacy/ --map docs/pepper/system-map.json --previous docs/pepper/funcional.json --out pepper-out/$ARGUMENTS/package --data-mode remote
 ```
 
-Usa `--legacy .` si PEPPER está instalado encima del repo del legacy (el núcleo excluye su propia herramienta); omite `--legacy` si no hay artefactos. Si el paquete ya existe, pregunta al humano antes de borrarlo — puede contener un `output/` de un discovery anterior.
+- `--map`: el mapa de `pepper map` (Inspect). Sin él el agente solo ve la ejecución y no puede escribir roles, permisos, estados ni catálogos: si no existe, córrelo primero (`python3 -m pepper map <artefacto> --profile <id> --dump <respaldo>`).
+- `--previous`: el documento del sistema publicado por un discovery anterior (`docs/pepper/funcional.json`). Omítelo solo en el primer flujo: el discovery es acumulativo.
+- Usa `--legacy .` si PEPPER está instalado encima del repo del legacy (el núcleo excluye su propia herramienta); omite `--legacy` si no hay artefactos. Si el paquete ya existe, pregunta al humano antes de borrarlo — puede contener un `output/` de un discovery anterior.
 
 En modo remoto, si el gate detecta secretos/PII o archivos que no pudo inspeccionar, muestra las **ubicaciones, nunca los valores**, y detente. No agregues por tu cuenta `--allow-sensitive` ni `--acknowledge-unscanned`: cada excepción requiere autorización explícita del humano responsable del dato. Package registra esas excepciones en el manifest.
 
@@ -34,7 +36,7 @@ Package crea `pepper-out/$ARGUMENTS/package.evidence-manifest.json` fuera del pa
 
 ## 3. Presenta
 
-Muestra al humano, sin interpretar: los conteos (líneas crudas → parseadas → conservadas; sin parsear; peticiones; sin asignar), el contenido de `evidence/flow.md` completo y el resumen de `evidence/reduction.md`.
+Muestra al humano, sin interpretar: los conteos (líneas crudas → parseadas → conservadas; sin parsear; peticiones; sin asignar) y un resumen de `evidence/flow.md` en tres líneas — qué pantallas y acciones aparecen, qué se escribió en la base, qué se rechazó. No le pidas que confirme lo que hizo: la evidencia lo dice.
 
 Señales que exigen decisión humana antes de seguir:
 
@@ -42,4 +44,4 @@ Señales que exigen decisión humana antes de seguir:
 - **eventos sin asignar por ambigüedad** → hubo peticiones concurrentes sin afinidad que las separe; considerar repetir la observación con una petición a la vez.
 - **0 peticiones** → no hubo colector HTTP con `correlation_id`; la correlación se hizo solo por afinidad y ventana temporal. Dilo explícitamente: el discovery deberá fijar confianzas más bajas.
 
-Gate humano ✋: el humano confirma que la secuencia de `flow.md` corresponde a lo que hizo durante la ventana. Siguiente: `/pepper-discover $ARGUMENTS`.
+Gate humano ✋: el humano ve el resumen y puede corregir o añadir el caso de negocio si quiere; si no dice nada, queda así. Siguiente: `/pepper-discover $ARGUMENTS`.

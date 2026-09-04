@@ -71,13 +71,14 @@ class ExportIntegrityTest(unittest.TestCase):
         legacy.mkdir()
         (legacy / "sistema.war").write_bytes(b"PK\x03\x04 falso war")
         (legacy / "respaldo.dump").write_bytes(b"PGDMP falso")
-        shutil.copytree(FIXTURE / "artifacts" / "configuration", legacy / "configuration")
+        for name in ("configuration", "source", "docs"):
+            shutil.copytree(FIXTURE / "artifacts" / name, legacy / name)
         self.package = base / "package"
         # binarios falsos + credenciales de juguete: excepciones explícitas, como en un legacy real (D24)
         summary = assemble(correlated, self.package, legacy, allow_sensitive=True, acknowledge_unscanned=True)
         self.external_manifest = Path(summary["external_manifest"])
-        shutil.copy2(FIXTURE / "expected" / "runtime-discovery.json",
-                     self.package / "output" / "runtime-discovery.json")
+        shutil.copy2(FIXTURE / "expected" / "funcional.json", self.package / "output" / "funcional.json")
+        shutil.copy2(FIXTURE / "expected" / "funcional.md", self.package / "output" / "funcional.md")
 
     def tearDown(self):
         self._tmp.cleanup()

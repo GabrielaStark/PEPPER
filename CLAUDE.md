@@ -16,7 +16,7 @@ Cada fase es un comando en `.claude/commands/pepper-*.md`:
 | 5 Discover | `/pepper-discover <session_id>` |
 | 6 Export | `/pepper-export <session_id>` |
 
-Los comandos delegan en los subagentes de `.claude/agents/` (`inspector-legacy`, `rehidratador-legacy`, `observador-runtime`, `descubridor-runtime`), que cargan las skills de `.claude/skills/`.
+Los comandos delegan en los subagentes de `.claude/agents/` (`inspector-legacy`, `rehidratador-legacy`, `observador-runtime`, `descubridor-funcional`), que cargan las skills de `.claude/skills/`.
 
 ## Las herramientas determinísticas
 
@@ -24,14 +24,14 @@ Lo mecánico no se hace a mano; lo hace el núcleo, igual cada vez:
 
 ```bash
 python3 -m pepper detect <artefactos>/            # qué perfil aplica
-python3 -m pepper map <artefacto> --profile <id> --dump <respaldo>  # enumera TODA la superficie: rutas, jobs, dependencias, datos, roles
+python3 -m pepper map <artefacto> --profile <id> --dump <respaldo>  # lo que el sistema ES: pantallas, clases, tablas, catálogos, triggers
 python3 -m pepper validate <archivo>...           # contratos de schemas/
 python3 -m pepper isolate <compose> --live         # el entorno no alcanza nada externo
 python3 -m pepper proxy --upstream <app>          # el ingress: inyecta correlation_id, emite http.jsonl
 python3 -m pepper collect <compose> <sid> …       # copia la ventana desde los contenedores
 python3 -m pepper correlate <evidencia>/ --out …  # normalizar, reducir, correlacionar
-python3 -m pepper package <correlated>/ --out …   # paquete controlado
-python3 -m pepper export <paquete>/ --check       # validar la salida del discovery
+python3 -m pepper package <correlated>/ --map … --previous … --out …   # paquete controlado
+python3 -m pepper export <paquete>/ --manifest … --check   # validar funcional.json/md
 ```
 
 ## Reglas que no cambian por el agente

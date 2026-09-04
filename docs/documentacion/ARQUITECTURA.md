@@ -4,102 +4,90 @@
 
 > **El núcleo de PEPPER nunca conoce la tecnología del legacy.**
 
-Todo conocimiento específico de un stack (cómo detectarlo, cómo levantarlo, cómo leer sus logs) entra al sistema como datos: un **perfil**. Si mañana un evento viene de IIS en vez de WildFly, el correlacionador no debe enterarse.
-
-La prueba de fuego para cualquier cambio: *¿esta línea del núcleo dejaría de funcionar con otro stack?* Si sí, pertenece a un perfil.
+Todo conocimiento específico de un stack (cómo detectarlo, cómo levantarlo, cómo leer sus logs, cómo sacar sus pantallas y catálogos) entra como datos: un **perfil**. La prueba de fuego para cualquier cambio: *¿esta línea del núcleo dejaría de funcionar con otro stack?* Si sí, pertenece a un perfil.
 
 ## Vista general
 
 ```text
-                      ┌────────────────────────────┐
-                      │         PERFILES           │
-                      │  detección / receta de     │
-                      │  rehydrate / colectores /  │
-                      │  parsers / validaciones    │
-                      └─────────────┬──────────────┘
-                                    │ (datos, no código del núcleo)
-                                    ▼
+                      ┌──────────────────────────────────────────┐
+                      │                PERFILES                  │
+                      │ detección · extractores del mapa ·       │
+                      │ receta de rehydrate · colectores ·       │
+                      │ parsers · lectura de formularios         │
+                      └──────────────────┬───────────────────────┘
+                                         │ (datos, no código del núcleo)
+                                         ▼
 ┌─────────┐   ┌───────────┐   ┌─────────┐   ┌───────────┐   ┌──────────┐   ┌──────────┐   ┌────────┐
 │ INSPECT │ → │ REHYDRATE │ → │ OBSERVE │ → │ CORRELATE │ → │ PACKAGE  │ → │ DISCOVER │ → │ EXPORT │
 └─────────┘   └───────────┘   └─────────┘   └───────────┘   └──────────┘   └──────────┘   └────────┘
- identifica    reconstruye     captura       normaliza a     arma carpeta   agente externo  contrato
- stack y       entorno en      evidencia     eventos y       autocontenida  (Claude Code /  estable
- evidencia     contenedores    cruda         correlaciona    para agente    Codex)          p/ STARK
- faltante
+ stack +       entorno en      evidencia     eventos y       carpeta        el agente       contrato
+ MAPA del      contenedores    cruda de      peticiones      autocontenida  escribe QUÉ     validado,
+ sistema       aislados        una ventana   con acción      mapa+evidencia HACE el sistema acumulado
 ```
+
+Dos fuentes, no una. **El mapa** (`pepper map`, Inspect) dice lo que el sistema *es*: rutas, jobs, pantallas con campos y botones, clases con constantes y mensajes, tablas con conteo, triggers y funciones con cuerpo, catálogos completos (roles, menús, estados, tipos, parámetros) y distribuciones reales. **La evidencia** (Observe → Correlate) dice lo que el sistema *hace* cuando alguien lo opera: cada petición con su acción y campos, cada escritura, cada rechazo, cada job que corrió solo. Discover cruza las dos y escribe el documento funcional; Export lo valida y lo acumula.
 
 ## Módulos del núcleo
 
 | Módulo | Entrada | Salida | Dependencia de tecnología |
 |---|---|---|---|
-| `inspect` | artefactos crudos | `stack-report`, perfil sugerido o borrador, evidencia faltante | ninguna (delegada al agente + señales de perfiles) |
-| `rehydrate` | artefactos + perfil | entorno corriendo + `environment.json` | vía receta del perfil |
-| `observe` | entorno corriendo + ventana de flujo | evidencia cruda por fuente | colectores genéricos + colectores del perfil |
-| `correlate` | evidencia cruda | `events.jsonl` (schema común) + `flow.json` | vía parsers del perfil; correlación 100% genérica |
-| `package` | evidencia correlacionada + código + config | paquete controlado + manifest externo + clasificación de datos | ninguna |
-| `discover` | paquete controlado | `runtime-discovery.json/md` (lo escribe el agente) | ninguna |
-| `export` | salida del agente | artefactos validados contra schema | ninguna |
+| `inspect` | artefacto + respaldo + perfil | `system-map.json` + `map/*.md` (`pepper map`); `pepper detect` | vía `extractors.json` del perfil (patrones) y lectores genéricos (zip, javap, pg_dump custom) |
+| `rehydrate` | artefactos + perfil | entorno corriendo + `environment.json`; `pepper isolate` verifica que no alcance nada externo | vía receta del perfil |
+| `observe` | entorno corriendo + ventana | evidencia cruda por fuente (`pepper proxy`, `pepper collect`) | colectores genéricos + del perfil |
+| `correlate` | evidencia cruda | `events.jsonl` + `flow.json/md` (petición → acción → SQL/log) | vía parsers del perfil; correlación genérica |
+| `package` | correlated + mapa + legacy + discovery anterior | paquete controlado + manifest externo + gate de datos | ninguna |
+| `discover` | paquete controlado | `funcional.json/md` (lo escribe el agente) | ninguna |
+| `export` | salida del agente | validada contra el contrato; publicada por sesión y como documento del sistema | ninguna |
+
+## `pepper map`: lo que el sistema es
+
+Mecanismos del núcleo, patrones del perfil:
+
+| Mecanismo | Qué saca | Cómo |
+|---|---|---|
+| `jvm_route_annotations` | rutas HTTP y jobs con su cron | `javap -v` sobre las clases que el perfil señala |
+| `jvm_class_inventory` | por clase: métodos públicos, constantes, cadenas (mensajes, estados, JPQL) | `javap -c -constants` por lotes; solo clases propias (comparten paquete raíz con el WAR) |
+| `view_templates` | pantallas: encabezados, campos, botones→acción, mensajes de validación, condiciones por rol, inclusiones | regex declaradas en el perfil sobre las vistas; bundle i18n resuelto |
+| `pg_dump_custom` | tablas con conteo y columnas, triggers y funciones con cuerpo, vistas, catálogos completos, distribuciones de columnas de estado | lector propio del formato custom de `pg_dump` (`pepper/inspect/pgdump.py`), sin PostgreSQL |
+| `config_hosts`, `archive_url_scan` | hosts externos | configuración y URLs incrustadas |
+
+Fail-honest: si falta `javap`, el respaldo no es custom, o ningún extractor cubre una superficie, el mapa sale `complete: false` con `coverage_gaps`. Sin datos personales ni secretos: las tablas de personas se cuentan pero no se vuelcan; columnas y renglones con pinta de credencial o de dato personal se redactan; las cadenas del bytecode que parezcan credenciales se omiten.
 
 ## Escalera de soporte
 
-El flujo de decisión ante cualquier legacy:
-
 ```text
 ¿Hay perfil que detecte el stack?
- ├─ SÍ  → escalón 1: pipeline completo automatizado
+ ├─ SÍ  → escalón 1: pipeline completo (mapa + rehydrate + observe)
  └─ NO  → ¿el sistema corre o puede levantarse a mano?
-           ├─ SÍ  → escalón 2: solo Observe con colectores genéricos
-           │        (proxy HTTP, stdout/stderr de contenedores, logs de BD)
-           └─ NO  → escalón 3: Inspect produce reporte BLOCKED
-                    (stack identificado + faltantes + borrador de perfil)
+           ├─ SÍ  → escalón 2: Observe con colectores genéricos (sin mapa, o con uno parcial)
+           └─ NO  → escalón 3: Inspect produce BLOCKED (stack + faltantes + borrador de perfil)
 ```
 
 Los tres escalones producen un entregable. `BLOCKED` es un resultado, no un fracaso.
 
 ## Colectores genéricos (escalón 2)
 
-Funcionan para cualquier tecnología y son parte del núcleo:
+- **Proxy HTTP** delante de la aplicación (`pepper proxy`): captura petición/respuesta, cuerpos de formulario (credenciales redactadas), inyecta el header de correlación, e impone al navegador una política que lo mantiene dentro del perímetro (D25).
+- **stdout/stderr de contenedores** y **logs del motor de base** con cada sentencia.
 
-- **Proxy HTTP inverso** delante de la aplicación: captura toda petición/respuesta e **inyecta un header de correlación** — la fuente de `correlation_id` cuando el legacy no emite ninguno.
-- **stdout/stderr de contenedores**: igual para Java, PHP, .NET o lo que sea.
-- **Logs del motor de BD**: los motores comunes (PostgreSQL, MySQL, Oracle, SQL Server) pueden configurarse para registrar cada sentencia.
-
-Aquí está la sinergia clave con Rehydrate: **como PEPPER controla el entorno reconstruido, controla la observabilidad**. Puede activar niveles de log que jamás se activarían en producción. Rehydrate no solo revive el sistema; habilita una fidelidad de observación imposible en el ambiente original.
+Como PEPPER controla el entorno reconstruido, controla la observabilidad: niveles de log que jamás se activarían en producción.
 
 ## Motor de análisis intercambiable
 
-Discover no invoca APIs de ningún agente: el paquete controlado es una carpeta autocontenida con la evidencia, el código disponible y el prompt. La adaptación por agente es mínima: PEPPER genera `CLAUDE.md` y `AGENTS.md` en la raíz del paquete, ambos apuntando al mismo prompt de discovery. El resultado se valida contra `schemas/runtime-discovery.schema.json` venga de donde venga, lo que permite el modo de **contraste**: correr dos agentes sobre el mismo paquete y comparar conclusiones (coincidencia sube confianza; discrepancia marca revisión humana).
+Discover no invoca APIs de ningún agente: el paquete controlado es una carpeta autocontenida con el mapa, la evidencia, el legacy, el discovery anterior y el prompt (`CLAUDE.md` y `AGENTS.md` apuntan a él). La salida se valida contra `schemas/functional-discovery.schema.json` venga de donde venga. El agente opera en **solo lectura**; el manifest raíz queda fuera de su directorio; Package bloquea symlinks y aplica el gate local/remote de datos.
 
-Durante Discover el agente opera bajo el **principio read-only**: lee, busca, correlaciona y reporta; no modifica código, datos, configuración ni servicios. El manifest raíz queda fuera de su directorio de trabajo. Antes de entrar, Package bloquea symlinks y aplica el gate local/remote de datos.
+## El discovery es acumulativo
 
-## Estados
-
-```text
-READY / PARTIAL / BLOCKED / FAILED
-```
-
-Definidos en `schemas/environment.schema.json`. `running` de un contenedor no implica `READY`: Rehydrate valida despliegue, restauración de datos, conectividad y ausencia de errores críticos de arranque (ver [rehydrate.md](fases/rehydrate.md)).
+El documento es del **sistema**, no de una ventana. Cada sesión recibe `previous/funcional.json`, lo extiende y lo corrige; Export publica la salida de la sesión en `docs/pepper/discovery/<sid>/` y el vigente en `docs/pepper/funcional.md|json`. Los desconocidos de la sección 12 dicen qué ventana observar después.
 
 ## Los contratos son la interfaz
 
-Todo cruce de frontera está definido por un schema en [`schemas/`](../../schemas/):
-
-- `profile.schema.json` — perfiles ↔ núcleo
-- `parser.schema.json` — parsers declarativos de perfil ↔ normalización
-- `environment.schema.json` — rehydrate ↔ resto del pipeline
+- `profile.schema.json` — perfiles ↔ núcleo (incluye `http`: cómo leer formularios)
+- `parser.schema.json` — parsers declarativos ↔ normalización
+- `system-map.schema.json` — `pepper map` ↔ paquete ↔ agente
+- `environment.schema.json` — rehydrate ↔ resto
 - `session.schema.json` — observe ↔ correlate
-- `event.schema.json` — cualquier fuente de evidencia ↔ correlación
-- `flow.schema.json` — correlate ↔ package/agente
-- `runtime-discovery.schema.json` — agente ↔ export ↔ STARK
+- `event.schema.json`, `flow.schema.json` — correlate ↔ paquete
+- `functional-discovery.schema.json` — agente ↔ export ↔ stark
 
-Cualquier pieza (perfil, colector, agente, consumidor) es reemplazable mientras respete su schema.
-
-## Estado de implementación
-
-| Módulo | Estado |
-|---|---|
-| Correlate, Package, Export | implementados en Python (`pepper/`), probados contra el fixture |
-| Discover | lo ejecuta el agente externo sobre el paquete; PEPPER solo lo prepara y valida su salida |
-| Inspect, Rehydrate, Observe | especificados en [`fases/`](fases/), sin implementar |
-
-Comandos: `python3 -m pepper correlate | package | export | demo`.
+Cualquier pieza es reemplazable mientras respete su schema.

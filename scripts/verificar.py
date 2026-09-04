@@ -205,7 +205,7 @@ def verifica_contratos():
         list((RAIZ / "profiles").glob("*/profile.json"))
         + list((RAIZ / "profiles").glob("*/parsers/*.json"))
         + list((RAIZ / "examples").rglob("session.json"))
-        + list((RAIZ / "examples").rglob("runtime-discovery.json"))
+        + list((RAIZ / "examples").rglob("funcional.json"))
     )
     for p in sorted(instancias):
         try:
