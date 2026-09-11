@@ -13,7 +13,7 @@ pip install -r requirements-dev.txt && python3 -m playwright install chromium
 
 ## 2. Pon los artefactos
 
-En `legacy/`: el desplegable (WAR/JAR/EAR), el respaldo de la base (formato custom de `pg_dump`) y, si sabes algo, `legacy/NOTAS.md` (una línea como "producción es WildFly 21" ahorra una desviación). Nada más. `legacy/`, `evidence/` y `pepper-out/` no se versionan nunca.
+La carpeta no viene en el clon (git no versiona carpetas vacías): `mkdir -p legacy`. Adentro: el desplegable (WAR/JAR/EAR), el respaldo de la base (formato custom de `pg_dump`) y, si sabes algo, `legacy/NOTAS.md` (una línea como "producción es WildFly 21" ahorra una desviación). Nada más. `legacy/`, `evidence/` y `pepper-out/` no se versionan nunca.
 
 ## 3. Corre
 
@@ -30,7 +30,7 @@ Eso es todo. En orden, y sin preguntarte nada salvo que se atore:
 | explorar | entra con cada rol, abre cada pantalla, intenta guardar en vacío (rechazos), llena y guarda, fotografía; después recorre con planes los flujos encadenados | `evidence/explore-*/` |
 | descubrir | correlaciona lo observado con el mapa y escribe el documento | **`docs/pepper/funcional.md`** |
 
-Se detiene solo en dos casos: el aislamiento no está en verde (no se levanta ni se explora nada) o falta un insumo (`BLOCKED` con la lista de qué conseguir). Un perfil nuevo (stack sin perfil) también se detiene: el borrador lo revisa una persona.
+Tarda: el mapa segundos, levantar cerca de un minuto, **explorar unos diez minutos** (seis roles por diecinueve pantallas en el primer legacy real), descubrir varios más. Se detiene solo en dos casos: el aislamiento no está en verde (no se levanta ni se explora nada) o falta un insumo (`BLOCKED` con la lista de qué conseguir). Un perfil nuevo (stack sin perfil) también se detiene: el borrador lo revisa una persona.
 
 `/pepper mapa|levantar|explorar|descubrir` retoma desde una fase.
 

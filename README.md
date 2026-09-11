@@ -10,14 +10,16 @@
 
 ## En tres pasos
 
+Necesitas Python 3.9+, Docker (con Compose v2), un JDK (`javap`, para leer un artefacto Java) y Claude Code o Codex.
+
 ```bash
 git clone https://github.com/GabrielaStark/PEPPER.git mi-legacy && cd mi-legacy
 pip install -r requirements-dev.txt && python3 -m playwright install chromium
-# copia el WAR y el respaldo a legacy/ (y una línea en legacy/NOTAS.md si sabes algo)
-claude          # y adentro: /pepper
+mkdir -p legacy && cp /ruta/al/sistema.war /ruta/al/respaldo.dump legacy/   # y una línea en legacy/NOTAS.md si sabes algo
+claude          # abre Claude Code EN esta carpeta; adentro: /pepper
 ```
 
-`/pepper` corre todo y no te pregunta nada salvo que se atore:
+`/pepper` corre todo y no te pregunta nada salvo que se atore. Tarda: el mapa segundos, levantar un minuto, **explorar unos diez minutos** (entra con cada rol y prueba cada pantalla), descubrir varios minutos más. No se colgó: está trabajando.
 
 | Fase | Qué hace | Deja |
 |---|---|---|
@@ -80,7 +82,7 @@ El juguete esconde tres cosas: una regla no documentada, una mentira en el manua
 
 | Pieza | Estado |
 |---|---|
-| Núcleo: detect, map, rehydrate, isolate, proxy, explore, collect, correlate, package, export | implementados y probados (suite en `tests/`, `scripts/verificar.py`, CI) |
+| Núcleo: detect, map, rehydrate, isolate, proxy, explore, collect, correlate, package, export | implementados y probados (suite en `tests/`, `scripts/verificar.py`, CI). **El ciclo completo corrió en frío** desde un clon limpio de este repo, sin manos, hasta `funcional.md` (2026-09-11) |
 | Perfil `java-springboot-jsf-postgres` | `draft`; corrió el pipeline entero contra un legacy real (mapa, levantar, explorar, descubrir) |
 | Perfil `java-wildfly-postgres` | `draft`; parsers |
 | Pendientes | promover un perfil a `validated`; un segundo perfil no-Java; CI con un E2E de Docker |
