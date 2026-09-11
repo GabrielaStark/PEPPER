@@ -192,6 +192,41 @@ class Explorer:
             pass
         self.page.wait_for_timeout(ms)
 
+    def _fill_input(self, selector: str, value: str) -> None:
+        """Escribe y avisa al framework (change + blur): PrimeFaces manda el valor por ajax al perder el
+        foco; sin eso, el siguiente re-dibujo del formulario lo borra."""
+        locator = self.page.locator(selector).first
+        locator.fill(str(value), timeout=self.timeout_ms)
+        try:
+            locator.dispatch_event("change")
+            locator.dispatch_event("blur")
+        except Exception:
+            pass
+
+    def _select_by_text(self, menu_id: str, text: str) -> str:
+        """Elige en un selectOneMenu de PrimeFaces el ítem cuyo texto contiene `text` (dos intentos:
+        el panel puede cerrarse por un re-dibujo). Devuelve el texto elegido."""
+        last: Optional[Exception] = None
+        for _ in range(2):
+            try:
+                self.page.keyboard.press("Escape")
+                menu = self.page.locator(f"[id='{menu_id}']").first
+                menu.scroll_into_view_if_needed(timeout=3000)
+                menu.locator(".ui-selectonemenu-trigger").click(timeout=5000)
+                panel = self.page.locator(f"[id='{menu_id}_panel'] li.ui-selectonemenu-item")
+                panel.first.wait_for(state="visible", timeout=5000)
+                item = panel.filter(has_text=str(text)).first
+                if item.count() == 0:
+                    raise RuntimeError(f"sin opción {text!r} en {menu_id}")
+                chosen = " ".join(item.inner_text().split())
+                item.click(timeout=5000)
+                self._settle(700)
+                return chosen
+            except Exception as error:  # noqa: BLE001
+                last = error
+                self.page.wait_for_timeout(500)
+        raise RuntimeError(f"select {menu_id}={text!r}: {last}")
+
     def _messages(self) -> List[str]:
         """Mensajes visibles del framework y del negocio (growl, messages, message, alerts)."""
         texts: List[str] = []
@@ -514,8 +549,8 @@ class Explorer:
     def run_plan(self, plan: List[Dict[str, Any]], docker_compose: Optional[Path] = None) -> Dict[str, Any]:
         """Pasos escritos por el agente. Cada paso es un dict con UNA clave:
         login: <rol> · goto: <ruta> · fill: {selector: valor} · select: {id_selectonemenu: texto} ·
-        click: <texto del botón> · check: <selector> · wait: <segundos> · expect_text: <texto> ·
-        expect_route: <ruta> · note: <texto> · logout: true
+        click: <texto del botón> · click_at: <selector css> · check: <selector> · wait: <segundos> ·
+        expect_text: <texto> · expect_route: <ruta> · note: <texto> · logout: true
         """
         self.grant_credentials(docker_compose)
         role = ""
@@ -537,14 +572,12 @@ class Explorer:
                     action.result = "ok"
                 elif key == "fill":
                     for selector, text in value.items():
-                        self.page.fill(selector, str(text))
+                        self._fill_input(selector, str(text))
                     self._settle(500)
                     action.result = "ok"
                 elif key == "select":
-                    for mid, text in value.items():
-                        self.page.locator(f"[id='{mid}'] .ui-selectonemenu-trigger").click()
-                        self.page.locator(f"[id='{mid}_panel'] li.ui-selectonemenu-item", has_text=str(text)).first.click()
-                        self._settle(700)
+                    chosen = {mid: self._select_by_text(mid, str(text)) for mid, text in value.items()}
+                    action.detail = {"selected": chosen}
                     action.result = "ok"
                 elif key == "click":
                     action.result = "ok" if self._click_button(str(value)) else "error"
@@ -553,6 +586,12 @@ class Explorer:
                         action.result = "rejected"
                 elif key == "check":
                     self.page.check(value)
+                    action.result = "ok"
+                elif key == "click_at":
+                    # un control por selector CSS (p. ej. la caja visible de un radio de PrimeFaces,
+                    # cuyo <input> real está oculto y no se puede marcar directo)
+                    self.page.locator(str(value)).first.click(timeout=self.timeout_ms)
+                    self._settle()
                     action.result = "ok"
                 elif key == "wait":
                     self.page.wait_for_timeout(int(float(value) * 1000))
@@ -572,7 +611,7 @@ class Explorer:
             except Exception as error:
                 action.result, action.detail = "error", {"error": str(error)[:300]}
             action.url_after = self.page.url if self.page.url.startswith("http") else ""
-            if key in ("click", "goto", "expect_text", "expect_route", "select", "fill"):
+            if key in ("click", "click_at", "goto", "expect_text", "expect_route", "select", "fill"):
                 action.screenshot = self._shot(f"plan_{index:02d}_{key}")
             self._write(action)
             ok += action.result == "ok"

@@ -33,6 +33,10 @@ evidence/flow.md          LO QUE SE VIO EJECUTAR en esta ventana: cada petición
                           y lo que disparó (SQL, log). Empieza por aquí para saber qué cubrió la sesión.
 evidence/events.jsonl     los eventos, uno por línea, con event_id E-…
 evidence/raw/             evidencia cruda; cada evento la referencia con raw_ref (archivo:línea)
+evidence/raw/explore.jsonl  si la sesión es del EXPLORADOR: una línea por acción del navegador
+                          automático — rol, pantalla, botón, resultado (ok/rejected/redirected/error),
+                          mensajes de rechazo, captura. De aquí salen la matriz real rol × pantalla
+                          y las validaciones confirmadas por rechazo.
 legacy/                   los artefactos tal cual (WAR, respaldo, NOTAS.md): para lo que el mapa no sacó
 schemas/functional-discovery.schema.json
 output/                   tu único destino de escritura: funcional.json y funcional.md
@@ -63,7 +67,7 @@ Si no hay `map/`, el paquete se armó sin `pepper map`: solo tienes la ejecució
 
 ### Paso 1 — Qué cubrió esta sesión
 
-Lee `session.json` y `evidence/flow.md` completos. Anota: quién operó (humano o agente), qué pantallas y acciones aparecen, qué se escribió en la base (INSERT/UPDATE con sus tablas), qué rechazos hubo (respuestas ≥ 400, mensajes de error, líneas `warn`), qué se bloqueó en el navegador, qué jobs corrieron fuera de toda petición. Esto define lo que puedes marcar como **observado**.
+Lee `session.json` y `evidence/flow.md` completos. Anota: quién operó (humano, agente por el ingress, o el explorador), qué pantallas y acciones aparecen, qué se escribió en la base (INSERT/UPDATE con sus tablas), qué rechazos hubo (respuestas ≥ 400, mensajes de error, líneas `warn`; en el explorador, las acciones `rejected` con su mensaje), qué se bloqueó en el navegador, qué jobs corrieron fuera de toda petición. Esto define lo que puedes marcar como **observado**. Si la sesión es del explorador, los eventos `[ROL] screen /ruta → ok|redirected` de cada rol son la **matriz real de acceso**: compárala con la relación rol-menú de la base y reporta la diferencia (una pantalla que el menú oculta pero el servidor sirve es hallazgo de seguridad).
 
 ### Paso 2 — Quién lo usa y qué puede hacer
 
