@@ -248,24 +248,47 @@ class Explorer:
     # ------------------------------------------------------------ credenciales
 
     def grant_credentials(self, docker_compose: Optional[Path]) -> List[str]:
-        """Fija la contraseña de un usuario por rol en la base desechable. Devuelve qué roles quedaron listos."""
+        """Fija la contraseña de un usuario por rol en la base desechable. Devuelve qué roles quedaron listos.
+
+        `credentials.setup_sql` (opcional) corre UNA vez antes — lo que el encoder necesite,
+        p. ej. la extensión que da `crypt()`/`gen_salt()`. En la primera corrida en frío la
+        base recién restaurada no la tenía y los seis roles quedaron "sin credencial" sin que
+        nada se detuviera: un fallo de credenciales es fatal, no una nota al pie."""
         creds = self.config.get("credentials") or {}
         sql_template = creds.get("sql")
         if not sql_template or docker_compose is None:
             return [r["name"] for r in self.config.get("roles", []) if r.get("password")]
+
+        def psql(sql: str) -> "subprocess.CompletedProcess[str]":
+            command = ["docker", "compose", "-f", str(docker_compose), "exec", "-T", creds.get("db_service", "db"),
+                       "psql", "-v", "ON_ERROR_STOP=1", "-U", creds.get("db_user", "postgres"), "-d", creds["db_name"], "-Atc", sql]
+            return subprocess.run(command, capture_output=True, text=True)
+
+        setup = creds.get("setup_sql")
+        if setup:
+            result = psql(setup)
+            if result.returncode != 0:
+                error = result.stderr.strip()[:300]
+                self._write(Action(role="*", route="", kind="credentials", label="setup_sql", started=_now(),
+                                   result="error", detail={"stderr": error}))
+                raise RuntimeError(f"credentials.setup_sql falló en la base desechable: {error}")
         ready: List[str] = []
+        failures: List[str] = []
         for role in self.config.get("roles", []):
             if not role.get("user") or not role.get("password"):
                 continue
             sql = sql_template.replace("{user}", role["user"]).replace("{password}", role["password"])
-            command = ["docker", "compose", "-f", str(docker_compose), "exec", "-T", creds.get("db_service", "db"),
-                       "psql", "-v", "ON_ERROR_STOP=1", "-U", creds.get("db_user", "postgres"), "-d", creds["db_name"], "-Atc", sql]
-            result = subprocess.run(command, capture_output=True, text=True)
+            result = psql(sql)
             if result.returncode == 0:
                 ready.append(role["name"])
             else:
+                error = result.stderr.strip()[:300]
+                failures.append(f"{role['name']}: {error}")
                 self._write(Action(role=role["name"], route="", kind="credentials", started=_now(), result="error",
-                                   detail={"stderr": result.stderr.strip()[:300]}))
+                                   detail={"stderr": error}))
+        if not ready:
+            raise RuntimeError("ningún rol quedó con credencial en la base desechable; sin eso no hay nada que explorar. "
+                               + " · ".join(failures[:3]))
         return ready
 
     # ------------------------------------------------------------ sesión

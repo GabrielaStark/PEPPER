@@ -314,14 +314,21 @@ def _cmd_explore(args: argparse.Namespace) -> int:
 
     plan = _json.loads(args.plan.read_text(encoding="utf-8")) if args.plan else None
     started = datetime.now().astimezone()
-    with Explorer(config, system_map, out_dir, headless=not args.headed) as explorer:
-        if plan:
-            summary = explorer.run_plan(plan, docker_compose=args.compose)
-            kind = f"plan ({args.plan.name})"
-        else:
-            summary = explorer.walk(docker_compose=args.compose, submit=not args.no_submit)
-            kind = "recorrido automático por rol y pantalla"
-        actions = [a.record() for a in explorer.actions]
+    try:
+        with Explorer(config, system_map, out_dir, headless=not args.headed) as explorer:
+            if plan:
+                summary = explorer.run_plan(plan, docker_compose=args.compose)
+                kind = f"plan ({args.plan.name})"
+            else:
+                summary = explorer.walk(docker_compose=args.compose, submit=not args.no_submit)
+                kind = "recorrido automático por rol y pantalla"
+            actions = [a.record() for a in explorer.actions]
+    except RuntimeError as error:
+        # Sin credenciales no se exploró nada: se dice y se para. Seguir a Correlate con
+        # una sesión vacía escondería el fallo detrás de un "Siguiente".
+        print(f"pepper explore: {error}", file=sys.stderr)
+        print(f"  lo registrado quedó en {out_dir}/explore.jsonl; corrige docs/pepper/explore.json (credentials.setup_sql / sql) y repite", file=sys.stderr)
+        return 1
     _time.sleep(args.settle)  # que el sistema termine lo que la última acción disparó
     ended = datetime.now().astimezone()
 

@@ -35,7 +35,7 @@ Escribe `docs/pepper/explore.json` a partir del mapa — es lo único que requie
 
 - `login`: la pantalla con un control `password#…` en `screens.md`; sus selectores (`#id` si el formulario tiene `prependId=false`, si no `#form\:id`), el botón, y el texto del mensaje de rechazo (en `catalogs.md` suele ser un parámetro).
 - `roles`: un usuario ACTIVO por rol activo, sacado de los catálogos (tabla de roles y relación usuario-rol del mapa; si el mapa no vuelca la tabla de usuarios por ser de personas, consúltala en la base desechable con `docker compose exec db psql` — solo la clave de usuario, nunca nombres). Contraseña de prueba única. `submit: false` en los roles de solo consulta.
-- `credentials.sql`: cómo fijar la contraseña en la base desechable (columna, algoritmo: el código dice qué encoder usa — `code.md`, clase de login). Solo en el contenedor; jamás en un artefacto ni en un ambiente real.
+- `credentials.sql`: cómo fijar la contraseña en la base desechable (columna, algoritmo: el código dice qué encoder usa — `code.md`, clase de login). Solo en el contenedor; jamás en un artefacto ni en un ambiente real. Y `credentials.setup_sql`: lo que ese SQL necesite y una base recién restaurada no trae — con bcrypt en PostgreSQL es `CREATE EXTENSION IF NOT EXISTS pgcrypto` (da `crypt()` y `gen_salt()`). Corre una vez, antes de los roles; si falla, el explorador se detiene.
 - `fill`: pistas de valores plausibles por campo (CURP con formato válido, un CP que exista en el catálogo, correos `@pepper.invalid`).
 
 Luego:
