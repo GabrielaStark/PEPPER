@@ -14,10 +14,13 @@ Necesitas Python 3.9+, Docker (con Compose v2), un JDK (`javap`, para leer un ar
 
 ```bash
 git clone https://github.com/GabrielaStark/PEPPER.git mi-legacy && cd mi-legacy
+rm -rf .git     # ← desconecta el repo de la herramienta: lo que descubras aquí es del sistema que analizas
 pip install -r requirements-dev.txt && python3 -m playwright install chromium
 mkdir -p legacy && cp /ruta/al/sistema.war /ruta/al/respaldo.dump legacy/   # y una línea en legacy/NOTAS.md si sabes algo
 claude          # abre Claude Code EN esta carpeta; adentro: /pepper
 ```
+
+**Ese `rm -rf .git` no es opcional.** El clon trae el remoto de PEPPER; sin borrarlo, un `git push` distraído publicaría el sistema que estás analizando en un repositorio público. Sin `.git` no hay a dónde subir nada. Si prefieres conservar git para actualizar la herramienta, al menos `git remote remove origin`: el núcleo te lo recuerda en cada comando mientras haya algo en `legacy/`.
 
 `/pepper` corre todo y no te pregunta nada salvo que se atore. Tarda: el mapa segundos, levantar un minuto, **explorar unos diez minutos** (entra con cada rol y prueba cada pantalla), descubrir varios minutos más. No se colgó: está trabajando.
 
@@ -52,10 +55,10 @@ Arquitectura: [`ARQUITECTURA.md`](docs/documentacion/ARQUITECTURA.md) · perfile
 | | Qué es | ¿Va al git del proyecto? |
 |---|---|---|
 | **Herramienta** | `.claude/`, `pepper/`, `schemas/`, `profiles/`, `templates/`, `docs/documentacion/`, `examples/`, `tests/`, `scripts/` | ❌ se ignora; se actualiza recopiando |
-| **Producto** | `docs/pepper/` (mapa, entorno, `funcional.md`, `discovery/`) y `docs/analysis/funcional.md` (la entrega a stark) | ✅ es el conocimiento del legacy |
+| **Producto** | `docs/pepper/` (mapa, entorno, `funcional.md`, `discovery/`) y `docs/analysis/funcional.md` (la entrega a stark) | ✅ al git **de ese sistema**, nunca al de la herramienta (aquí `.gitignore` lo bloquea) |
 | **Datos ajenos** | `legacy/`, `evidence/`, `pepper-out/` | ❌ nunca |
 
-Al terminar: `docker compose -f pepper-out/rehydrate/docker-compose.yml down -v`, borra la herramienta, instala stark; su `arqueologo-codigo` encuentra el discovery en `docs/analysis/`.
+Al terminar: `docker compose -f pepper-out/rehydrate/docker-compose.yml down -v`, copia `docs/pepper/` y `docs/analysis/` al repositorio donde guardas el conocimiento de ese sistema, borra la herramienta e instala stark; su `arqueologo-codigo` encuentra el discovery en `docs/analysis/`.
 
 ## Prueba en 5 minutos, sin legacy
 

@@ -1,6 +1,8 @@
 """Herramientas del núcleo para los agentes: `pepper detect` y `pepper validate`."""
 
 import json
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -134,3 +136,88 @@ class ValidateTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RepoDeLaHerramientaTest(unittest.TestCase):
+    """El repo de la herramienta no puede contaminarse con el sistema que alguien analice.
+
+    Quien usa PEPPER clona este repo y trabaja adentro: si `.gitignore` no cubriera el
+    producto, un `git add -A && git push` publicaría el mapa, el entorno y el funcional.md
+    del sistema de un cliente en un repositorio público. Lo que protegía esas rutas era
+    `.git/info/exclude`, que NO viaja en el clon (auditoría 2026-09-14).
+    """
+
+    RUTAS = [
+        ("legacy/sistema.war", "artefacto del sistema"),
+        ("legacy/respaldo.dump", "respaldo de la base"),
+        ("legacy/NOTAS.md", "notas del humano"),
+        ("evidence/explore-001/http.jsonl", "evidencia capturada"),
+        ("pepper-out/rehydrate/.env", "compose y credenciales"),
+        ("pepper-out/explore.json", "claves de usuario y contraseña de prueba"),
+        ("docs/pepper/funcional.md", "qué hace el sistema del cliente"),
+        ("docs/pepper/system-map.json", "mapa del sistema del cliente"),
+        ("docs/pepper/map/catalogs.md", "catálogos del cliente"),
+        ("docs/analysis/funcional.md", "la entrega a stark"),
+    ]
+
+    def test_gitignore_bloquea_todo_lo_del_legacy(self):
+        if shutil.which("git") is None:
+            self.skipTest("git no disponible")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            shutil.copy2(ROOT / ".gitignore", repo / ".gitignore")
+            for rel, _ in self.RUTAS:
+                path = repo / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("contenido del legacy", encoding="utf-8")
+            listo = subprocess.run(["git", "status", "--porcelain"], cwd=repo,
+                                   capture_output=True, text=True, check=True).stdout
+            visibles = [line for line in listo.splitlines() if ".gitignore" not in line]
+            self.assertEqual(visibles, [], f"esto se subiría al repo de la herramienta: {visibles}")
+
+    def test_cada_ruta_por_separado_esta_ignorada(self):
+        if shutil.which("git") is None:
+            self.skipTest("git no disponible")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            shutil.copy2(ROOT / ".gitignore", repo / ".gitignore")
+            for rel, que_es in self.RUTAS:
+                path = repo / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("x", encoding="utf-8")
+                ignorado = subprocess.run(["git", "check-ignore", "-q", rel], cwd=repo).returncode == 0
+                self.assertTrue(ignorado, f"{rel} ({que_es}) NO está ignorado")
+
+    def test_el_nucleo_avisa_si_el_remoto_de_la_herramienta_sigue_puesto(self):
+        from pepper.cli import tool_remote_warning
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            config = root / ".git" / "config"
+
+            # sin remoto de la herramienta: nada que decir
+            config.write_text('[remote "origin"]\n\turl = git@github.com:cliente/su-sistema.git\n', encoding="utf-8")
+            (root / "legacy").mkdir()
+            (root / "legacy" / "sistema.war").write_text("x", encoding="utf-8")
+            self.assertIsNone(tool_remote_warning(root))
+
+            # remoto de la herramienta + legacy dentro: avisa y dice cómo cerrarlo
+            config.write_text('[remote "origin"]\n\turl = https://github.com/GabrielaStark/PEPPER.git\n', encoding="utf-8")
+            aviso = tool_remote_warning(root)
+            self.assertIsNotNone(aviso)
+            self.assertIn("git remote remove origin", aviso)
+
+    def test_no_avisa_mientras_se_desarrolla_la_herramienta(self):
+        from pepper.cli import tool_remote_warning
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            (root / ".git" / "config").write_text(
+                '[remote "origin"]\n\turl = https://github.com/GabrielaStark/PEPPER.git\n', encoding="utf-8")
+            self.assertIsNone(tool_remote_warning(root), "sin legacy/ no hay nada que filtrar")
+            (root / "legacy").mkdir()
+            self.assertIsNone(tool_remote_warning(root), "legacy/ vacío tampoco")

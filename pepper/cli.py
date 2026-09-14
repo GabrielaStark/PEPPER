@@ -647,8 +647,45 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+_TOOL_REMOTE_HINTS = ("GabrielaStark/PEPPER", "GabrielaStark/PEPPER.git")
+
+
+def tool_remote_warning(root: Path) -> Optional[str]:
+    """El clon de la herramienta NO es el repositorio del legacy.
+
+    Si alguien trabaja dentro del clon con el remoto original conectado, un `git push`
+    distraído publicaría el sistema de otra persona en un repo público. `.gitignore` ya
+    impide agregar `legacy/`, `evidence/`, `pepper-out/`, `docs/pepper/` y `docs/analysis/`;
+    esto avisa de la única vía que queda (un `git add -f`) y de cómo cerrarla. Solo habla
+    cuando hay de verdad un legacy en la carpeta: durante el desarrollo de la herramienta
+    no estorba.
+    """
+    config = root / ".git" / "config"
+    if not config.is_file():
+        return None
+    try:
+        text = config.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    if not any(hint in text for hint in _TOOL_REMOTE_HINTS):
+        return None
+    legacy = root / "legacy"
+    try:
+        if not (legacy.is_dir() and any(legacy.iterdir())):
+            return None
+    except OSError:
+        return None
+    return ("⚠ Este clon sigue apuntando al repositorio de la herramienta y ya tiene un legacy dentro.\n"
+            "  Nada de este sistema debe llegar ahí. Desconéctalo antes de seguir:\n"
+            "      git remote remove origin        # o, si no necesitas git aquí: rm -rf .git\n"
+            "  (`.gitignore` ya bloquea legacy/, evidence/, pepper-out/, docs/pepper/ y docs/analysis/.)")
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    warning = tool_remote_warning(Path.cwd())
+    if warning:
+        print(warning, file=sys.stderr)
     try:
         return COMMANDS[args.command](args)
     except (FileNotFoundError, ValueError, FileExistsError) as error:

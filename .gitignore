@@ -5,6 +5,12 @@
 
 # Salidas intermedias de PEPPER (evidencia correlacionada, paquetes, compose con credenciales).
 pepper-out/
+
+# El PRODUCTO de un legacy ajeno: el mapa, el entorno y funcional.md describen el sistema de
+# alguien más. Es tuyo y va al repo donde guardas el conocimiento de ESE sistema — jamás al
+# repo de la herramienta. Al terminar: copia docs/pepper/ y docs/analysis/ a donde corresponda.
+/docs/pepper/
+/docs/analysis/
 # Configuración del explorador: claves de usuario reales y contraseña de prueba. Vive en pepper-out/; nunca en docs/pepper/.
 /docs/pepper/explore.json
 

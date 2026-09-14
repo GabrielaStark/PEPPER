@@ -8,8 +8,11 @@ Clona PEPPER con el nombre de tu proyecto y abre Claude Code **en esa carpeta** 
 
 ```bash
 git clone https://github.com/GabrielaStark/PEPPER.git mi-legacy && cd mi-legacy
+rm -rf .git     # ← desconecta el repo de la herramienta antes de meter nada
 pip install -r requirements-dev.txt && python3 -m playwright install chromium
 ```
+
+**Por qué se borra `.git`:** el clon viene con el remoto de PEPPER conectado. Trabajar adentro con un legacy y ese remoto puesto es la única forma de publicar por accidente el sistema de un cliente en un repositorio público. Sin `.git` no hay a dónde subir. Si quieres conservar git (para traer actualizaciones de la herramienta), corre al menos `git remote remove origin`; mientras haya algo en `legacy/` y el remoto siga puesto, cada comando del núcleo te lo recuerda. El producto (`docs/pepper/`, `docs/analysis/`) se copia al final al repositorio donde guardas el conocimiento de ese sistema.
 
 ## 2. Pon los artefactos
 
