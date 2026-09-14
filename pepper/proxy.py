@@ -72,6 +72,13 @@ BROWSER_POLICY = (
 _STRIPPED_RESPONSE_HEADERS = {"content-security-policy", "content-security-policy-report-only", "link", "refresh"}
 # Endpoints propios del ingress: el navegador reporta aquí lo que bloqueó.
 _REPORT_PATHS = {"/__pepper/csp-report": "csp", "/__pepper/nav-report": "navigation"}
+# Página propia a la que se reescribe toda navegación hacia otro origen que el app
+# intente provocar (Location de un 3xx, <meta http-equiv=refresh>): CSP gobierna lo que
+# la página CARGA, no a dónde NAVEGA el documento entero (auditoría 2026-09-11).
+_BLOCKED_PATH = "/__pepper/blocked"
+_MAX_REQUEST_BYTES = 32 * 1024 * 1024   # más que eso no es una pantalla de un legacy: 413, sin agotar memoria
+_META_REFRESH_RE = re.compile(rb"<meta\s+[^>]*http-equiv\s*=\s*[\"\']?refresh[\"\']?[^>]*>", re.IGNORECASE)
+_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 # Guardián para lo que CSP no cubre: window.open, clic en <a href> externo y submit
 # a otro origen. Intercepta, no navega, y reporta. Solo ASCII: se inyecta en bytes.
 _GUARD_SCRIPT = (
@@ -94,6 +101,10 @@ CORRELATION_HEADER = "X-Pepper-Correlation-Id"
 
 class _BadRequest(ValueError):
     """La petición no se puede leer (chunk o Content-Length malformados): 400 y no se reenvía."""
+
+
+class _TooLarge(ValueError):
+    """Cuerpo mayor que _MAX_REQUEST_BYTES: 413 antes de leerlo entero."""
 
 
 def _now_iso() -> str:
@@ -152,6 +163,39 @@ def guard_html(content_type: str, content_encoding: str, payload: bytes) -> Tupl
                 at = j + 1
                 break
     return payload[:at] + _GUARD_SCRIPT + payload[at:], None
+
+
+def strip_meta_refresh(payload: bytes) -> Tuple[bytes, List[str]]:
+    """Quita todo <meta http-equiv=refresh> cuyo destino sea absoluto (otro origen) y
+    devuelve los destinos: una navegación top-level que la CSP no frena."""
+    blocked: List[str] = []
+    def replace(match: "re.Match[bytes]") -> bytes:
+        tag = match.group(0)
+        url = re.search(rb"url\s*=\s*[\"\']?([^\"\'>;\s]+)", tag, re.IGNORECASE)
+        target = url.group(1).decode("utf-8", "replace") if url else ""
+        if target.lower().startswith(("http://", "https://", "//")):
+            blocked.append(target)
+            return b"<!-- pepper: meta refresh hacia otro origen bloqueado -->"
+        return tag
+    return _META_REFRESH_RE.sub(replace, payload), blocked
+
+
+def decode_body(content_encoding: str, payload: bytes) -> Tuple[bytes, bool]:
+    """Descomprime gzip/deflate para poder inyectar el guardián; (cuerpo, ¿se pudo?)."""
+    encoding = (content_encoding or "").strip().lower()
+    try:
+        if encoding == "gzip":
+            import gzip
+            return gzip.decompress(payload), True
+        if encoding == "deflate":
+            import zlib
+            try:
+                return zlib.decompress(payload), True
+            except zlib.error:
+                return zlib.decompress(payload, -zlib.MAX_WBITS), True
+    except (OSError, EOFError, ValueError):
+        return payload, False
+    return payload, encoding in ("", "identity")
 
 
 def blocked_record(kind: str, report: Dict[str, Any]) -> Dict[str, Any]:
@@ -228,11 +272,15 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
                         return bytes(data)
                     data += self.rfile.read(size)
                     self.rfile.readline()
+                    if len(data) > _MAX_REQUEST_BYTES:
+                        raise _TooLarge(len(data))
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError as error:
             raise _BadRequest(f"cuerpo ilegible: {error}") from None
         if length < 0:
             raise _BadRequest("Content-Length negativo")
+        if length > _MAX_REQUEST_BYTES:
+            raise _TooLarge(length)
         return self.rfile.read(length) if length else b""
 
     def _forward(self, correlation_id: str, body: bytes) -> Tuple[int, str, List[Tuple[str, str]], bytes]:
@@ -327,6 +375,49 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
         except OSError:
             pass
 
+    def _rewrite_location(self, status: int, headers: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+        """Un 3xx del app hacia otro origen mandaría el navegador del humano a un servidor
+        real (con VPN, a producción) sin que ningún contenedor lo vea. Se reescribe a la
+        página de bloqueo del ingress y se registra. Un Location hacia el propio app
+        (su IP interna, que el navegador no alcanza) se vuelve relativo al ingress."""
+        if status not in _REDIRECT_STATUSES:
+            return headers
+        upstream_host, upstream_port = self.server.upstream  # type: ignore[attr-defined]
+        own = {(self.headers.get("Host") or "").lower(), f"{upstream_host}:{upstream_port}".lower(),
+               upstream_host.lower()}
+        out: List[Tuple[str, str]] = []
+        for name, value in headers:
+            if name.lower() != "location":
+                out.append((name, value)); continue
+            parts = urlsplit(value)
+            if not parts.netloc:
+                out.append((name, value)); continue           # relativo: se queda en el ingress
+            if parts.netloc.lower() in own:
+                rel = parts.path or "/"
+                out.append((name, rel + (f"?{parts.query}" if parts.query else "")))
+                continue
+            self.server.recorder.record(blocked_record("navigation", {  # type: ignore[attr-defined]
+                "kind": "redirect", "blocked_uri": value, "document_uri": self.path.partition("?")[0]}))
+            out.append((name, f"{_BLOCKED_PATH}?to={parts.netloc}"))
+        return out
+
+    def _serve_blocked_page(self) -> None:
+        to = parse_qs(urlsplit(self.path).query).get("to", ["otro origen"])[0]
+        safe = "".join(ch for ch in to if ch.isalnum() or ch in ".-:_")[:120]
+        page = (f"<!doctype html><meta charset=utf-8><title>PEPPER</title><body style=font-family:sans-serif>"
+                f"<h2>Navegaci&oacute;n bloqueada</h2><p>El sistema intent&oacute; llevar tu navegador a "
+                f"<b>{safe}</b>. En un entorno rehidratado nada sale hacia servidores reales; el intento "
+                f"qued&oacute; registrado como dependencia externa.</p><p><a href=\"javascript:history.back()\">Volver</a></p>").encode()
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Security-Policy", BROWSER_POLICY)
+            self.send_header("Content-Length", str(len(page)))
+            self.end_headers()
+            self.wfile.write(page)
+        except OSError:
+            pass
+
     def _handle_report(self, kind: str, body: bytes) -> None:
         """El navegador dice qué bloqueó. Se registra (sin correlation_id: no es una
         petición al app y no debe anclar una traza) y se responde 204."""
@@ -350,6 +441,12 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
         correlation_id = f"req-{uuid.uuid4().hex[:12]}"
         try:
             body = self._read_request_body()
+        except _TooLarge as error:
+            self._record_request(correlation_id, b"")
+            self._fail(correlation_id, 413, 0, "pepper-proxy: cuerpo demasiado grande", str(error),
+                       note=f"cuerpo de {error} bytes rechazado (tope {_MAX_REQUEST_BYTES})")
+            self.close_connection = True
+            return
         except _BadRequest as error:
             # Sin cuerpo confiable no hay nada que reenviar; la conexión quedó fuera de
             # sincronía con el cliente, así que se cierra en vez de reutilizarse.
@@ -361,6 +458,9 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
         report_kind = _REPORT_PATHS.get(self.path.partition("?")[0])
         if report_kind:
             self._handle_report(report_kind, body)
+            return
+        if self.path.partition("?")[0] == _BLOCKED_PATH:
+            self._serve_blocked_page()
             return
         self._record_request(correlation_id, body)
         started = time.monotonic()
@@ -377,13 +477,28 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
         # elimina la carrera request-only en capturas y pruebas concurrentes.
         content_type = next((value for name, value in headers if name.lower() == "content-type"), "")
         encoding = next((value for name, value in headers if name.lower() == "content-encoding"), "")
+        is_html = content_type.split(";", 1)[0].strip().lower() == "text/html"
+        drop_encoding = False
+        if is_html and encoding:
+            payload, decoded = decode_body(encoding, payload)
+            if decoded:
+                drop_encoding = True   # se sirve plano: el guardián va adentro
+                encoding = ""
         payload, guard_note = guard_html(content_type, encoding, payload)
+        if is_html and not encoding:
+            payload, refreshes = strip_meta_refresh(payload)
+            for target in refreshes:
+                self.server.recorder.record(blocked_record("navigation", {  # type: ignore[attr-defined]
+                    "kind": "meta-refresh", "blocked_uri": target, "document_uri": self.path.partition("?")[0]}))
+        headers = self._rewrite_location(status, headers)
         self._record_response(correlation_id, status, duration_ms, content_type, payload, note=guard_note)
 
         self.send_response(status, reason)
         for name, value in headers:
             lowered = name.lower()
             if lowered in _HOP_BY_HOP or lowered == "content-length" or lowered in _STRIPPED_RESPONSE_HEADERS:
+                continue
+            if drop_encoding and lowered == "content-encoding":
                 continue
             self.send_header(name, value)
         self.send_header("Content-Security-Policy", BROWSER_POLICY)

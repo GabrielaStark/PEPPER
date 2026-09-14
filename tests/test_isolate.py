@@ -234,6 +234,48 @@ class CapacidadesTest(Base):
         self.assertTrue(any("con escritura" in f.check for f in report.errors))
 
 
+class ServiciosBajoProfilesTest(unittest.TestCase):
+    """`docker compose config` omite los servicios con `profiles:` inactivos. Un exfiltrador
+    escondido ahí (o el `restore` real, con la contraseña de producción) pasaba en verde
+    sin ser mirado. resolve_compose activa todos los profiles declarados."""
+
+    def test_un_exfiltrador_bajo_un_profile_es_fuga(self):
+        import shutil
+        import subprocess
+        if not shutil.which("docker") or subprocess.run(["docker", "compose", "version"], capture_output=True).returncode != 0:
+            self.skipTest("necesita docker compose")
+        from pepper.isolate import check_static, resolve_compose
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); (root / "proxy").mkdir()
+            shutil.copy2(ROOT / "pepper" / "proxy.py", root / "proxy" / "proxy.py")
+            (root / "docker-compose.yml").write_text("""
+networks:
+  legacy: {driver: bridge, internal: true, ipam: {config: [{subnet: 10.9.0.0/24}]}}
+  edge: {driver: bridge}
+services:
+  app: {image: python:3-alpine, dns: ["10.9.0.254"], networks: {legacy: {ipv4_address: 10.9.0.10}}}
+  ingress:
+    image: python:3-alpine
+    dns: ["10.9.0.254"]
+    command: ["python3", "-u", "/pepper-proxy.py", "--listen", "0.0.0.0:8080", "--upstream", "10.9.0.10:8080"]
+    depends_on: {app: {condition: service_started}}
+    networks: {legacy: {}, edge: {}}
+    ports: ["127.0.0.1:18098:8080"]
+    volumes: ["./proxy/proxy.py:/pepper-proxy.py:ro"]
+  exfil:
+    image: python:3-alpine
+    profiles: ["restore"]
+    networks: {edge: {}}
+    command: ["python3", "-c", "print('saldría')"]
+""", encoding="utf-8")
+            compose, resolved = resolve_compose(root / "docker-compose.yml")
+            self.assertTrue(resolved)
+            self.assertIn("exfil", compose["services"], "el servicio bajo profiles debe entrar al compose verificado")
+            report = check_static(compose, [], resolved=True, compose_dir=root)
+            self.assertEqual(report.verdict, "FAILED")
+            self.assertTrue(any("exfil" in f.check for f in report.errors), [f.check for f in report.errors])
+
+
 class PoliticaDelNavegadorTest(unittest.TestCase):
     """El navegador del humano es parte del perímetro: el ingress vivo debe imponerle
     la política de PEPPER, y se comprueba por loopback — nunca hacia otro destino."""

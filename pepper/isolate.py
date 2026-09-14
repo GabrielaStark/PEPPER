@@ -100,10 +100,17 @@ def resolve_compose(path: Path) -> Tuple[Dict[str, Any], bool]:
     inocente en el archivo y quita el aislamiento en ejecución. Por eso el
     fallback jamás puede producir un verde (C-01): quien lo use recibe UNKNOWN.
     """
-    result = subprocess.run(
-        ["docker", "compose", "-f", str(path), "config", "--format", "json"],
-        capture_output=True, text=True,
-    )
+    # `docker compose config` OMITE los servicios bajo `profiles:` que no estén activos.
+    # Un servicio escondido ahí (el `restore`, que corre con la contraseña real de
+    # producción; o un exfiltrador) pasaba en verde sin ser mirado (auditoría
+    # 2026-09-11). Se activan TODOS los profiles declarados: se verifica lo que Docker
+    # PUEDE ejecutar, no solo lo que ejecuta hoy.
+    base = ["docker", "compose", "-f", str(path)]
+    profiles = subprocess.run(base + ["config", "--profiles"], capture_output=True, text=True)
+    if profiles.returncode == 0:
+        for name in profiles.stdout.split():
+            base += ["--profile", name]
+    result = subprocess.run(base + ["config", "--format", "json"], capture_output=True, text=True)
     if result.returncode == 0:
         return json.loads(result.stdout), True
     try:

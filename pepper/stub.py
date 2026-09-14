@@ -20,11 +20,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+from urllib.parse import parse_qs, urlsplit
 import threading
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DEFAULT_PORTS = "80,443,8080"
+
+
+_SECRET_FIELD_RE = re.compile(r"(?i)(pass|pwd|psw|contrase|clave|secret|token|credencial|authorization)")
+
+
+def _query(path: str) -> dict:
+    """El query viaja aparte y redactado: un callback con ?token=… lo dejaba entero (auditoría 2026-09-11)."""
+    raw = urlsplit(path).query
+    if not raw:
+        return {}
+    pairs = parse_qs(raw, keep_blank_values=True)
+    return {"query": {k: ("[REDACTADO]" if _SECRET_FIELD_RE.search(k) else (v[0] if len(v) == 1 else v))
+                      for k, v in pairs.items()}}
 
 
 class StubHandler(BaseHTTPRequestHandler):
@@ -35,7 +50,8 @@ class StubHandler(BaseHTTPRequestHandler):
             "ts": datetime.now().astimezone().isoformat(timespec="milliseconds"),
             "port": self.server.server_address[1],
             "method": self.command,
-            "path": self.path,
+            "path": self.path.partition("?")[0],
+            **_query(self.path),
             "host": self.headers.get("Host"),
             "client": self.client_address[0],
             "body_bytes": len(body),

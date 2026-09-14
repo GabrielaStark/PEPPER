@@ -49,6 +49,19 @@ class _UpstreamHandler(BaseHTTPRequestHandler):
             self._reply(200, b"<html><head><title>x</title></head><body>hola</body></html>", content_type="text/html",
                         extra_headers=[("Content-Security-Policy", "default-src *"),
                                        ("Link", "<http://externo.example/a.js>; rel=preload; as=script")])
+        elif self.path.startswith("/salto-externo"):
+            self._reply(302, b"", content_type="text/plain",
+                        extra_headers=[("Location", "https://servidor-real.invalid/panel?id=77&token=S")])
+        elif self.path.startswith("/salto-a-mi-ip"):
+            host, port = self.server.server_address
+            self._reply(302, b"", content_type="text/plain", extra_headers=[("Location", f"http://{host}:{port}/destino?x=1")])
+        elif self.path.startswith("/meta-refresh"):
+            self._reply(200, b'<html><head><meta http-equiv="refresh" content="0;url=https://servidor-real.invalid/x">'
+                             b'<meta http-equiv="refresh" content="5;url=/local"></head><body>x</body></html>', content_type="text/html")
+        elif self.path.startswith("/gzip"):
+            import gzip
+            self._reply(200, gzip.compress(b"<html><head></head><body>comprimido</body></html>"),
+                        content_type="text/html", extra_headers=[("Content-Encoding", "gzip")])
         elif self.path.startswith("/redirect"):
             self._reply(303, b"", content_type="text/plain", extra_headers=[("Location", "/destino")])
         elif self.path.startswith("/pagina"):
@@ -317,6 +330,49 @@ class ProxyTest(unittest.TestCase):
         self.assertIsNone(event.correlation_id)
         self.assertTrue(event.is_protected, "la reducción jamás descarta un bloqueo")
         self.assertIn("servidor-real.example", event.operation)
+
+    # --- navegación top-level: lo que la CSP no gobierna ---
+
+    def test_un_3xx_hacia_otro_origen_se_reescribe_y_se_registra(self):
+        status, headers, _ = self._request("GET", "/salto-externo")
+        self.assertEqual(status, 302)
+        self.assertEqual(headers.get("Location"), "/__pepper/blocked?to=servidor-real.invalid")
+        entry = next(e for e in self.recorder.entries if e.get("direction") == "blocked")
+        self.assertEqual((entry["kind"], entry["blocked_host"]), ("redirect", "servidor-real.invalid"))
+        self.assertEqual(entry["blocked_query"]["token"], "[REDACTADO]")
+        status, headers, body = self._request("GET", "/__pepper/blocked?to=servidor-real.invalid")
+        self.assertEqual(status, 200)
+        self.assertIn(b"servidor-real.invalid", body)
+        self.assertIn("default-src 'self'", headers.get("Content-Security-Policy", ""))
+
+    def test_un_3xx_hacia_la_ip_interna_del_app_se_vuelve_relativo(self):
+        status, headers, _ = self._request("GET", "/salto-a-mi-ip")
+        self.assertEqual(status, 302)
+        self.assertEqual(headers.get("Location"), "/destino?x=1")
+        self.assertFalse(any(e.get("direction") == "blocked" for e in self.recorder.entries))
+
+    def test_meta_refresh_externo_se_quita_y_el_local_se_queda(self):
+        _, _, body = self._request("GET", "/meta-refresh")
+        self.assertNotIn(b"servidor-real.invalid", body)
+        self.assertIn(b"pepper: meta refresh hacia otro origen bloqueado", body)
+        self.assertIn(b'url=/local', body)
+        entry = next(e for e in self.recorder.entries if e.get("direction") == "blocked")
+        self.assertEqual((entry["kind"], entry["blocked_host"]), ("meta-refresh", "servidor-real.invalid"))
+
+    def test_html_comprimido_se_sirve_plano_con_guardian(self):
+        status, headers, body = self._request("GET", "/gzip")
+        self.assertEqual(status, 200)
+        self.assertIsNone(headers.get("Content-Encoding"))
+        self.assertIn(b"comprimido", body)
+        self.assertIn(b'data-pepper="guard"', body)
+        self.assertEqual(int(headers["Content-Length"]), len(body))
+
+    def test_cuerpo_gigante_responde_413_sin_leerlo(self):
+        import socket
+        with socket.create_connection(self.proxy.server_address, timeout=5) as sock:
+            sock.sendall(b"POST /login HTTP/1.1\r\nHost: x\r\nContent-Length: 99999999999\r\n\r\nhola")
+            raw = sock.recv(4096)
+        self.assertTrue(raw.startswith(b"HTTP/1.1 413"), raw[:40])
 
     def test_el_jsonl_lo_lee_el_parser_del_nucleo(self):
         self._request("POST", "/rechazo", body=json.dumps({"citizenId": 7}),
