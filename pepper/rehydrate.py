@@ -493,7 +493,9 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
                                  capture_output=True, text=True).stdout
         return "FAILED", validations + [{"check": "la base responde", "result": "fail",
                                          "detail": "sin respuesta en 120 s · " + db_logs.strip()[-300:]}], missing
-    marker_sql = "select obj_description((select oid from pg_database where datname = current_database()), 'pg_database')"
+    # Los comentarios de una BASE viven en pg_shdescription: obj_description() no los ve (devolvía
+    # vacío y un restore correcto salía como "marca ausente").
+    marker_sql = "select shobj_description((select oid from pg_database where datname = current_database()), 'pg_database')"
     tables = _psql(out_dir, plan, "select count(*) from pg_tables where schemaname not in ('pg_catalog','information_schema')")
     marker = _psql(out_dir, plan, marker_sql)
     expected_marker = f"pepper:restored:{plan.dump_sha}"
