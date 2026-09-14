@@ -294,7 +294,7 @@ def _cmd_explore(args: argparse.Namespace) -> int:
     from pepper.observe import collect
     from pepper.profiles import load_profile
 
-    from pepper.explore import config_problems, outcome
+    from pepper.explore import CredentialsError, config_problems, outcome
 
     if not _re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", args.session) or ".." in args.session:
         print(f"pepper explore: --session {args.session!r} no es un identificador válido (letras, dígitos, _ . -)", file=sys.stderr)
@@ -349,7 +349,7 @@ def _cmd_explore(args: argparse.Namespace) -> int:
                     summary = explorer.walk(docker_compose=args.compose, submit=not args.no_submit)
             finally:
                 actions = [a.record() for a in explorer.actions]
-    except RuntimeError as error:
+    except CredentialsError as error:
         # Sin credenciales no se exploró nada: se dice y se para. Seguir a Correlate con
         # una sesión vacía escondería el fallo detrás de un "Siguiente".
         print(f"pepper explore: {error}", file=sys.stderr)

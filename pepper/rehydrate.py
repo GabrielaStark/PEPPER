@@ -233,7 +233,7 @@ def find_inputs(legacy_dir: Path) -> Tuple[Path, Path]:
     if not artifacts:
         raise Blocked(f"no hay desplegable (.war/.ear/.jar) en {legacy_dir}")
     if not dumps:
-        raise Blocked(f"no hay respaldo de la base (.dump/.backup/.sql) en {legacy_dir}")
+        raise Blocked(f"no hay respaldo de la base en {legacy_dir}: se necesita el formato custom de pg_dump (`pg_dump -Fc`, .dump/.backup)")
     return artifacts[0], dumps[0]
 
 

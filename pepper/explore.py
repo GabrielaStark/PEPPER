@@ -120,6 +120,10 @@ def plausible_value(field_id: str, label: str, input_type: str, hints: Dict[str,
     return None
 
 
+class CredentialsError(RuntimeError):
+    """No se pudo fijar ninguna credencial de prueba: sin eso no hay nada que explorar."""
+
+
 class Explorer:
     def __init__(self, config: Dict[str, Any], system_map: Dict[str, Any], out_dir: Path,
                  headless: bool = True, timeout_ms: int = DEFAULT_TIMEOUT_MS):
@@ -301,7 +305,7 @@ class Explorer:
                 error = result.stderr.strip()[:300]
                 self._write(Action(role="*", route="", kind="credentials", label="setup_sql", started=_now(),
                                    result="error", detail={"stderr": error}))
-                raise RuntimeError(f"credentials.setup_sql falló en la base desechable: {error}")
+                raise CredentialsError(f"credentials.setup_sql falló en la base desechable: {error}")
         ready: List[str] = []
         failures: List[str] = []
         for role in self.config.get("roles", []):
@@ -317,7 +321,7 @@ class Explorer:
                 self._write(Action(role=role["name"], route="", kind="credentials", started=_now(), result="error",
                                    detail={"stderr": error}))
         if not ready:
-            raise RuntimeError("ningún rol quedó con credencial en la base desechable; sin eso no hay nada que explorar. "
+            raise CredentialsError("ningún rol quedó con credencial en la base desechable; sin eso no hay nada que explorar. "
                                + " · ".join(failures[:3]))
         self.ready = ready
         return ready
