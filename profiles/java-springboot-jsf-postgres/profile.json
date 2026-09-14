@@ -31,7 +31,8 @@
       {
         "type": "extension",
         "pattern": "*.war",
-        "weight": 2
+        "weight": 2,
+        "required": true
       },
       {
         "type": "extension",

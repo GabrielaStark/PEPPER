@@ -125,6 +125,10 @@
                 "type": "string",
                 "description": "Glob o regex según el tipo, p. ej. 'pom.xml', '*.war', 'standalone*.xml'."
               },
+              "required": {
+                "type": "boolean",
+                "description": "La señal que DEFINE al stack: sin ella el perfil no aplica aunque las demás sumen el mínimo (un perfil de WAR no aplica a un sistema de JARs)."
+              },
               "file": {
                 "type": "string",
                 "description": "Para file_content: en qué archivo buscar."

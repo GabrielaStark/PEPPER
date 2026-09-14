@@ -41,6 +41,36 @@ class DetectTest(unittest.TestCase):
             results = detect(root)
             self.assertFalse(any(r["applicable"] for r in results))
 
+    def test_un_perfil_de_war_no_aplica_a_un_sistema_de_jars(self):
+        """Tres JARs y un dist comparten con un WAR casi todas las señales (pom.xml,
+        application.yml, jdbc:postgresql) y sumaban 8 sobre un mínimo de 4: el perfil
+        de WAR "aplicaba" a un sistema que no tiene ninguno, y rehydrate reventaba
+        después. La señal que define al stack va marcada `required`.
+        """
+        import zipfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("api-core.jar", "batch.jar"):
+                with zipfile.ZipFile(root / name, "w") as z:
+                    z.writestr("BOOT-INF/classes/application.yml",
+                               "spring:\n  datasource:\n    url: jdbc:postgresql://10.0.0.2:5432/negocio\n")
+                    z.writestr("BOOT-INF/classes/META-INF/maven/org/app/pom.xml",
+                               "<project><parent><artifactId>spring-boot-starter-parent</artifactId></parent></project>")
+            (root / "dist").mkdir()
+            (root / "dist" / "index.html").write_text("<html></html>", encoding="utf-8")
+            (root / "respaldo.dump").write_bytes(b"PGDMP")
+
+            results = detect(root)
+            for result in results:
+                self.assertFalse(result["applicable"],
+                                 f"{result['profile_id']} dice aplicar a un sistema sin WAR: {result}")
+            # el que sumaba de más era el de springboot: 8 sobre un mínimo de 4, sin un solo WAR.
+            [springboot] = [r for r in results if r["profile_id"] == "java-springboot-jsf-postgres"]
+            self.assertGreaterEqual(springboot["score"], springboot["min_score"],
+                                    "la prueba no vale si el puntaje no llegaba al mínimo")
+            self.assertEqual(springboot["missing_required"], ["extension '*.war'"], springboot)
+
     def test_tool_dirs_are_ignored_when_pepper_sits_on_top_of_the_repo(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

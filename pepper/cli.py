@@ -118,6 +118,8 @@ def _cmd_detect(args: argparse.Namespace) -> int:
     for result in results:
         mark = "✓" if result["applicable"] else "·"
         print(f"  {mark} {result['profile_id']} ({result['status']}) — puntaje {result['score']:g} / mínimo {result['min_score']:g}")
+        for missing in result.get("missing_required") or []:
+            print(f"      ✗ falta lo que define al stack: {missing} — el perfil NO aplica")
         for match in result["matches"]:
             print(f"      + {match['type']} {match['pattern']!r} → {match['hit']}  (+{match['weight']:g})")
     print()

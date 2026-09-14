@@ -5,19 +5,54 @@
   "version": "0.1.0",
   "status": "draft",
   "stack": {
-    "languages": ["java"],
-    "frameworks": ["java-ee"],
-    "servers": ["wildfly"],
-    "databases": ["postgresql"]
+    "languages": [
+      "java"
+    ],
+    "frameworks": [
+      "java-ee"
+    ],
+    "servers": [
+      "wildfly"
+    ],
+    "databases": [
+      "postgresql"
+    ]
   },
   "detection": {
     "signals": [
-      { "type": "extension", "pattern": "*.war", "weight": 2 },
-      { "type": "file_exists", "pattern": "pom.xml", "weight": 1 },
-      { "type": "file_exists", "pattern": "standalone*.xml", "weight": 3 },
-      { "type": "file_content", "file": "standalone*.xml", "pattern": "urn:jboss:domain", "weight": 3 },
-      { "type": "file_content", "file": "**/*.properties", "pattern": "jdbc:postgresql", "weight": 2 },
-      { "type": "extension", "pattern": "*.dump", "weight": 1 }
+      {
+        "type": "extension",
+        "pattern": "*.war",
+        "weight": 2
+      },
+      {
+        "type": "file_exists",
+        "pattern": "pom.xml",
+        "weight": 1
+      },
+      {
+        "type": "file_exists",
+        "pattern": "standalone*.xml",
+        "weight": 3
+      },
+      {
+        "type": "file_content",
+        "file": "standalone*.xml",
+        "pattern": "urn:jboss:domain",
+        "weight": 3,
+        "required": true
+      },
+      {
+        "type": "file_content",
+        "file": "**/*.properties",
+        "pattern": "jdbc:postgresql",
+        "weight": 2
+      },
+      {
+        "type": "extension",
+        "pattern": "*.dump",
+        "weight": 1
+      }
     ],
     "min_score": 4
   },
@@ -61,12 +96,24 @@
     }
   ],
   "validation": [
-    { "check": "contenedores de WildFly y PostgreSQL en ejecución" },
-    { "check": "deployment del WAR en estado OK (sin *.failed en deployments)" },
-    { "check": "base de datos restaurada y aceptando conexiones" },
-    { "check": "datasource operativo (test-connection-in-pool exitoso)" },
-    { "check": "endpoint raíz de la aplicación responde a través del proxy" },
-    { "check": "sin ERROR/FATAL en server.log durante el arranque" }
+    {
+      "check": "contenedores de WildFly y PostgreSQL en ejecución"
+    },
+    {
+      "check": "deployment del WAR en estado OK (sin *.failed en deployments)"
+    },
+    {
+      "check": "base de datos restaurada y aceptando conexiones"
+    },
+    {
+      "check": "datasource operativo (test-connection-in-pool exitoso)"
+    },
+    {
+      "check": "endpoint raíz de la aplicación responde a través del proxy"
+    },
+    {
+      "check": "sin ERROR/FATAL en server.log durante el arranque"
+    }
   ],
   "notes": "Parsers probados contra la evidencia sintética de examples/legacy-demo. Falta: compose.template.yml y ejecutar la receta de rehydrate contra el legacy-demo real. Al validarse, cambiar status a validated."
 }

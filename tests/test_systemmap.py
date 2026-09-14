@@ -270,6 +270,23 @@ class SystemMapTest(unittest.TestCase):
             self.skipTest("jsonschema no instalado")
         self.assertEqual(errors, [], errors)
 
+    def test_cero_clases_donde_el_perfil_busca_es_hueco_no_mapa_completo(self):
+        """Con `class_root` apuntando a donde no están las clases (el caso real: un perfil
+        de WAR —`WEB-INF/classes`— aplicado a un fat JAR de Spring Boot —`BOOT-INF/classes`—)
+        el mapa salía con 0 clases, 0 pantallas y 0 rutas… y se declaraba COMPLETO.
+        """
+        import copy
+
+        extractors = copy.deepcopy(EXTRACTORS)
+        for spec in extractors:
+            if "class_root" in spec:
+                spec["class_root"] = "NO-EXISTE/classes"
+        mapa = self._map(extractors=extractors)
+        self.assertFalse(mapa["complete"], "un mapa que no leyó una sola clase no está completo")
+        huecos = " ".join(mapa["coverage_gaps"])
+        self.assertIn("NO-EXISTE/classes", huecos)
+        self.assertIn("BOOT-INF/classes", huecos, "el hueco debe decir dónde SÍ estarían")
+
     def test_superficie_sin_extractor_es_hueco_declarado(self):
         m = self._map(extractors=EXTRACTORS[:1])
         self.assertFalse(m["complete"])

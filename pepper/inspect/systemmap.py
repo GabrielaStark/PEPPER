@@ -396,12 +396,28 @@ def _extract_jvm_routes(artifact: Path, spec: Dict[str, Any], report: "MapReport
     with tempfile.TemporaryDirectory() as tmp:
         classes = _class_names(artifact, spec.get("class_root", "WEB-INF/classes"),
                                spec.get("package_prefixes", []), False, Path(tmp))
+        if _report_no_classes("jvm_route_annotations", classes, spec.get("class_root", "WEB-INF/classes"), artifact, report):
+            return
         outputs = _javap_batches(javap, classes, ["-p", "-v"])
         _report_unreadable("jvm_route_annotations", classes, outputs, report)
         for fqn, _ in classes:
             out = outputs.get(fqn)
             if out:
                 _parse_javap(out, fqn.split(".")[-1], report, spec.get("job_signatures") or {})
+
+
+def _report_no_classes(mechanism: str, classes, class_root: str, artifact: Path, report: "MapReport") -> bool:
+    """Cero clases bajo `class_root` no es "este sistema no tiene clases": es que el perfil
+    busca donde no están. Un WAR las guarda en `WEB-INF/classes`; un fat JAR de Spring Boot,
+    en `BOOT-INF/classes`. Con el perfil equivocado el mapa salía con 0 clases, 0 pantallas y
+    0 rutas — y se declaraba COMPLETO (auditoría 2026-09-14, segundo stack). Es un hueco.
+    """
+    if classes:
+        return False
+    report.gap(f"{mechanism}: ninguna clase bajo '{class_root}' en {artifact.name}. El perfil busca ahí y el "
+               f"artefacto no las tiene: un WAR usa 'WEB-INF/classes' y un fat JAR de Spring Boot "
+               f"'BOOT-INF/classes'. Corrige `extractors.class_root` del perfil o usa el perfil del stack correcto")
+    return True
 
 
 def _report_unreadable(mechanism: str, classes, outputs: Dict[str, str], report: "MapReport") -> None:
@@ -490,6 +506,8 @@ def _extract_jvm_classes(artifact: Path, spec: Dict[str, Any], report: "MapRepor
     with tempfile.TemporaryDirectory() as tmp:
         classes = _class_names(artifact, spec.get("class_root", "WEB-INF/classes"),
                                spec.get("package_prefixes", []), bool(spec.get("include_own_libs", True)), Path(tmp))
+        if _report_no_classes("jvm_class_inventory", classes, spec.get("class_root", "WEB-INF/classes"), artifact, report):
+            return
         outputs = _javap_batches(javap, classes, ["-p", "-c", "-constants"])
         _report_unreadable("jvm_class_inventory", classes, outputs, report)
         for fqn, _ in classes:

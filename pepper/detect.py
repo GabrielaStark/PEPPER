@@ -128,6 +128,7 @@ def evaluate(profile: Profile, root: Path, entries: List[Path],
         archives = _archives(entries, root)
     score = 0.0
     matches: List[Dict[str, Any]] = []
+    missing: List[str] = []
     for signal in detection.get("signals", []):
         kind, pattern, weight = signal["type"], signal["pattern"], signal.get("weight", 1)
         hit: Optional[str] = None
@@ -149,6 +150,13 @@ def evaluate(profile: Profile, root: Path, entries: List[Path],
                     break
             if hit is None:
                 hit = _member_hit(archives, pattern, regex, signal.get("file", "*"))
+        if hit is None:
+            # `required`: la señal que DEFINE al stack. Sin ella el perfil no aplica por mucho
+            # que sumen las demás — un perfil de WAR no es un sistema de tres JARs porque ambos
+            # traigan pom.xml y jdbc:postgresql (auditoría 2026-09-14, segundo stack).
+            if signal.get("required"):
+                missing.append(f"{kind} {pattern!r}")
+            continue
         if hit is not None:
             score += weight
             matches.append({
@@ -166,7 +174,8 @@ def evaluate(profile: Profile, root: Path, entries: List[Path],
         "status": profile.status,
         "score": score,
         "min_score": min_score,
-        "applicable": score >= min_score,
+        "applicable": score >= min_score and not missing,
+        "missing_required": missing,
         "matches": matches,
     }
 
