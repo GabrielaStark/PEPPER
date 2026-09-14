@@ -15,7 +15,7 @@ python3 -m pepper isolate pepper-out/rehydrate/docker-compose.yml --hosts "<host
 
 ## La ventana
 
-1. Dile a la persona por dónde entrar (`http://127.0.0.1:18080`, con qué usuario: `docs/pepper/explore.json` trae uno por rol con la contraseña de prueba) y tres cosas: un flujo a la vez; que provoque al menos un rechazo (un campo vacío, un dato imposible); que diga "terminé" y nada más. Una pantalla en blanco es un recurso externo bloqueado por el ingress: es hallazgo, no fallo.
+1. Dile a la persona por dónde entrar (`http://127.0.0.1:18080`, con qué usuario: `pepper-out/explore.json` trae uno por rol con la contraseña de prueba; si no existe, fíjala tú en la base desechable como dice `/pepper` paso 3) y tres cosas: un flujo a la vez; que provoque al menos un rechazo (un campo vacío, un dato imposible); que diga "terminé" y nada más. Una pantalla en blanco es un recurso externo bloqueado por el ingress: es hallazgo, no fallo.
 2. Marca el inicio (`date` con zona). No generes tráfico mientras la ventana esté abierta.
 3. Cuando diga que terminó, espera a que el stdout del ingress lleve ~10 s sin peticiones y marca el fin.
 4. Captura:

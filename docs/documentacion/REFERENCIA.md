@@ -82,5 +82,5 @@ Pasos: `login`, `goto`, `fill` (selector → valor), `select` (id del selectOneM
 - **Documento funcional** (`funcional.md/json`): el entregable — qué hace el sistema, 12 secciones fijas, cada afirmación con su origen; del sistema, acumulado sesión a sesión.
 - **Origen**: `observado` (se vio ejecutar), `en_codigo`, `en_base`, `en_datos`, `en_config`, `en_doc`, `humano`. **Confianza**: `confirmada` (observado + código/base), `sustentada`, `inferida`, `contradicha`, `desconocida`.
 - **Perfil**: todo el conocimiento de un stack como datos (`profiles/<id>/`): detección, extractores del mapa, receta de rehydrate, colectores, parsers, lectura de formularios. `draft` o `validated`.
-- **Escalón**: 1 = hay perfil → todo automático; 2 = sin perfil pero el sistema corre en otro lado → `/pepper-observe` con colectores genéricos; 3 = ni corre → borrador de perfil y `BLOCKED`.
+- **Escalón**: 1 = hay perfil (`draft` o `validated`; el estado se declara en la salida) → todo automático; 2 = sin perfil pero el sistema corre en otro lado → `/pepper-observe` con colectores genéricos; 3 = ni corre → borrador de perfil y `BLOCKED`.
 - **Procedencia (stark)**: `confirmada` / `inferida` / `en-duda`. PEPPER entrega como máximo `inferida`; solo una persona con nombre confirma.

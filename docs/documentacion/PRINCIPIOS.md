@@ -66,9 +66,12 @@ que el artefacto ya dice.
 
 ## 9. El humano decide qué se convierte en conocimiento
 
-PEPPER observa y estructura; el agente interpreta; cada fase termina en un gate
-humano. Lo que PEPPER entrega a stark entra como `inferida` o como pregunta
-abierta — solo una persona con nombre promueve una regla a `confirmada`.
+PEPPER observa y estructura; el agente interpreta. La herramienta corre sin
+preguntar y se detiene solo donde una persona debe decidir: aislamiento en
+rojo, insumo faltante, perfil nuevo en borrador, el envío de datos a un modelo
+remoto (una vez), un documento rechazado por Export. Lo que PEPPER entrega a
+stark entra como `inferida` o como pregunta abierta — solo una persona con
+nombre promueve una regla a `confirmada`.
 
 ## El principio que aplica a PEPPER mismo
 

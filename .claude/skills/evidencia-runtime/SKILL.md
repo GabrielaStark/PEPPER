@@ -22,7 +22,7 @@ La secuencia es obligatoria y en ese orden. Nunca al revés: "ya sé lo que hace
 
 Una conclusión sin evidencia señalable no es una conclusión: es una hipótesis y va a desconocidos.
 
-- En Discover: cada regla, paso, consulta, dependencia o contradicción cita IDs `E-…` que resuelven a un evento de `events.jsonl` o a una línea cruda (`raw_ref` = `archivo:línea`). `pepper export` rechaza lo que no resuelve.
+- En Discover: cada afirmación de `funcional.json` cita fuentes tipadas (`S-…`: `observado` con su `E-…` o `raw_ref`, `en_base`/`en_datos`/`en_codigo` con `map:` o `legacy/<ruta>[:línea]`, `en_config`, `en_doc`, `humano`); `funcional.md` las cita por tipo (`[observado]`, `[base]`, `[código]`…). `pepper export` rechaza lo que no resuelve.
 - En Inspect: cada afirmación sobre el stack cita el archivo que la evidencia (`pom.xml`, `standalone.xml:42`, el manifest del WAR).
 - En Rehydrate: cada validación dice qué comprobó y qué respondió el sistema.
 
@@ -30,13 +30,15 @@ La forma: *"El sistema parece validar el estado del ciudadano antes de guardar (
 
 ## 3. Vocabulario de confianza (cerrado)
 
+Es el del contrato `schemas/functional-discovery.schema.json`; Export rechaza cualquier otro:
+
 | Confianza | Significa |
 |---|---|
-| `confirmada` | runtime, código y documentación coinciden, sin contradicción |
-| `fuertemente_sustentada` | el runtime lo muestra y el código lo explica; la documentación calla o no existe |
-| `candidata` | hay rastro observable, pero incompleto o de una sola fuente |
-| `desconocida` | no se puede determinar con la evidencia disponible |
+| `confirmada` | dos fuentes independientes coinciden (p. ej. se vio ejecutar **y** la base o el código lo definen) |
+| `sustentada` | una fuente firme la sostiene: se vio ejecutar, o la base la impone (trigger, constraint), o el código la implementa con los datos reales de acuerdo |
+| `inferida` | solo el código o solo la documentación lo dicen; no se vio ejecutar |
 | `contradicha` | una fuente afirma algo que otra desmiente |
+| `desconocida` | no se puede determinar con la evidencia disponible |
 
 Las reglas se formulan con cautela: *"el sistema parece…"*. PEPPER nunca afirma "descubrí todas las reglas de negocio": una regla solo se descubre dinámicamente si dejó rastro observable. La salida correcta es **flujos observados y reglas candidatas respaldadas por evidencia de ejecución**.
 
@@ -44,12 +46,12 @@ Las reglas se formulan con cautela: *"el sistema parece…"*. PEPPER nunca afirm
 
 stark clasifica reglas por procedencia: `confirmada` (una persona con nombre respondió por ella), `inferida` (solo el código la respalda), `en-duda`. **PEPPER aporta evidencia, no personas**: nada de lo que produce puede entrar a stark como `confirmada`.
 
-| PEPPER | stark (`REGLAS_DE_NEGOCIO.md`) |
+| PEPPER | stark (reglas de negocio) |
 |---|---|
-| `confirmada`, `fuertemente_sustentada` | `inferida` — respaldada por código **y** runtime; solo una persona identificada la promueve |
-| `candidata` | `inferida` con nota de confianza baja, o pregunta abierta (sección 11) |
-| `contradicha` | `en-duda` + contradicción en la sección 11 |
-| `desconocida` | pregunta abierta en la sección 11 |
+| `confirmada`, `sustentada` | `inferida` — respaldada por evidencia; solo una persona identificada la promueve |
+| `inferida` | `inferida` con nota de confianza baja, o pregunta abierta |
+| `contradicha` | `en-duda` + la contradicción como pregunta abierta |
+| `desconocida` | pregunta abierta |
 
 ## 4. Lo desconocido se declara, no se omite
 
@@ -95,11 +97,11 @@ Lo que el artefacto **no** trae (un servicio externo, un bus institucional, un s
 
 ## 10. El humano decide qué se convierte en conocimiento
 
-PEPPER observa y estructura. El agente interpreta. Cada fase termina en un gate humano ✋: el humano confirma el stack, aprueba el plan de reconstrucción antes de ejecutarlo, ejecuta el flujo observado, revisa la correlación y decide qué del discovery entra a stark. El agente nunca se auto-aprueba ni promueve confianzas.
+PEPPER observa y estructura. El agente interpreta. La herramienta corre sin preguntar (`/pepper`) y se detiene solo donde una persona debe decidir: aislamiento en rojo, insumo faltante, perfil nuevo en borrador, el envío de datos a un modelo remoto (una vez, y queda escrito en `pepper-out/data-boundary.json`), o un documento rechazado por Export. El humano decide qué del documento entra a stark. El agente nunca se auto-aprueba ni promueve confianzas.
 
 ## Checklist — aplica a cualquier entregable de PEPPER
 
-- [ ] Toda afirmación cita evidencia (ID de evento, `raw_ref` o `archivo:línea`).
+- [ ] Toda afirmación cita una fuente tipada que Export puede resolver (`observado` con `E-…`/`raw_ref`, `map:`, `legacy/<ruta>`).
 - [ ] Las confianzas usan solo el vocabulario cerrado y las reglas van con "parece".
 - [ ] Hay una sección de desconocidos, con contenido o con "Sin desconocidos" explícito.
 - [ ] Las preguntas abiertas están en comportamiento observable, no en términos de código.

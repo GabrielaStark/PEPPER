@@ -94,7 +94,7 @@ Inspect encuentra un stack sin perfil
   → si funciona, status "validated" → habilita el escalón 1 para el siguiente legacy con ese stack
 ```
 
-Un perfil `draft` **nunca corre sin supervisión**. Un perfil `validated` ha demostrado levantar y observar al menos un legacy real.
+Un perfil `draft` corre, y el resultado lo declara como borrador. Un perfil `validated` ha demostrado levantar y explorar al menos un legacy real y una persona lo marcó.
 
 ## 6. Reglas
 

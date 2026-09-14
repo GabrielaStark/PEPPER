@@ -136,7 +136,7 @@ def _cmd_detect(args: argparse.Namespace) -> int:
         if best["status"] == "validated":
             print(f"Perfil aplicable y validado: {best['profile_id']} → escalón 1.")
         else:
-            print(f"Perfil aplicable pero en borrador: {best['profile_id']} → úsalo solo con supervisión humana.")
+            print(f"Perfil aplicable, en borrador: {best['profile_id']} → corre igual; environment.json y funcional.md lo declaran como borrador.")
     return 0
 
 
@@ -652,6 +652,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         return COMMANDS[args.command](args)
     except (FileNotFoundError, ValueError, FileExistsError) as error:
+        if isinstance(error, FileNotFoundError) and getattr(error, "filename", None) in ("docker", "javap", "pg_restore"):
+            print(f"pepper {args.command}: no encuentro `{error.filename}` en el PATH. "
+                  + ("Instala Docker Desktop y ábrelo; sin Docker no hay aislamiento, levantar ni explorar." if error.filename == "docker"
+                     else f"Instálalo o pon su ruta en el PATH."), file=sys.stderr)
+            return 2
         print(f"pepper {args.command}: {error}", file=sys.stderr)
         return 2
 

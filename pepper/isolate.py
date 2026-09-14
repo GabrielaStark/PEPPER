@@ -699,7 +699,9 @@ def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
         elif line.startswith("["):
             containers.extend(json.loads(line))
     if not containers:
-        report.add("error", "no hay contenedores en ejecución para este compose",
+        # Sin contenedores no hay fuga que demostrar ni verde que dar: NO VERIFICADO
+        # (bloquea igual, pero no dice "el entorno puede alcanzar producción" de un entorno apagado).
+        report.add("unknown", "no hay contenedores en ejecución para este compose",
                    "no hay nada que verificar: levanta el entorno y repite — el verde vivo exige el entorno arriba")
         return report
 

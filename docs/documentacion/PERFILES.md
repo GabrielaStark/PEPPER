@@ -44,7 +44,7 @@ el siguiente legacy con ese stack cae en el escalón 1
 ## Reglas
 
 1. **Un perfil nunca modifica el núcleo.** Si un stack nuevo "necesita" tocar el correlacionador o el mapa, el diseño del núcleo está mal y se corrige ahí, de forma genérica.
-2. **Un perfil `draft` nunca corre sin supervisión.** Solo los `validated` habilitan el escalón 1 automatizado.
+2. **Un perfil `draft` corre igual, y se declara.** `/pepper` lo usa sin manos; `environment.json` y `funcional.md` dicen que el perfil es un borrador, para que quien lea el documento sepa con qué cuidado leerlo. Lo promueve a `validated` una persona cuando lo vio correr de punta a punta contra un legacy real.
 3. **Fidelidad primero**: la receta reproduce las versiones originales del stack, no las moderniza.
 4. **Sin perfil no hay bloqueo total**: aplican los colectores genéricos (escalón 2) o la inspección con reporte de faltantes (escalón 3).
 

@@ -12,8 +12,9 @@ dependencies = [
 [project.optional-dependencies]
 explore = ["playwright>=1.50"]
 
-[project.scripts]
-pepper = "pepper.cli:main"
+# Sin entrypoint instalable: el núcleo lee `schemas/`, `profiles/` y `examples/` del clon,
+# así que se usa desde ahí con `python3 -m pepper` (README). Un `pip install .` dejaría un
+# ejecutable que no encuentra sus perfiles.
 
 [build-system]
 requires = ["setuptools>=61"]

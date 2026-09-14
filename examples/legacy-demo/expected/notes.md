@@ -82,7 +82,7 @@ Las 4 líneas `DETAIL` de PostgreSQL no cuentan como eventos: se fusionan en la 
 La salida de un agente **no** se compara byte a byte con la referencia (dos agentes redactan distinto). Se compara estructuralmente:
 
 1. ¿La regla del estado `ACTIVE` aparece con confianza alta y evidencia que incluye el rechazo?
-2. ¿La afirmación del correo aparece en `contradictions` y **no** en `candidate_rules` ni en `dependencies`?
+2. ¿La afirmación del correo aparece en `contradictions` y **no** en `rules` ni en `integrations`?
 3. ¿La rama de nacionalidad extranjera aparece en `unknowns` y **no** entre los pasos observados?
 4. ¿Los cuatro tipos de query aparecen con las tablas correctas?
 5. ¿Toda referencia de evidencia resuelve?

@@ -4,7 +4,7 @@ Le das un binario y un respaldo; te entrega **qué hace el sistema**. El porqué
 
 ## 1. Instala
 
-Clona PEPPER con el nombre de tu proyecto y abre Claude Code **en esa carpeta** (los comandos `/pepper*` se cargan de `.claude/commands/` de la raíz). Requisitos: `python3` 3.9+, `pip install -r requirements-dev.txt` (jsonschema, playwright), `python3 -m playwright install chromium`, Docker con Compose v2, JDK (`javap`).
+Clona PEPPER con el nombre de tu proyecto y abre Claude Code **en esa carpeta** (solo Claude Code por ahora; con Codex no está probado) (los comandos `/pepper*` se cargan de `.claude/commands/` de la raíz). Requisitos: `python3` 3.9+, `pip install -r requirements-dev.txt` (jsonschema, playwright), `python3 -m playwright install chromium`, Docker con Compose v2, JDK (`javap`).
 
 ```bash
 git clone https://github.com/GabrielaStark/PEPPER.git mi-legacy && cd mi-legacy
@@ -13,7 +13,7 @@ pip install -r requirements-dev.txt && python3 -m playwright install chromium
 
 ## 2. Pon los artefactos
 
-La carpeta no viene en el clon (git no versiona carpetas vacías): `mkdir -p legacy`. Adentro: el desplegable (WAR/JAR/EAR), el respaldo de la base (formato custom de `pg_dump`) y, si sabes algo, `legacy/NOTAS.md` (una línea como "producción es WildFly 21" ahorra una desviación). Nada más. `legacy/`, `evidence/` y `pepper-out/` no se versionan nunca.
+La carpeta no viene en el clon (git no versiona carpetas vacías): `mkdir -p legacy`. Adentro: el desplegable (hoy con perfil: **WAR** de Java; un JAR ejecutable aún no se detecta), el respaldo de la base (formato custom de `pg_dump`, `-Fc`) y, si sabes algo, `legacy/NOTAS.md` (una línea como "producción es WildFly 21" ahorra una desviación). Nada más. `legacy/`, `evidence/` y `pepper-out/` no se versionan nunca.
 
 ## 3. Corre
 
@@ -30,7 +30,7 @@ Eso es todo. En orden, y sin preguntarte nada salvo que se atore:
 | explorar | entra con cada rol, abre cada pantalla, intenta guardar en vacío (rechazos), llena y guarda, fotografía; después recorre con planes los flujos encadenados | `evidence/explore-*/` |
 | descubrir | correlaciona lo observado con el mapa y escribe el documento | **`docs/pepper/funcional.md`** |
 
-Tarda: el mapa segundos, levantar cerca de un minuto, **explorar unos diez minutos** (seis roles por diecinueve pantallas en el primer legacy real), descubrir varios más. Se detiene solo en dos casos: el aislamiento no está en verde (no se levanta ni se explora nada) o falta un insumo (`BLOCKED` con la lista de qué conseguir). Un perfil nuevo (stack sin perfil) también se detiene: el borrador lo revisa una persona.
+Tarda: el mapa segundos, levantar cerca de un minuto, **explorar unos diez minutos** (seis roles por diecinueve rutas del enrutador en el primer legacy real; las «pantallas» del mapa son más, porque cuenta diálogos y pasos), descubrir varios más. Se detiene en: aislamiento en rojo (no se levanta ni se explora nada); falta un insumo (`BLOCKED` con la lista de qué conseguir); stack sin perfil (deja el borrador para que lo revises); **una vez**, para preguntarte si el paquete con datos del legacy puede ir al modelo remoto — la respuesta se guarda en `pepper-out/data-boundary.json`; y si Export rechaza el documento (lo corrige el agente).
 
 `/pepper mapa|levantar|explorar|descubrir` retoma desde una fase.
 
