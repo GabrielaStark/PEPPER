@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from pepper.correlate.parsers import ExplorerParser  # noqa: E402
-from pepper.explore import operator_note, plausible_value, write_session  # noqa: E402
+from pepper.explore import config_problems, operator_note, outcome, plausible_value, write_session  # noqa: E402
 from pepper.session import Session  # noqa: E402
 
 
@@ -55,6 +55,38 @@ class SessionNoteTest(unittest.TestCase):
             self.assertEqual(validate_instance(session, "session"), [])
 
 
+class SalidaHonestaTest(unittest.TestCase):
+    """explore salía con 0 con cero trabajo (logins rechazados, 0 pantallas, plan sin un ok, sin http.jsonl)."""
+
+    def test_config_incompleto_se_dice_antes_de_arrancar(self):
+        self.assertEqual(config_problems({"base_url": "http://127.0.0.1:18080", "login": {"route": "/login", "user_field": "#u",
+                                          "password_field": "#p", "submit": "#b"}, "roles": [{"name": "A", "user": "u", "password": "p"}]}), [])
+        problems = config_problems({"login": {"route": "/login"}, "roles": [{"name": "A"}], "credentials": {"sql": "x"}})
+        self.assertTrue(any("base_url" in p for p in problems))
+        self.assertTrue(any("login.submit" in p for p in problems))
+        self.assertTrue(any("rol incompleto" in p for p in problems))
+        self.assertTrue(any("db_name" in p for p in problems))
+
+    def test_sin_ningun_rol_dentro_no_es_exito(self):
+        code, why = outcome({"roles": {"A": "login rechazado", "B": "sin credencial"}, "routes": 19}, [], ["http.jsonl"])
+        self.assertEqual(code, 1); self.assertIn("ningún rol entró", why)
+
+    def test_recorrido_real_es_exito_solo_con_http_jsonl(self):
+        summary = {"roles": {"A": "19/19 pantallas, 6 rechazos provocados"}, "routes": 19}
+        actions = [{"kind": "screen", "result": "ok"}]
+        self.assertEqual(outcome(summary, actions, ["explore.jsonl", "http.jsonl"]), (0, ""))
+        code, why = outcome(summary, actions, ["explore.jsonl"])
+        self.assertEqual(code, 1); self.assertIn("http.jsonl", why)
+
+    def test_plan_sin_un_solo_ok_falla(self):
+        self.assertEqual(outcome({"steps": 5, "ok": 0, "failed": 5}, [], ["http.jsonl"])[0], 1)
+        self.assertEqual(outcome({"steps": 5, "ok": 3, "failed": 2}, [], ["http.jsonl"])[0], 0)
+
+    def test_error_o_interrupcion_no_es_exito(self):
+        self.assertEqual(outcome({"error": "TimeoutError: x"}, [], ["http.jsonl"])[0], 1)
+        self.assertEqual(outcome({"roles": {"A": "19/19 pantallas"}, "interrupted": "sí"}, [{"kind": "screen", "result": "ok"}], ["http.jsonl"])[0], 1)
+
+
 class CredencialesTest(unittest.TestCase):
     """Sin credencial no hay nada que explorar: el fallo es fatal, no una nota al pie.
 
@@ -84,12 +116,28 @@ class CredencialesTest(unittest.TestCase):
             ready = ex.grant_credentials(Path("/x/docker-compose.yml"))
         return ready, calls
 
+    def test_la_clave_no_queda_en_el_log_de_la_base_ni_en_el_error(self):
+        ex = self._explorer({"db_name": "d", "sql": "UPDATE u SET p = crypt('{password}') WHERE k = '{user}'"})
+        ex.config["roles"] = [{"name": "ADMIN", "user": "u1", "password": "Clave-XYZ"}]
+        def responder(sql):
+            return (1, "ERROR:  syntax error\nLINE 1: UPDATE u SET p = crypt('Clave-XYZ') WHERE k = 'u1'\n        ^") if "u1" in sql else (0, "")
+        with self.assertRaises(RuntimeError) as raised:
+            _, calls = self._run(ex, responder)
+        self.assertNotIn("Clave-XYZ", str(raised.exception))
+        self.assertNotIn("Clave-XYZ", ex.actions[0].detail.get("stderr", ""))
+        self.assertNotIn("LINE 1", ex.actions[0].detail.get("stderr", ""))
+
+    def test_cada_sql_apaga_el_log_de_sentencias_en_su_sesion(self):
+        ex = self._explorer({"db_name": "d", "sql": "UPDATE u SET p = 1 WHERE k = '{user}'"})
+        _, calls = self._run(ex, lambda sql: (0, ""))
+        self.assertTrue(all(c.startswith("SET log_statement = 'none'; ") for c in calls), calls)
+
     def test_setup_sql_corre_una_vez_antes_de_los_roles(self):
         ex = self._explorer({"db_name": "d", "setup_sql": "CREATE EXTENSION IF NOT EXISTS pgcrypto",
                              "sql": "UPDATE u SET p = crypt('{password}') WHERE k = '{user}'"})
         ready, calls = self._run(ex, lambda sql: (0, ""))
         self.assertEqual(ready, ["ADMIN", "CONSULTAS"])
-        self.assertEqual(calls[0], "CREATE EXTENSION IF NOT EXISTS pgcrypto")
+        self.assertEqual(calls[0], "SET log_statement = 'none'; CREATE EXTENSION IF NOT EXISTS pgcrypto")
         self.assertEqual(len(calls), 3)
         self.assertIn("k = 'u1'", calls[1])
 
@@ -103,7 +151,7 @@ class CredencialesTest(unittest.TestCase):
     def test_si_falla_el_setup_se_para_antes_de_los_roles(self):
         ex = self._explorer({"db_name": "d", "setup_sql": "CREATE EXTENSION nada", "sql": "UPDATE u SET p = 1 WHERE k = '{user}'"})
         with self.assertRaises(RuntimeError) as raised:
-            self._run(ex, lambda sql: (1, "ERROR:  extension nada") if sql.startswith("CREATE") else (0, ""))
+            self._run(ex, lambda sql: (1, "ERROR:  extension nada") if "CREATE EXTENSION" in sql else (0, ""))
         self.assertIn("setup_sql", str(raised.exception))
         self.assertEqual(len(ex.actions), 1)
 

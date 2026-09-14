@@ -255,7 +255,7 @@ def _cmd_rehydrate(args: argparse.Namespace) -> int:
         args.docs.mkdir(parents=True, exist_ok=True)
         (args.docs / "environment.json").write_text(json.dumps({
             "schema_version": "0.1.0", "status": "BLOCKED", "profile_id": profile.id, "support_tier": 1,
-            "components": [], "validations": [], "missing_evidence": [{"missing": str(error)}], "notes": []},
+            "components": [], "validations": [], "missing_evidence": [{"missing": str(error)}], "notes": ""},
             ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return 1
     print(f"rehydrate · plan · {plan.artifact.name} + {plan.dump.name} · perfil de configuración '{plan.spring_profile}'")
@@ -270,7 +270,12 @@ def _cmd_rehydrate(args: argparse.Namespace) -> int:
     if not args.up:
         print(f"  siguiente: {_invocation()} rehydrate {args.legacy} --profile {profile.id} --up   (o revisa el compose primero)")
         return 0
-    status, validations, missing = bring_up(plan, profile, args.out, wait_s=args.wait)
+    try:
+        status, validations, missing = bring_up(plan, profile, args.out, wait_s=args.wait)
+    except KeyboardInterrupt:
+        status, validations, missing = "FAILED", [{"check": "levantar", "result": "fail", "detail": "interrumpido por el humano"}], []
+    except Exception as error:  # noqa: BLE001 — un traceback aquí dejaba environment.json viejo con READY
+        status, validations, missing = "FAILED", [{"check": "levantar", "result": "fail", "detail": f"{type(error).__name__}: {str(error)[:300]}"}], []
     env_path, val_path = write_environment(plan, profile, status, validations, missing, args.docs, args.out)
     for v in validations:
         print(f"  {'✓' if v['result'] == 'pass' else '✗'} {v['check']}: {v.get('detail', '')[:120]}")
@@ -289,8 +294,20 @@ def _cmd_explore(args: argparse.Namespace) -> int:
     from pepper.observe import collect
     from pepper.profiles import load_profile
 
+    from pepper.explore import config_problems, outcome
+
+    if not _re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", args.session) or ".." in args.session:
+        print(f"pepper explore: --session {args.session!r} no es un identificador válido (letras, dígitos, _ . -)", file=sys.stderr)
+        return 2
     config = _json.loads(args.config.read_text(encoding="utf-8"))
+    problems = config_problems(config)
+    if problems:
+        print(f"pepper explore: {args.config} incompleto — " + "; ".join(problems), file=sys.stderr)
+        return 2
     system_map = _json.loads(args.map.read_text(encoding="utf-8")) if args.map else {"entrypoints": []}
+    if not args.plan and not any(e.get("method", "GET") in ("GET", "") for e in system_map.get("entrypoints", [])):
+        print("pepper explore: el mapa no trae rutas GET que recorrer; pasa --map docs/pepper/system-map.json", file=sys.stderr)
+        return 2
     out_dir = args.out / args.session
     if out_dir.exists() and any(out_dir.iterdir()):
         print(f"pepper explore: evidence/{args.session} ya existe; usa otro --session", file=sys.stderr)
@@ -313,22 +330,42 @@ def _cmd_explore(args: argparse.Namespace) -> int:
     print(f"explore · aislamiento verificado en vivo ({len([f for f in report.findings if f.level == 'ok'])} comprobaciones)")
 
     plan = _json.loads(args.plan.read_text(encoding="utf-8")) if args.plan else None
+    kind = f"plan ({args.plan.name})" if plan else "recorrido automático por rol y pantalla"
+    actions: List[Dict] = []
+    summary: Dict = {}
     started = datetime.now().astimezone()
     try:
         with Explorer(config, system_map, out_dir, headless=not args.headed) as explorer:
-            if plan:
-                summary = explorer.run_plan(plan, docker_compose=args.compose)
-                kind = f"plan ({args.plan.name})"
-            else:
-                summary = explorer.walk(docker_compose=args.compose, submit=not args.no_submit)
-                kind = "recorrido automático por rol y pantalla"
-            actions = [a.record() for a in explorer.actions]
+            # Las credenciales se fijan ANTES de abrir la ventana: el UPDATE con la clave de
+            # prueba no debe caer dentro de lo que se captura.
+            explorer.grant_credentials(args.compose)
+            started = datetime.now().astimezone()
+            if args.budget:
+                explorer.deadline = _time.time() + args.budget
+            try:
+                if plan:
+                    summary = explorer.run_plan(plan, docker_compose=args.compose)
+                else:
+                    summary = explorer.walk(docker_compose=args.compose, submit=not args.no_submit)
+            finally:
+                actions = [a.record() for a in explorer.actions]
     except RuntimeError as error:
         # Sin credenciales no se exploró nada: se dice y se para. Seguir a Correlate con
         # una sesión vacía escondería el fallo detrás de un "Siguiente".
         print(f"pepper explore: {error}", file=sys.stderr)
-        print(f"  lo registrado quedó en {out_dir}/explore.jsonl; corrige docs/pepper/explore.json (credentials.setup_sql / sql) y repite", file=sys.stderr)
+        if "laywright" in str(error):
+            print("  instala el navegador: pip install playwright && python3 -m playwright install chromium", file=sys.stderr)
+        else:
+            print(f"  lo registrado quedó en {out_dir}/explore.jsonl; corrige {args.config} (credentials.setup_sql / sql) y repite", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        summary = dict(summary or {}, interrupted="interrumpido por el humano")
+    except Exception as error:  # noqa: BLE001 — sin esto un TimeoutError del navegador dejaba la sesión sin session.json
+        text = str(error)
+        if "Executable doesn't exist" in text or "playwright install" in text:
+            print("pepper explore: falta el navegador de Playwright: python3 -m playwright install chromium", file=sys.stderr)
+            return 1
+        summary = dict(summary or {}, error=f"{type(error).__name__}: {text[:200]}")
     _time.sleep(args.settle)  # que el sistema termine lo que la última acción disparó
     ended = datetime.now().astimezone()
 
@@ -367,6 +404,12 @@ def _cmd_explore(args: argparse.Namespace) -> int:
     print(f"  session.json: {out_dir / 'session.json'}")
     print(f"  nota: {note[:300]}")
     print(f"  capturas: {out_dir / 'screens'}")
+    # Un exit 0 con cero trabajo escondía el fallo detrás de un "Siguiente" (auditoría 2026-09-11).
+    code, why = outcome(summary, actions, [c["file"] for c in collectors])
+    if code:
+        print(f"pepper explore: {why}", file=sys.stderr)
+        print(f"  la sesión quedó escrita en {out_dir} para que se vea qué pasó; usa otro --session al repetir", file=sys.stderr)
+        return code
     print()
     print(f"Siguiente: {_invocation()} correlate {out_dir} --out pepper-out/{args.session}/correlated")
     return 0
@@ -564,6 +607,7 @@ def build_parser() -> argparse.ArgumentParser:
     explore.add_argument("--hosts", help="hosts externos del artefacto (para isolate), separados por coma")
     explore.add_argument("--ingress", default="ingress")
     explore.add_argument("--out", type=Path, default=Path("evidence"), help="raíz de la evidencia (default evidence/)")
+    explore.add_argument("--budget", type=int, default=0, help="segundos máximos de recorrido; al agotarse cierra limpio y escribe session.json")
     explore.add_argument("--no-submit", action="store_true", help="solo abrir y fotografiar pantallas; no apretar botones")
     explore.add_argument("--headed", action="store_true", help="navegador visible (para depurar)")
     explore.add_argument("--settle", type=int, default=12, help="segundos de espera al final antes de cerrar la ventana (default 12)")

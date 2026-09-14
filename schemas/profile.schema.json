@@ -209,6 +209,10 @@
           "type": "string",
           "description": "Regex en el log del app que indica que arrancó (p. ej. WFLYSRV0025|Started Application)."
         },
+        "failed_log_pattern": {
+          "type": "string",
+          "description": "Regex en el log del app que indica que el despliegue falló (p. ej. WFLYSRV0026): rehydrate deja de esperar y reporta FAILED con esa línea."
+        },
         "stub_ports": {
           "type": "string",
           "description": "Puertos que el stub escucha además de los que declaren las URLs externas (coma)."

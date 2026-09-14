@@ -43,7 +43,9 @@ from pepper.profiles import Profile
 
 DEFAULT_PORT = 18080
 _ARTIFACT_SUFFIXES = (".war", ".ear", ".jar")
-_DUMP_SUFFIXES = (".dump", ".backup", ".sql", ".bak")
+_DUMP_SUFFIXES = (".dump", ".backup")   # formato custom de pg_dump: lo único que pg_restore restaura y el lector lee
+_FILES_KEY_RE = re.compile(r"(?i)(ruta|path|dir|folder)")
+_FILES_KEY_EXCLUDE_RE = re.compile(r"(?i)redirect|direccion|context[-.]?path|servlet[-.]?path|classpath|url")
 _URL_RE = re.compile(r"https?://([A-Za-z0-9.-]+)(?::(\d+))?")
 _JDBC_RE = re.compile(r"jdbc:(\w+)://([A-Za-z0-9.-]+)(?::(\d+))?/([A-Za-z0-9_]+)")
 _SECRET_KEY_RE = re.compile(r"(?i)pass|pwd|secret|psw|token")
@@ -91,36 +93,73 @@ def parse_config(text: str) -> Dict[str, str]:
     return flat
 
 
+def split_documents(text: str) -> List[str]:
+    """Un application.yml de Spring Boot 1.x suele traer varios documentos separados por `---`,
+    cada uno con `spring.profiles: <nombre>`. Aplanarlos juntos mezclaba datasources y llamaba
+    `default` al perfil elegido (auditoría 2026-09-11)."""
+    docs, current = [], []
+    for line in text.splitlines():
+        if re.fullmatch(r"---\s*", line):
+            docs.append("\n".join(current)); current = []
+        else:
+            current.append(line)
+    docs.append("\n".join(current))
+    return [d for d in docs if d.strip()]
+
+
 def read_artifact_configs(artifact: Path, patterns: List[str]) -> Dict[str, Dict[str, str]]:
-    """{nombre-de-perfil: config} de cada archivo de configuración dentro del artefacto."""
+    """{nombre-de-perfil: config} de cada archivo (y documento) de configuración dentro del artefacto."""
     configs: Dict[str, Dict[str, str]] = {}
     with zipfile.ZipFile(artifact) as archive:
         for name in sorted(archive.namelist()):
             if not any(re.search(p, name) for p in patterns):
                 continue
             stem = Path(name).stem  # application-prod
-            profile = stem.split("-", 1)[1] if "-" in stem else "default"
-            configs[profile] = parse_config(archive.read(name).decode("utf-8", errors="replace"))
+            file_profile = stem.split("-", 1)[1] if "-" in stem else "default"
+            for document in split_documents(archive.read(name).decode("utf-8", errors="replace")):
+                cfg = parse_config(document)
+                declared = cfg.get("spring.profiles") or cfg.get("spring.config.activate.on-profile")
+                profile = declared or file_profile
+                configs.setdefault(profile, {}).update(cfg)
     return configs
 
 
-def choose_spring_profile(configs: Dict[str, Dict[str, str]]) -> Tuple[str, Dict[str, str]]:
-    """El perfil completo: trae url, usuario y contraseña del datasource. Prefiere prod."""
-    candidates = []
+def choose_spring_profile(configs: Dict[str, Dict[str, str]]) -> Tuple[str, Dict[str, str], List[str]]:
+    """El perfil completo (url, usuario y contraseña del datasource). Manda `spring.profiles.active`
+    del documento base si nombra uno completo; si no, `prod`; si hay varios, se declara cuáles había.
+    → (nombre, config fusionada con la base, desviaciones)."""
+    base = configs.get("default", {})
+    active = [a.strip() for a in (base.get("spring.profiles.active") or "").split(",") if a.strip()]
+    complete: Dict[str, Dict[str, str]] = {}
     for name, cfg in configs.items():
-        url = next((v for k, v in cfg.items() if k.endswith("datasource.url")), "")
-        user = next((v for k, v in cfg.items() if k.endswith("datasource.username")), "")
-        pwd = next((v for k, v in cfg.items() if k.endswith("datasource.password")), None)
+        if name == "default":
+            continue
+        merged = dict(base); merged.update(cfg)
+        url = next((v for k, v in merged.items() if k.endswith("datasource.url")), "")
+        user = next((v for k, v in merged.items() if k.endswith("datasource.username")), "")
+        pwd = next((v for k, v in merged.items() if k.endswith("datasource.password")), None)
         if url and user and pwd is not None:
-            candidates.append((0 if name == "prod" else 1 if "prod" in name else 2, name, cfg))
-    if not candidates:
+            complete[name] = merged
+    deviations: List[str] = []
+    if not complete:
+        # solo el documento base: vale si él mismo está completo
+        url = next((v for k, v in base.items() if k.endswith("datasource.url")), "")
+        user = next((v for k, v in base.items() if k.endswith("datasource.username")), "")
+        pwd = next((v for k, v in base.items() if k.endswith("datasource.password")), None)
+        if url and user and pwd is not None:
+            return "default", dict(base), deviations
         raise Blocked("ningún perfil de configuración dentro del artefacto trae url, usuario y contraseña del datasource: "
                       "no dice a qué conectarse. Consigue la configuración externa del ambiente.")
-    candidates.sort(key=lambda c: c[0])
-    _, name, cfg = candidates[0]
-    merged = dict(configs.get("default", {}))
-    merged.update(cfg)
-    return name, merged
+    chosen = next((a for a in active if a in complete), None)
+    if chosen is None:
+        chosen = next((n for n in complete if n == "prod"), None) or next((n for n in complete if "prod" in n), None) \
+            or sorted(complete)[0]
+        if len(complete) > 1:
+            deviations.append(f"varios perfiles de configuración completos ({', '.join(sorted(complete))}); "
+                              f"spring.profiles.active no señala ninguno de ellos: se usa '{chosen}'")
+    elif active and chosen != active[0]:
+        deviations.append(f"spring.profiles.active = {','.join(active)}; el primero completo es '{chosen}'")
+    return chosen, complete[chosen], deviations
 
 
 # --------------------------------------------------------------- el plan
@@ -152,6 +191,9 @@ class Plan:
     files_root: str
     create_roles: List[str]
     host_port: int
+    db_alias: str = ""
+    gateway_ip: str = ""
+    dump_sha: str = ""
     deviations: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
 
@@ -168,6 +210,7 @@ class Plan:
             "app_package_env": self.app_package_env, "app_ip": self.app_ip,
             "war_path": str(rel(self.artifact)), "war_name": self.artifact.name,
             "files_root": self.files_root, "host_port": str(self.host_port),
+            "db_alias": "[" + (self.db_alias or "") + "]", "gateway_ip": self.gateway_ip, "dump_sha": self.dump_sha,
             "create_roles": "\n".join(
                 f'psql -d postgres -c "CREATE ROLE \\"{role}\\";" 2>&1 | grep -v "already exists" || true'
                 for role in self.create_roles) or "true",
@@ -207,7 +250,11 @@ def _choose_server(artifact: Path, profile: Profile, notes_text: str) -> Tuple[s
     with zipfile.ZipFile(artifact) as archive:
         members = set(archive.namelist())
     present = [server for server, files in descriptors.items() if any(f in members for f in files)]
-    noted = next((s for s in images if re.search(rf"(?i)\b{s}\b", notes_text)), None)
+    # Solo cuentan los servidores de APLICACIÓN (los que el perfil sabe reconocer por descriptor):
+    # una nota que diga "la base es postgres 12" no puede convertir al app en un contenedor de
+    # PostgreSQL (auditoría 2026-09-11).
+    app_servers = [s for s in images if s in descriptors]
+    noted = next((s for s in app_servers if re.search(rf"(?i)\b{s}\b", notes_text)), None)
     server = noted or (present[0] if present else "")
     if not server:
         raise Blocked("el artefacto no trae descriptor de servidor (jboss-web.xml, context.xml…) y NOTAS.md no dice en qué corre")
@@ -237,7 +284,7 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
     configs = read_artifact_configs(artifact, recipe.get("config_patterns") or [r"application.*\.(yml|yaml|properties)$"])
     if not configs:
         raise Blocked("el artefacto no trae configuración embebida (application*.yml) y no se dio configuración externa")
-    spring_profile, cfg = choose_spring_profile(configs)
+    spring_profile, cfg, profile_deviations = choose_spring_profile(configs)
     url = next(v for k, v in cfg.items() if k.endswith("datasource.url"))
     m = _JDBC_RE.search(url)
     if not m:
@@ -247,26 +294,35 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
         raise Blocked(f"motor {engine}: este perfil solo reconstruye PostgreSQL")
     db_user = next(v for k, v in cfg.items() if k.endswith("datasource.username"))
     db_password = next(v for k, v in cfg.items() if k.endswith("datasource.password"))
-    deviations: List[str] = []
+    deviations: List[str] = list(profile_deviations)
     notes: List[str] = []
+    if "${" in db_password:
+        raise Blocked(f"la contraseña del datasource es una referencia sin resolver ({db_password!r}): "
+                      "el artefacto espera una variable de entorno que no trae; consíguela")
+    if host in ("localhost", "127.0.0.1", "::1"):
+        raise Blocked(f"el datasource del perfil '{spring_profile}' apunta a {host}: dentro del contenedor del app eso es el app mismo, "
+                      "no una base. Ese perfil no describe un ambiente reconstruible; elige otro o consigue la configuración externa")
+    db_alias = ""
     try:
         db_ip = str(ipaddress.IPv4Address(host))
-        if ipaddress.IPv4Address(host).is_loopback:
-            raise ValueError
     except ValueError:
-        db_ip = "10.100.0.2"
-        deviations.append(f"el datasource apunta a {host!r} (no es una IP enrutable): la base queda en {db_ip} con alias {host}")
+        db_ip, db_alias = "10.100.0.2", host
+        deviations.append(f"el datasource apunta al nombre {host!r}: la base queda en {db_ip} y ese nombre es su alias en la red")
     net = ipaddress.IPv4Network(f"{db_ip}/24", strict=False)
-    hosts = list(net.hosts())
+    hosts = [str(h) for h in net.hosts()]
     taken = {db_ip}
-    pick = lambda pref: next(str(h) for h in hosts if str(h) not in taken and (str(h).endswith(pref) or True))
-    stub_ip = str(hosts[1]) if str(hosts[1]) != db_ip else str(hosts[2])
-    taken.add(stub_ip)
-    app_ip = next(str(h) for h in hosts[8:] if str(h) not in taken)
-    taken.add(app_ip)
-    dns_sink = str(hosts[-2])
+    stub_ip = next(h for h in hosts[1:] if h not in taken); taken.add(stub_ip)
+    app_ip = next(h for h in hosts[8:] if h not in taken); taken.add(app_ip)
+    dns_sink = next(h for h in reversed(hosts) if h not in taken); taken.add(dns_sink)
+    # la puerta de enlace la fija PEPPER: si el datasource cae en la .1, Docker chocaría con ella
+    gateway_ip = next(h for h in hosts if h not in taken); taken.add(gateway_ip)
 
-    info = pgdump.read_toc(dump)
+    try:
+        info = pgdump.read_toc(dump)
+    except ValueError as error:
+        raise Blocked(f"el respaldo {dump.name} no se puede leer como formato custom de pg_dump ({error}); "
+                      "pg_restore tampoco lo restauraría. Consigue un respaldo hecho con `pg_dump -Fc`")
+    dump_sha = _sha256(dump)[:16]
     postgres_version = info.server_version.split(".")[0]
     pg_restore_version = info.pg_dump_version.split(".")[0] or postgres_version
     noted_pg = _notes_version(notes_text, "postgres")
@@ -290,7 +346,8 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
                 ports.add(p)
             try:
                 ipaddress.IPv4Address(h)
-                if h not in by_ip and ipaddress.IPv4Address(h) not in net:
+                if h not in by_ip:
+                    # dentro o fuera de la subred de la base da igual: nadie responde ahí y no se puede aliasear
                     by_ip.append(h + (f":{p}" if p else ""))
                 continue
             except ValueError:
@@ -315,9 +372,14 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
             start_class = mm.group(1) if mm else ""
     package = ".".join(start_class.split(".")[:3]) if start_class else "app"
     app_package_env = package.upper().replace(".", "_").replace("-", "_")
-    files_root = next((v for k, v in cfg.items() if re.search(r"(?i)ruta|path|dir|folder", k) and v.startswith("/")), "/data")
+    files_root = next((v for k, v in cfg.items()
+                       if _FILES_KEY_RE.search(k) and not _FILES_KEY_EXCLUDE_RE.search(k)
+                       and v.startswith("/") and v.rstrip("/") not in ("", "/")), "/data")
 
-    stack_name = re.sub(r"[^a-z0-9]+", "-", artifact.stem.split("-")[0].lower()).strip("-") or "legacy"
+    # El nombre del proyecto (y de sus volúmenes) lleva un hash del respaldo: dos legacies con el
+    # mismo prefijo, o dos respaldos del mismo sistema, no comparten base (auditoría 2026-09-11).
+    prefix = re.sub(r"[^a-z0-9]+", "-", artifact.stem.split("-")[0].lower()).strip("-") or "legacy"
+    stack_name = f"{prefix}-{dump_sha[:8]}"
     return Plan(stack_name=stack_name, artifact=artifact, dump=dump, spring_profile=spring_profile,
                 db_engine=engine, db_ip=db_ip, db_port=port, db_name=db_name, db_user=db_user, db_password=db_password,
                 subnet=str(net), app_ip=app_ip, stub_ip=stub_ip, dns_sink=dns_sink,
@@ -325,7 +387,24 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
                 pg_restore_version=pg_restore_version, external_hosts=external, external_by_ip=by_ip,
                 stub_ports=stub_ports, app_package_env=app_package_env, files_root=files_root,
                 create_roles=[o for o in info.owners() if o != db_user], host_port=host_port,
+                db_alias=db_alias, gateway_ip=gateway_ip, dump_sha=dump_sha,
                 deviations=deviations, notes=notes)
+
+
+def _sha256(path: Path) -> str:
+    import hashlib
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def env_line(name: str, value: str) -> str:
+    """Una línea de `.env` que `docker compose` lea tal cual: `$` se escapa como `$$` (si no,
+    `ab$cd` se interpola a `ab`), y las comillas dobles protegen espacios y `#`."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "$$")
+    return f'{name}="{escaped}"'
 
 
 # --------------------------------------------------------------- render
@@ -353,7 +432,7 @@ def render(plan: Plan, profile: Profile, out_dir: Path) -> List[Path]:
     shutil.copy2(REPO_ROOT / "pepper" / "proxy.py", out_dir / "proxy" / "proxy.py")
     shutil.copy2(REPO_ROOT / "pepper" / "stub.py", out_dir / "stub" / "stub.py")
     env = out_dir / ".env"
-    env.write_text(f"DB_PASSWORD={plan.db_password}\nWILDFLY_IMAGE={plan.server_image}\n", encoding="utf-8")
+    env.write_text(env_line("DB_PASSWORD", plan.db_password) + "\n", encoding="utf-8")
     env.chmod(0o600)
     written += [out_dir / "proxy" / "proxy.py", out_dir / "stub" / "stub.py", env]
     return written
@@ -403,39 +482,72 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
     up = _compose(out_dir, "up", "-d", "db", "stub")
     if up.returncode != 0:
         return "FAILED", validations + [{"check": "docker compose up db stub", "result": "fail", "detail": up.stderr[-400:]}], missing
+    alive = False
     for _ in range(60):
         if _psql(out_dir, plan, "select 1") == "1":
+            alive = True
             break
         time.sleep(2)
+    if not alive:
+        db_logs = subprocess.run(["docker", "compose", "-f", str(compose_path), "logs", "--no-log-prefix", "--tail", "15", "db"],
+                                 capture_output=True, text=True).stdout
+        return "FAILED", validations + [{"check": "la base responde", "result": "fail",
+                                         "detail": "sin respuesta en 120 s · " + db_logs.strip()[-300:]}], missing
+    marker_sql = "select obj_description((select oid from pg_database where datname = current_database()), 'pg_database')"
     tables = _psql(out_dir, plan, "select count(*) from pg_tables where schemaname not in ('pg_catalog','information_schema')")
+    marker = _psql(out_dir, plan, marker_sql)
+    expected_marker = f"pepper:restored:{plan.dump_sha}"
+    if tables not in ("", "0") and marker != expected_marker:
+        return "FAILED", validations + [{"check": "la base del volumen corresponde a este respaldo", "result": "fail",
+                                         "detail": f"el volumen ya trae {tables} tablas de otra restauración (marca {marker or 'ausente'}); "
+                                                   f"bájalo con `docker compose -f {compose_path} down -v` y repite"}], missing
     if tables in ("", "0"):
         log("  restaurando el respaldo (una vez; la base estaba vacía)…")
         restore = _compose(out_dir, "--profile", "restore", "run", "--rm", "restore", timeout=3600)
-        tail = "\n".join(restore.stdout.strip().splitlines()[-6:])
-        log("    " + tail.replace("\n", "\n    "))
+        out = restore.stdout
+        log("    " + "\n    ".join(out.strip().splitlines()[-8:]))
+        status_line = re.search(r"PEPPER_RESTORE status=(\d+) errors=(\d+)", out)
+        status = int(status_line.group(1)) if status_line else -1
+        ignored = int(status_line.group(2)) if status_line else 0
         tables = _psql(out_dir, plan, "select count(*) from pg_tables where schemaname not in ('pg_catalog','information_schema')")
-    validations.append({"check": "la base tiene los datos restaurados", "result": "pass" if tables not in ("", "0") else "fail",
-                        "detail": f"{tables or 0} tablas en {plan.db_name}"})
+        marker = _psql(out_dir, plan, marker_sql)
+        if status != 0 and status != 1 or marker != expected_marker or tables in ("", "0"):
+            return "FAILED", validations + [{"check": "la base tiene los datos restaurados", "result": "fail",
+                                             "detail": f"pg_restore terminó con código {status} (restore.sh {restore.returncode}); "
+                                                       f"{tables or 0} tablas; marca {marker or 'ausente'} · " + out.strip()[-400:]}], missing
+        validations.append({"check": "la base tiene los datos restaurados", "result": "pass",
+                            "detail": f"{tables} tablas en {plan.db_name}" + (f"; pg_restore ignoró {ignored} error(es), listados en el log de la restauración" if ignored else "")})
+    else:
+        validations.append({"check": "la base tiene los datos restaurados", "result": "pass",
+                            "detail": f"{tables} tablas en {plan.db_name} (ya restaurada de este mismo respaldo)"})
     foreign = _psql(out_dir, plan, "select string_agg(srvname||'→'||coalesce((select option_value from pg_options_to_table(srvoptions) where option_name='host'),'?'),', ') from pg_foreign_server")
     if foreign:
         validations.append({"check": "servidores foráneos re-apuntados al stub", "result": "pass" if all(plan.stub_ip in f for f in foreign.split(", ")) else "fail", "detail": foreign})
 
     log("  levantando app e ingress…")
-    up = _compose(out_dir, "up", "-d", "app", "ingress")
+    since = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    up = _compose(out_dir, "up", "-d", "--force-recreate", "app", "ingress")
     if up.returncode != 0:
         return "FAILED", validations + [{"check": "docker compose up app ingress", "result": "fail", "detail": up.stderr[-400:]}], missing
-    ready_re = re.compile(profile.data.get("rehydrate", {}).get("ready_log_pattern") or "Started|started")
+    recipe = profile.data.get("rehydrate", {})
+    ready_re = re.compile(recipe.get("ready_log_pattern") or "Started|started")
+    failed_re = re.compile(recipe["failed_log_pattern"]) if recipe.get("failed_log_pattern") else None
     started = time.time()
-    ready = False
+    ready, failed_hit = False, None
     while time.time() - started < wait_s:
-        logs = subprocess.run(["docker", "compose", "-f", str(compose_path), "logs", "--no-log-prefix", "app"],
+        logs = subprocess.run(["docker", "compose", "-f", str(compose_path), "logs", "--no-log-prefix", "--since", since, "app"],
                               capture_output=True, text=True).stdout
+        if failed_re and failed_re.search(logs):
+            failed_hit = failed_re.search(logs).group(0)
+            break
         if ready_re.search(logs):
             ready = True
             break
         time.sleep(5)
     validations.append({"check": "el servidor de aplicaciones arrancó", "result": "pass" if ready else "fail",
-                        "detail": f"patrón {ready_re.pattern!r} en {int(time.time() - started)} s" if ready else f"sin señal de arranque en {wait_s} s"})
+                        "detail": f"patrón {ready_re.pattern!r} en {int(time.time() - started)} s" if ready
+                        else f"el despliegue falló ({failed_hit}) en {int(time.time() - started)} s" if failed_hit
+                        else f"sin señal de arranque en {wait_s} s"})
     if not ready:
         return "FAILED", validations, missing
     errors = len(re.findall(r"\bERROR\b", logs))
@@ -443,7 +555,7 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
 
     time.sleep(3)
     status, body = _http(f"http://127.0.0.1:{plan.host_port}/")
-    validations.append({"check": "la raíz responde por el ingress (solo loopback)", "result": "pass" if status and status < 500 else "fail",
+    validations.append({"check": "la raíz responde por el ingress (solo loopback)", "result": "pass" if status and status < 400 else "fail",
                         "detail": f"HTTP {status}" if status else "sin respuesta"})
     live = check_live(compose_path, plan.external_hosts, "ingress")
     ok = live.verdict == "VERIFIED"
@@ -478,18 +590,19 @@ def write_environment(plan: Plan, profile: Profile, status: str, validations: Li
         "components": [
             {"name": "db", "role": "database", "engine": "postgresql", "version": plan.postgres_version,
              "container_image": f"postgres:{plan.postgres_version}", "endpoint": f"{plan.db_ip}:{plan.db_port}/{plan.db_name}",
-             "status": "running" if status in ("READY", "PARTIAL") else "failed", "data_restored": status in ("READY", "PARTIAL")},
+             "status": "running" if status in ("READY", "PARTIAL") else "unknown", "data_restored": status in ("READY", "PARTIAL")},
             {"name": "app", "role": "backend", "engine": plan.server, "artifact": plan.artifact.name,
              "container_image": plan.server_image, "endpoint": f"{plan.app_ip}:8080",
-             "status": "running" if status in ("READY", "PARTIAL") else "failed"},
+             "status": "running" if status in ("READY", "PARTIAL") else "unknown"},
             {"name": "ingress", "role": "proxy", "engine": "pepper-proxy", "container_image": "python:3-alpine",
-             "endpoint": f"http://127.0.0.1:{plan.host_port}", "status": "running" if status in ("READY", "PARTIAL") else "failed"},
+             "endpoint": f"http://127.0.0.1:{plan.host_port}", "status": "running" if status in ("READY", "PARTIAL") else "unknown"},
             {"name": "stub", "role": "external", "engine": "pepper-stub", "container_image": "python:3-alpine",
-             "endpoint": plan.stub_ip, "status": "running" if status in ("READY", "PARTIAL") else "failed"},
+             "endpoint": plan.stub_ip, "status": "running" if status in ("READY", "PARTIAL") else "unknown"},
         ],
         "validations": validations,
         "missing_evidence": missing,
-        "notes": plan.deviations + plan.notes + [f"compose: {out_dir / 'docker-compose.yml'} · apagar: docker compose -f {out_dir / 'docker-compose.yml'} down -v"],
+        # el contrato pide un string: una lista aquí hacía que environment.json no validara contra su propio schema
+        "notes": " · ".join(plan.deviations + plan.notes + [f"compose: {out_dir / 'docker-compose.yml'} · apagar: docker compose -f {out_dir / 'docker-compose.yml'} down -v"]),
     }
     env_path = docs_dir / "environment.json"
     env_path.write_text(json.dumps(env, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

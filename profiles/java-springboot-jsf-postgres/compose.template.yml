@@ -26,6 +26,7 @@ networks:
     ipam:
       config:
         - subnet: {{subnet}}            # el /24 de las IPs que el artefacto espera
+          gateway: {{gateway_ip}}       # la fija PEPPER: si el datasource cae en la .1, Docker chocaría con la puerta
   edge:
     driver: bridge                     # SOLO el ingress: Docker no publica puertos desde una red internal (D22)
 volumes:
@@ -44,6 +45,7 @@ services:
     networks:
       legacy:
         ipv4_address: {{db_ip}}            # la IP del datasource del artefacto
+        aliases: {{db_alias}}              # y su nombre, si el datasource iba por nombre
     volumes:
       - db-data:/var/lib/postgresql/data
     healthcheck:

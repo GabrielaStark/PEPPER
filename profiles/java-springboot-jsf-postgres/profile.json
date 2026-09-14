@@ -124,7 +124,8 @@
       "^WEB-INF/classes/application(-[a-z0-9]+)?\\.(yml|yaml|properties)$"
     ],
     "ready_log_pattern": "WFLYSRV0025|Started Application",
-    "stub_ports": "80,443,8080,9980,587"
+    "stub_ports": "80,443,8080,9980,587",
+    "failed_log_pattern": "WFLYSRV0026|WFLYCTL0013|WFLYCTL0348|Failed to start service|Deployment .* failed"
   },
   "collectors": [
     {

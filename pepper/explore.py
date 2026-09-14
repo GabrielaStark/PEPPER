@@ -148,13 +148,30 @@ class Explorer:
 
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.shots.mkdir(exist_ok=True)
+        self._log = self.log_path.open("a", encoding="utf-8")
         self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.launch(headless=self.headless)
-        context = self._browser.new_context(ignore_https_errors=True, viewport={"width": 1366, "height": 900})
+        context = self._browser.new_context(viewport={"width": 1366, "height": 900})
         context.set_default_timeout(self.timeout_ms)
+        # El navegador del explorador corre en el host (con VPN). La CSP del ingress frena lo
+        # que la página carga, pero no una navegación top-level por script (location.href=).
+        # Aquí sí se puede cerrar del todo: toda petición que no vaya al ingress se aborta y
+        # queda registrada; toda ventana nueva se cierra (auditoría 2026-09-11).
+        base = self.base
+        def only_ingress(route):
+            url = route.request.url
+            if url.startswith(base + "/") or url == base or url.startswith(("data:", "blob:", "about:")):
+                route.continue_()
+            else:
+                self._write(Action(role="*", route="", kind="blocked", label=url[:160], started=_now(), result="rejected",
+                                   detail={"blocked_uri": url[:300], "why": "fuera del ingress"}))
+                route.abort("blockedbyclient")
+        context.route("**/*", only_ingress)
+        context.on("page", lambda popup: popup.close() if popup != self._page else None)
         self._page = context.new_page()
         self._page.on("dialog", lambda d: d.accept())
-        self._log = self.log_path.open("a", encoding="utf-8")
+        self.ready: Optional[List[str]] = None
+        self.deadline: Optional[float] = None
         return self
 
     def __exit__(self, *exc) -> None:
@@ -186,8 +203,10 @@ class Explorer:
         return path.relative_to(self.out_dir).as_posix()
 
     def _settle(self, ms: int = SETTLE_MS) -> None:
+        # networkidle acotado: una pantalla con un poll o un spinner nunca queda "idle" y cada
+        # espera costaba 15 s (varias por pantalla). El re-dibujo de PrimeFaces cabe en 3 s.
         try:
-            self.page.wait_for_load_state("networkidle", timeout=self.timeout_ms)
+            self.page.wait_for_load_state("networkidle", timeout=min(self.timeout_ms, 3000))
         except Exception:
             pass
         self.page.wait_for_timeout(ms)
@@ -259,10 +278,21 @@ class Explorer:
         if not sql_template or docker_compose is None:
             return [r["name"] for r in self.config.get("roles", []) if r.get("password")]
 
+        secrets = [r["password"] for r in self.config.get("roles", []) if r.get("password")]
+
         def psql(sql: str) -> "subprocess.CompletedProcess[str]":
+            # `SET log_statement = 'none'` en esa sesión: el UPDATE con la clave de prueba y el
+            # usuario real no debe quedar en el log de la base (que viaja al paquete).
             command = ["docker", "compose", "-f", str(docker_compose), "exec", "-T", creds.get("db_service", "db"),
-                       "psql", "-v", "ON_ERROR_STOP=1", "-U", creds.get("db_user", "postgres"), "-d", creds["db_name"], "-Atc", sql]
-            return subprocess.run(command, capture_output=True, text=True)
+                       "psql", "-v", "ON_ERROR_STOP=1", "-U", creds.get("db_user", "postgres"), "-d", creds["db_name"],
+                       "-Atc", "SET log_statement = 'none'; " + sql]
+            result = subprocess.run(command, capture_output=True, text=True)
+            err = result.stderr
+            for secret in secrets:
+                err = err.replace(secret, "[REDACTADO]")
+            err = "\n".join(line for line in err.splitlines() if not line.startswith(("LINE ", "        ")))
+            result.stderr = err
+            return result
 
         setup = creds.get("setup_sql")
         if setup:
@@ -289,6 +319,7 @@ class Explorer:
         if not ready:
             raise RuntimeError("ningún rol quedó con credencial en la base desechable; sin eso no hay nada que explorar. "
                                + " · ".join(failures[:3]))
+        self.ready = ready
         return ready
 
     # ------------------------------------------------------------ sesión
@@ -296,9 +327,9 @@ class Explorer:
     def login(self, role: Dict[str, Any]) -> bool:
         login = self.config["login"]
         action = Action(role=role["name"], route=login["route"], kind="login", label=f"entrar como {role['name']}", started=_now())
-        self.page.goto(self.base + login["route"])
-        self._settle(400)
         try:
+            self.page.goto(self.base + login["route"])
+            self._settle(400)
             self.page.fill(login["user_field"], role["user"])
             self.page.fill(login["password_field"], role["password"])
             self.page.click(login["submit"])
@@ -544,10 +575,13 @@ class Explorer:
 
     def walk(self, docker_compose: Optional[Path] = None, submit: bool = True) -> Dict[str, Any]:
         """El recorrido automático completo: credenciales → por rol: entrar, cada pantalla, rechazos, llenado, salir."""
-        ready = self.grant_credentials(docker_compose)
+        ready = self.ready if self.ready is not None else self.grant_credentials(docker_compose)
         routes = self.routes()
         summary: Dict[str, Any] = {"roles": {}, "routes": len(routes)}
         for role in self.config.get("roles", []):
+            if self.deadline and time.time() > self.deadline:
+                summary["roles"][role["name"]] = "presupuesto de tiempo agotado"
+                continue
             if role["name"] not in ready:
                 summary["roles"][role["name"]] = "sin credencial"
                 continue
@@ -556,6 +590,8 @@ class Explorer:
                 continue
             opened = rejected = 0
             for route in routes:
+                if self.deadline and time.time() > self.deadline:
+                    break
                 action = self.open_screen(role["name"], route)
                 if action.result != "ok":
                     continue
@@ -575,19 +611,27 @@ class Explorer:
         click: <texto del botón> · click_at: <selector css> · check: <selector> · wait: <segundos> ·
         expect_text: <texto> · expect_route: <ruta> · note: <texto> · logout: true
         """
-        self.grant_credentials(docker_compose)
+        if self.ready is None:
+            self.grant_credentials(docker_compose)
         role = ""
         ok = failed = 0
+        aborted = False
         roles = {r["name"]: r for r in self.config.get("roles", [])}
         for index, step in enumerate(plan, 1):
             (key, value), = step.items() if len(step) == 1 else (list(step.items())[0],)
             action = Action(role=role, route=self._route_of(self.page.url) if self.page.url.startswith("http") else "",
                             kind="plan", label=f"{index}. {key}: {json.dumps(value, ensure_ascii=False)[:80]}", started=_now())
             try:
-                if key == "login":
+                if aborted:
+                    action.result, action.detail = "error", {"error": "omitido: el login anterior falló"}
+                elif key == "login":
                     role = value
                     action.role = role
+                    if value not in roles:
+                        raise KeyError(f"rol desconocido en el plan: {value}")
                     action.result = "ok" if self.login(roles[value]) else "rejected"
+                    if action.result != "ok":
+                        aborted = True
                 elif key == "goto":
                     response = self.page.goto(self.base + value)
                     self._settle(600)
@@ -640,6 +684,49 @@ class Explorer:
             ok += action.result == "ok"
             failed += action.result in ("error", "rejected")
         return {"steps": len(plan), "ok": ok, "failed": failed}
+
+
+def config_problems(config: Dict[str, Any]) -> List[str]:
+    """Qué le falta a explore.json para poder correr; vacío si está completo. Antes un KeyError
+    a mitad del arranque era todo lo que veía el humano."""
+    problems: List[str] = []
+    if not isinstance(config.get("base_url"), str) or not config["base_url"].startswith("http"):
+        problems.append("falta base_url (http://127.0.0.1:<puerto del ingress>)")
+    login = config.get("login") or {}
+    for key in ("route", "user_field", "password_field", "submit"):
+        if not login.get(key):
+            problems.append(f"falta login.{key}")
+    roles = config.get("roles") or []
+    if not roles:
+        problems.append("falta roles (al menos uno con name, user y password)")
+    for role in roles:
+        if not all(role.get(k) for k in ("name", "user", "password")):
+            problems.append(f"rol incompleto: {role.get('name') or '?'} (name, user, password)")
+    creds = config.get("credentials")
+    if creds and creds.get("sql") and not creds.get("db_name"):
+        problems.append("credentials.sql sin credentials.db_name")
+    return problems
+
+
+def outcome(summary: Dict[str, Any], actions: List[Dict[str, Any]], captured_files: List[str]) -> Tuple[int, str]:
+    """(código de salida, razón). 0 solo si de verdad se exploró algo y se capturó el ingress."""
+    if summary.get("error"):
+        return 1, f"el explorador se detuvo por un error: {summary['error']}"
+    if summary.get("interrupted"):
+        return 1, "recorrido interrumpido"
+    if "steps" in summary:
+        if summary.get("ok", 0) == 0:
+            return 1, f"ningún paso del plan terminó en ok ({summary.get('failed', 0)} fallidos)"
+    else:
+        roles = summary.get("roles") or {}
+        entered = [r for r, s in roles.items() if s and "pantallas" in str(s)]
+        if not entered:
+            return 1, "ningún rol entró al sistema: " + ", ".join(f"{r}: {s}" for r, s in roles.items())
+        if not any(a.get("kind") == "screen" and a.get("result") == "ok" for a in actions):
+            return 1, "no se abrió ninguna pantalla"
+    if "http.jsonl" not in captured_files:
+        return 1, "no se capturó http.jsonl del ingress: sin él no hay correlation_id y Correlate no tiene anclas"
+    return 0, ""
 
 
 def operator_note(actions: List[Dict[str, Any]], summary: Dict[str, Any], kind: str) -> str:

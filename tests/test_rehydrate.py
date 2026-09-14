@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from pepper.profiles import load_profile  # noqa: E402
-from pepper.rehydrate import Blocked, make_plan, parse_config, render  # noqa: E402
+from pepper.rehydrate import Blocked, env_line, make_plan, parse_config, render, write_environment  # noqa: E402
+from pepper.validate import validate_file  # noqa: E402
 from tests.test_systemmap import TABLES, write_custom_dump  # noqa: E402
 
 PROFILE = load_profile("java-springboot-jsf-postgres")
@@ -108,7 +109,9 @@ class PlanTest(unittest.TestCase):
         self.assertIn("ipv4_address: 10.42.7.2", compose)
         self.assertIn("internal: true", compose)
         self.assertIn("aliases: [bus.institucion.example, editor.institucion.example, smtp.correo.example]", compose)
-        self.assertIn("jboss/wildfly:21.0.2.Final", (out / ".env").read_text(encoding="utf-8"))
+        self.assertIn("image: jboss/wildfly:21.0.2.Final", compose)
+        # .env solo lleva la credencial, entrecomillada y con $ escapado; la imagen va en el compose
+        self.assertEqual((out / ".env").read_text(encoding="utf-8").strip(), 'DB_PASSWORD="s3cr3t"')
         self.assertIn("s3cr3t", (out / ".env").read_text(encoding="utf-8"))
         self.assertNotIn("s3cr3t", compose, "la credencial va en .env, no en el compose")
         restore = (out / "restore.sh").read_text(encoding="utf-8")
@@ -149,3 +152,107 @@ class PlanTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _make_war_with(path, prod_config, base_config="spring:\n  profiles:\n    active: prod\n", descriptor=True, extra=None):
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\nStart-Class: gob.demo.nominas.Application\n")
+        z.writestr("WEB-INF/classes/application.yml", base_config)
+        if prod_config is not None:
+            z.writestr("WEB-INF/classes/application-prod.yml", prod_config)
+        for name, body in (extra or {}).items():
+            z.writestr(name, body)
+        if descriptor:
+            z.writestr("WEB-INF/jboss-web.xml", "<jboss-web/>")
+
+
+class AuditoriaRehydrateTest(unittest.TestCase):
+    """Lo que salió en la auditoría del 2026-09-11 sobre rehydrate, fijado para siempre."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _legacy(self, prod_config=CONFIG_PROD, notes="aplicaciones es un wildfly 21\n", **kw):
+        legacy = self.root / "legacy"; legacy.mkdir(exist_ok=True)
+        _make_war_with(legacy / "nominas-2.3.war", prod_config, **kw)
+        write_custom_dump(legacy / "respaldo.dump", TABLES)
+        (legacy / "NOTAS.md").write_text(notes, encoding="utf-8")
+        return legacy
+
+    def test_env_line_escapa_lo_que_compose_interpola(self):
+        # `ab$cd` se volvía `ab` al pasar por .env: compose interpola `$cd`
+        self.assertEqual(env_line("DB_PASSWORD", 'ab$cd#ef gh "x"'), 'DB_PASSWORD="ab$$cd#ef gh \\"x\\""')
+
+    def test_el_proyecto_lleva_un_hash_del_respaldo(self):
+        plan = make_plan(self._legacy(), PROFILE)
+        self.assertRegex(plan.stack_name, r"^nominas-[0-9a-f]{8}$")
+        self.assertEqual(plan.stack_name.split("-")[1], plan.dump_sha[:8])
+
+    def test_una_nota_sobre_la_base_no_convierte_al_app_en_postgres(self):
+        plan = make_plan(self._legacy(notes="La base es postgres 12 en producción.\n"), PROFILE, notes_path=self.root / "legacy" / "NOTAS.md")
+        self.assertEqual(plan.server, "wildfly")
+        self.assertTrue(plan.server_image.startswith("jboss/wildfly") or "wildfly" in plan.server_image)
+
+    def test_datasource_en_localhost_es_blocked(self):
+        cfg = CONFIG_PROD.replace("10.42.7.2", "localhost")
+        with self.assertRaisesRegex(Blocked, "localhost"):
+            make_plan(self._legacy(prod_config=cfg), PROFILE)
+
+    def test_contrasena_sin_resolver_es_blocked(self):
+        cfg = CONFIG_PROD.replace("password: s3cr3t", "password: ${DB_PASS}")
+        with self.assertRaisesRegex(Blocked, "sin resolver"):
+            make_plan(self._legacy(prod_config=cfg), PROFILE)
+
+    def test_files_root_nunca_es_la_raiz_ni_un_context_path(self):
+        cfg = CONFIG_PROD.replace("  rutaArchivos: /archivos/app\n", "  context-path: /\n  redirectPath: /login\n")
+        plan = make_plan(self._legacy(prod_config=cfg), PROFILE)
+        self.assertEqual(plan.files_root, "/data")
+
+    def test_datasource_por_nombre_da_alias_a_la_base_y_gateway_propio(self):
+        cfg = CONFIG_PROD.replace("10.42.7.2", "dbprod.institucion.example")
+        plan = make_plan(self._legacy(prod_config=cfg), PROFILE)
+        self.assertEqual(plan.db_alias, "dbprod.institucion.example")
+        self.assertTrue(plan.gateway_ip and plan.gateway_ip not in (plan.db_ip, plan.stub_ip, plan.app_ip, plan.dns_sink))
+        out = self.root / "out"
+        render(plan, PROFILE, out)
+        compose = (out / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn("aliases: [dbprod.institucion.example]", compose)
+        self.assertIn(f"gateway: {plan.gateway_ip}", compose)
+        restore = (out / "restore.sh").read_text(encoding="utf-8")
+        self.assertIn("restore.status", restore)
+        self.assertIn("PEPPER_RESTORE status=", restore)
+        self.assertIn(f"pepper:restored:{plan.dump_sha}", restore)
+        env = (out / ".env").read_text(encoding="utf-8")
+        self.assertEqual(env.strip(), 'DB_PASSWORD="s3cr3t"')
+
+    def test_multidocumento_y_spring_profiles_active_mandan(self):
+        base = ("spring:\n  profiles:\n    active: nomina\n"
+                "---\nspring:\n  profiles: qa\n  datasource:\n    url: jdbc:postgresql://10.42.7.5:5432/qa\n    username: q\n    password: q\n"
+                "---\nspring:\n  profiles: nomina\n  datasource:\n    url: jdbc:postgresql://10.42.7.2:5432/nomina\n    username: s\n    password: s\n")
+        plan = make_plan(self._legacy(prod_config=None, base_config=base), PROFILE)
+        self.assertEqual((plan.spring_profile, plan.db_name), ("nomina", "nomina"))
+
+    def test_varios_perfiles_completos_sin_active_se_declara(self):
+        base = "spring:\n  application:\n    name: x\n"
+        extra = {"WEB-INF/classes/application-qa.yml": CONFIG_PROD.replace("nominas_prod", "qa_db")}
+        plan = make_plan(self._legacy(base_config=base, extra=extra), PROFILE)
+        self.assertEqual(plan.spring_profile, "prod")
+        self.assertTrue(any("varios perfiles" in d for d in plan.deviations), plan.deviations)
+
+    def test_dependencia_por_ip_dentro_de_la_subred_no_desaparece(self):
+        cfg = CONFIG_PROD.replace("http://10.250.40.142:8080/", "http://10.42.7.50:8080/")
+        plan = make_plan(self._legacy(prod_config=cfg), PROFILE)
+        self.assertIn("10.42.7.50:8080", plan.external_by_ip)
+
+    def test_environment_json_valida_en_todos_los_estados(self):
+        plan = make_plan(self._legacy(), PROFILE)
+        for status in ("READY", "PARTIAL", "FAILED"):
+            docs = self.root / f"docs-{status}"
+            env_path, _ = write_environment(plan, PROFILE, status, [{"check": "x", "result": "pass", "detail": "y"}],
+                                            [{"missing": "m", "recommended_evidence": "r"}] if status == "PARTIAL" else [],
+                                            docs, self.root / "out")
+            self.assertEqual(validate_file(env_path, "environment"), [], status)
