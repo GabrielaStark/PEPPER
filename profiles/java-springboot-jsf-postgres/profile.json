@@ -84,7 +84,7 @@
     "optional_inputs": [
       "legacy/NOTAS.md con servidor de aplicaciones y versión, Java y versión de PostgreSQL de producción (decide WildFly vs java -jar y las imágenes)",
       "pg_dumpall --globals-only del servidor original (roles); si no, se crean vacíos",
-      "artefactos de los servicios externos (EXTERNO, buses) si algún flujo observado los necesita de verdad; si no, se stubean",
+      "artefactos de los servicios externos (otros sistemas, buses) si algún flujo observado los necesita de verdad; si no, se stubean",
       "contenido del directorio de archivos que declara la configuración (rutaArchivos)"
     ],
     "compose_template": "compose.template.yml",

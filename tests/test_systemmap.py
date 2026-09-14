@@ -183,7 +183,7 @@ TABLES = {
                [[i, "ASIGNADA" if i % 10 else "TERMINADA", None] for i in range(1, 401)]),
 }
 FUNCTIONS = [("fn_sector()", "CREATE FUNCTION public.fn_sector() RETURNS trigger\n    LANGUAGE plpgsql\n    AS $$BEGIN NEW.dssector := 'Privado'; RETURN NEW; END;$$;")]
-TRIGGERS = [("enempresa trg_sector", "CREATE TRIGGER trg_sector BEFORE INSERT OR UPDATE ON public.enempresa FOR EACH ROW EXECUTE PROCEDURE public.fn_sector();")]
+TRIGGERS = [("empresa trg_sector", "CREATE TRIGGER trg_sector BEFORE INSERT OR UPDATE ON public.empresa FOR EACH ROW EXECUTE PROCEDURE public.fn_sector();")]
 VIEWS = [("vw_reportes", "CREATE VIEW public.vw_reportes AS SELECT 1;")]
 
 EXTRACTORS = [
@@ -233,7 +233,7 @@ class PgDumpReaderTest(unittest.TestCase):
         self.assertEqual(pgdump.table_columns(cita.defn), ["llcita", "dsestatus", "comentarios"])
         trg = info.by_desc("TRIGGER")[0]
         self.assertEqual(pgdump.trigger_targets(trg.defn),
-                         {"event": "BEFORE INSERT OR UPDATE", "table": "enempresa", "function": "fn_sector"})
+                         {"event": "BEFORE INSERT OR UPDATE", "table": "empresa", "function": "fn_sector"})
 
     def test_no_es_custom(self):
         other = Path(self._tmp.name) / "plain.sql"
@@ -323,11 +323,11 @@ class SystemMapTest(unittest.TestCase):
         self.assertEqual(tables["ctcita"]["count"], 400)
         self.assertEqual(tables["ctcita"]["columns"], ["llcita", "dsestatus", "comentarios"])
         kinds = {(d["kind"], d["name"]) for d in m["data_stores"]}
-        self.assertIn(("trigger", "enempresa trg_sector"), kinds)
+        self.assertIn(("trigger", "empresa trg_sector"), kinds)
         self.assertIn(("function", "fn_sector()"), kinds)
         self.assertIn(("view", "vw_reportes"), kinds)
         trg = next(d for d in m["data_stores"] if d["kind"] == "trigger")
-        self.assertIn("BEFORE INSERT OR UPDATE en enempresa → fn_sector()", trg["detail"])
+        self.assertIn("BEFORE INSERT OR UPDATE en empresa → fn_sector()", trg["detail"])
         self.assertIn("RETURN NEW", trg["definition"] + next(d for d in m["data_stores"] if d["kind"] == "function")["definition"])
         catalogs = {c["table"]: c for c in m["catalogs"]}
         self.assertIn("ctroles", catalogs)
