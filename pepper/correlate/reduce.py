@@ -18,9 +18,9 @@ from pepper.session import Session
 GENERIC_NOISE: List[Dict[str, Any]] = [
     {
         "id": "health-check",
-        "description": "sondeos de salud (health, ping)",
+        "description": "sondeos de salud (GET a /health, /healthz, /ping, /actuator/health exactos)",
         "event_types": ["http_request", "http_response", "log"],
-        "matches": r"/(health|healthz|ping|actuator/health)(\?|\s|$)",
+        "matches": r"^(?:GET|HEAD) /(?:health|healthz|ping|actuator/health)(?:\?|\s|$)",
     },
     {
         "id": "connection-validation",
@@ -52,6 +52,8 @@ class ReductionReport:
     drops: List[Drop] = field(default_factory=list)
     unparsed: List[Tuple[str, str]] = field(default_factory=list)
     protected_outside_window: int = 0
+    # por fuente: cuántos eventos cayeron fuera de la ventana (una fuente entera fuera = zona horaria mal)
+    by_source: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
     def count(self, rule_id: str) -> int:
         return sum(1 for drop in self.drops if drop.rule_id == rule_id)
@@ -104,7 +106,10 @@ def reduce_events(
         previous_by_source[event.source] = event
 
         inside = session.observed_start <= event.timestamp <= session.observed_end
+        counter = report.by_source.setdefault(event.source, {"total": 0, "outside": 0})
+        counter["total"] += 1
         if not inside:
+            counter["outside"] += 1
             if event.is_protected:
                 event.metadata["outside_window"] = True
                 report.protected_outside_window += 1
@@ -120,6 +125,7 @@ def reduce_events(
             duplicate = (
                 event.event_type == "log"
                 and previous is not None
+                and abs((event.timestamp - previous.timestamp).total_seconds()) <= 1.0
                 and _fingerprint(previous) == _fingerprint(event)
             )
             if duplicate:

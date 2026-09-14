@@ -119,6 +119,10 @@ def run(evidence_dir: Path, out_dir: Path, profile_ref: Optional[str] = None, to
     (out_dir / "flow.json").write_text(json.dumps(flow, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (out_dir / "flow.md").write_text(render_flow(flow), encoding="utf-8")
     (out_dir / "reduction.md").write_text(render_reduction(report, session, raw_lines), encoding="utf-8")
+    # D8: CADA descarte con su raw_ref y su regla — el .md muestra una muestra; esto es la lista entera.
+    (out_dir / "reduction.jsonl").write_text(
+        "".join(json.dumps({"raw_ref": d.raw_ref, "rule": d.rule_id, "summary": d.summary}, ensure_ascii=False) + "\n"
+                for d in report.drops), encoding="utf-8")
     shutil.copy2(session_path, out_dir / "session.json")
 
     raw_dir = out_dir / "raw"

@@ -31,9 +31,11 @@ class Trace:
 
     def contains(self, moment: datetime, tolerance: timedelta) -> Optional[str]:
         if self.start <= moment <= self.end:
-            return "ventana temporal"
-        if self.start - tolerance <= moment <= self.end + tolerance:
-            return f"ventana temporal (±{int(tolerance.total_seconds() * 1000)} ms)"
+            return "ventana abierta (petición sin respuesta)" if self.open_ended else "ventana temporal"
+        # Solo hacia adelante: lo que pasó ANTES de que entrara la petición no es su efecto
+        # (un SELECT de catálogo 300 ms antes del POST se le atribuía).
+        if self.end < moment <= self.end + tolerance:
+            return f"ventana temporal (+{int(tolerance.total_seconds() * 1000)} ms)"
         return None
 
     def matching_affinity(self, event: Event, keys: List[str]) -> Optional[str]:
@@ -49,10 +51,14 @@ class Trace:
             if value is not None:
                 self.affinity.setdefault(key, set()).add(str(value))
 
-    def assign(self, event: Event, basis: str, keys: List[str]) -> None:
+    def assign(self, event: Event, basis: str, keys: List[str], learn: bool = True) -> None:
         self.events.append(event)
         self.basis[event.raw_ref] = basis
-        self.learn_affinity(event, keys)
+        # La afinidad (pid, thread) solo se aprende de lo que la fuente amarró con
+        # correlation_id explícito; aprenderla de una inferencia por ventana y luego
+        # presentarla como enlace fuerte era circular (pool de conexiones: el pid rota).
+        if learn:
+            self.learn_affinity(event, keys)
 
     def request_summary(self) -> Dict[str, Any]:
         request = next((e for e in self.events if e.event_type == "http_request"), None)
@@ -88,9 +94,14 @@ def _anchor_traces(events: List[Event], session: Session) -> Dict[str, Trace]:
         trace.end = max(trace.end, event.timestamp)
         if event.event_type == "http_response":
             trace.open_ended = False
-    for trace in traces.values():
+    # Una petición sin respuesta no reclama todo lo que sigue hasta el fin de la ventana:
+    # reclama hasta que entra la siguiente petición (un long-poll o una ventana cortada
+    # absorbía el SQL de los jobs y volvía ambiguas las peticiones siguientes).
+    ordered = sorted(traces.values(), key=lambda t: (t.start, t.correlation_id))
+    for index, trace in enumerate(ordered):
         if trace.open_ended:
-            trace.end = session.observed_end
+            following = next((t.start for t in ordered[index + 1:] if t.start > trace.start), None)
+            trace.end = min(session.observed_end, following) if following else session.observed_end
     return traces
 
 
@@ -126,7 +137,7 @@ def correlate(
         # milisegundos) la tolerancia por defecto declaraba "ambiguo" el 92% del SQL
         # que caía limpio dentro de UNA petición. La tolerancia es el respaldo para
         # los eventos que no caen dentro de ninguna, no una forma de perderlos.
-        exact = [(trace, basis) for trace, basis in candidates if "±" not in basis]
+        exact = [(trace, basis) for trace, basis in candidates if not basis.startswith("ventana temporal (+")]
         if exact:
             candidates = exact
 
@@ -134,7 +145,7 @@ def correlate(
             trace, basis = candidates[0]
             affinity = trace.matching_affinity(event, affinity_keys)
             basis = f"{basis} + {affinity}" if affinity else basis
-            trace.assign(event, basis, affinity_keys)
+            trace.assign(event, basis, affinity_keys, learn=False)
             _mark_inferred(event, trace.correlation_id, basis)
             continue
 
@@ -146,7 +157,7 @@ def correlate(
         if len(by_affinity) == 1:
             trace, affinity = by_affinity[0]
             basis = f"{affinity} (ventanas concurrentes)"
-            trace.assign(event, basis, affinity_keys)
+            trace.assign(event, basis, affinity_keys, learn=False)
             _mark_inferred(event, trace.correlation_id, basis)
             continue
 
@@ -167,7 +178,8 @@ def correlate(
         },
         "traces": [_trace_dict(trace) for trace in ordered_traces],
         "unassigned": unassigned,
-        "stats": {"events": len(events), "assigned": assigned, "unassigned": len(unassigned)},
+        "stats": {"events": len(events), "assigned": assigned, "unassigned": len(unassigned),
+                  "open_traces": sum(1 for t in ordered_traces if t.open_ended)},
     }
 
 

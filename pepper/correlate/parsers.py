@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pepper.correlate.events import Event
 from pepper.correlate.sql import sql_shape
-from pepper.session import Session, parse_datetime
+from pepper.session import Session, parse_datetime, parse_timezone
 
 Unparsed = Tuple[str, str]  # (raw_ref, línea)
 
@@ -88,6 +88,16 @@ def _assign(event: Event, target: str, value: Any) -> None:
         raise ValueError(f"destino de campo no soportado: {target!r}")
 
 
+def read_lines(path: Path) -> List[str]:
+    """Líneas como las ve un editor: solo `\\n` separa (splitlines() partía en \\x0c/\\u2028 y
+    desfasaba los raw_ref), y un byte inválido no tumba la correlación entera."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return [line[:-1] if line.endswith("\r") else line for line in lines]
+
+
 class PatternParser:
     def __init__(self, spec: Dict[str, Any], spec_path: Optional[Path] = None):
         self.spec = spec
@@ -97,6 +107,9 @@ class PatternParser:
         timestamp = spec.get("timestamp", {})
         self.ts_group: str = timestamp.get("group", "timestamp")
         self.ts_format: Optional[str] = timestamp.get("format")
+        # Si la línea trae su propia zona (grupo `tz`: UTC, CST…), esa manda sobre la de la sesión.
+        self.tz_group: Optional[str] = timestamp.get("tz_group")
+        self.tz_map: Dict[str, str] = timestamp.get("tz_map", {})
         self.fields: Dict[str, Any] = spec.get("fields", {})
         self.event_type_spec: Dict[str, Any] = spec.get("event_type", {})
         self.sql_spec: Dict[str, Any] = spec.get("sql", {})
@@ -116,7 +129,7 @@ class PatternParser:
         last_by_key: Dict[Any, Event] = {}
         merge_key = self.merge.get("key") if self.merge else None
 
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = read_lines(path)
         for number, line in enumerate(lines, 1):
             if not line.strip():
                 continue
@@ -135,7 +148,11 @@ class PatternParser:
                 if target is not None:
                     for field, field_spec in self.merge.get("fields", {}).items():
                         _assign(target, field, _field_value(field_spec, groups))
-                    continue
+                else:
+                    # un DETAIL sin sentencia previa no es un evento: sus parámetros (a veces
+                    # datos de personas) quedaban como mensaje de un `log` suelto
+                    unparsed.append((raw_ref, f"{self.merge['when'].get('equals', 'continuación')} sin línea a la que fusionarse: {line[:120]}"))
+                continue
 
             event = self._build_event(groups, raw_ref, session)
             events.append(event)
@@ -165,8 +182,16 @@ class PatternParser:
             parsed = datetime.strptime(raw, self.ts_format)
             if parsed.tzinfo is None:
                 parsed = parsed.replace(tzinfo=session.tz)
-            return parsed
-        return parse_datetime(raw, session.tz)
+        else:
+            parsed = parse_datetime(raw, session.tz)
+        if self.tz_group and groups.get(self.tz_group):
+            name = str(groups[self.tz_group]).strip()
+            offset = self.tz_map.get(name, name)
+            try:
+                parsed = parsed.replace(tzinfo=parse_timezone(offset))
+            except ValueError:
+                pass  # una zona que el perfil no mapea: se queda la de la sesión
+        return parsed
 
     def _event_type(self, groups: Dict[str, Any]) -> str:
         for rule in self.event_type_spec.get("rules", []):
@@ -245,7 +270,7 @@ class HttpProxyParser:
     def parse_file(self, path: Path, raw_prefix: str, session: Session) -> Tuple[List[Event], List[Unparsed]]:
         events: List[Event] = []
         unparsed: List[Unparsed] = []
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        for number, line in enumerate(read_lines(path), 1):
             if not line.strip():
                 continue
             raw_ref = f"{raw_prefix}:{number}"
@@ -335,7 +360,7 @@ class ExplorerParser:
     def parse_file(self, path: Path, raw_prefix: str, session: Session) -> Tuple[List[Event], List[Unparsed]]:
         events: List[Event] = []
         unparsed: List[Unparsed] = []
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        for number, line in enumerate(read_lines(path), 1):
             if not line.strip():
                 continue
             raw_ref = f"{raw_prefix}:{number}"

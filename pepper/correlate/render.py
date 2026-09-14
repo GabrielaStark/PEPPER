@@ -66,6 +66,11 @@ def render_reduction(report: ReductionReport, session: Session, raw_lines: int) 
         lines.append(
             f"Evidencia protegida fuera de la ventana, conservada y marcada con `metadata.outside_window`: {report.protected_outside_window}."
         )
+    for source, counter in sorted(getattr(report, "by_source", {}).items()):
+        if counter["total"] >= 5 and counter["outside"] / counter["total"] > 0.9:
+            lines.append(
+                f"**⚠ {source}: {counter['outside']} de {counter['total']} eventos cayeron FUERA de la ventana.** "
+                "Casi seguro es zona horaria: la fuente registra en otra zona que la declarada en session.json (o el parser no captura la suya).")
     lines += ["", "| Regla | Descripción | Alcance | Descartados |", "|---|---|---|---|"]
     for rule in report.rules:
         scope = rule.get("source") or "genérica"

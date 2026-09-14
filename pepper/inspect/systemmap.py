@@ -56,12 +56,13 @@ _REDACTED = "[REDACTADO]"
 
 # Columnas cuyo VALOR no debe viajar: credenciales y datos de personas.
 _SENSITIVE_COLUMN_RE = re.compile(
-    r"(?i)pass|pwd|contrase|secret|token|credencial|correo|mail|curp|rfc|telefono|celular|nacimiento|cedula"
+    r"(?i)pass|pwd|contrase|secret|token|credencial|correo|mail|curp|rfc|telefono|celular|nacimiento|cedula|"
+    r"nombre|apellido|domicilio|direccion|calle|colonia|nss|imss|clabe|cuenta|tarjeta|fecha_?nac|fnac|sexo|salario|sueldo"
 )
 # Valores que son datos de una persona o una credencial, en cualquier columna o cadena.
 _PII_VALUE_RE = re.compile(
     r"[\w.+-]+@[\w-]+\.[\w.-]+|\b[A-Z]{4}\d{6}[HM][A-Z]{5}[A-Z0-9]\d\b|\b[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}\b|"
-    r"\b\d{2,3}[ -]?\d{3}[ -]?\d{2}[ -]?\d{2}\b|\b\d{10}\b"
+    r"\b\d{2,3}[ -]?\d{3}[ -]?\d{2}[ -]?\d{2}\b|\b\d{10}\b|\b\d{11}\b|\b\d{18}\b"
 )
 # Renglones de tablas parámetro/clave-valor donde la CLAVE delata un secreto.
 _SECRET_KEY_RE = re.compile(r"(?i)pass|pwd|contrase|secret|token|credencial|smtp\.user|mail\.user|api.?key")
@@ -152,6 +153,8 @@ def _extract_config_hosts(artifact: Path, spec: Dict[str, Any], report: "MapRepo
                 continue
             key, _, value = stripped.partition(":")
             value = value.strip()
+            # usuario:clave@host dentro de una URL (jdbc, postgres://): la clave no viaja al mapa
+            value = re.sub(r"(?i)(://[^\s/:@]+:)[^\s@]+@", r"\1[REDACTADO]@", value)
             if key_re.search(key) and value and ("//" in value or "." in value):
                 report.notes.append(f"config {name}:{lineno} · {key.strip()}: {value[:80]}")
 
@@ -202,20 +205,30 @@ def _extract_pg_dump(spec: Dict[str, Any], report: "MapReport", dump: Optional[P
     catalog_max = int(spec.get("catalog_max_rows", 300))
     catalog_include = spec.get("catalog_include_patterns", [])  # vacío = toda tabla chica
     catalog_exclude = spec.get("catalog_exclude_patterns",
-                               [r"(?i)usuario|user|persona|trabajador|empleado|cliente|testigo|beneficiario|patron|empresa"])
+                               [r"(?i)usuario|user|persona|trabajador|empleado|cliente|testigo|beneficiario|patron|empresa|"
+                                r"ciudadano|contacto|proveedor|medico|paciente|solicitante|asegurado|derechohabiente|domicilio|direccion|telefono"])
     state_re = re.compile(spec.get("state_column_pattern", r"(?i)estatus|status|estado$|^tipo|_tipo|tipo_|nivel|sector|rol$"))
     top_n = int(spec.get("distribution_top", 15))
     date_re = re.compile(spec.get("date_column_pattern", r"(?i)^fecha|^fc[a-z]|_fecha|fecha$"))
 
-    tables = {e.tag: e for e in info.by_desc("TABLE")}
+    tables = {(e.namespace, e.tag): e for e in info.by_desc("TABLE")}   # public.cliente ≠ archivo.cliente
     readable = info.compression in ("none", "gzip")
-    counts: Dict[str, int] = {}
+    counts: Dict[Tuple[str, str], int] = {}
+
+    def table_name(namespace: str, tag: str) -> str:
+        return tag if namespace in ("", "public") else f"{namespace}.{tag}"
+
     for entry in info.by_desc("TABLE DATA"):
-        table = tables.get(entry.tag)
+        table = tables.get((entry.namespace, entry.tag))
         columns = pgdump.table_columns(table.defn) if table else []
-        rows_count = pgdump.count_rows(info, entry) if readable else -1
-        counts[entry.tag] = rows_count
-        item: Dict[str, Any] = {"kind": "table", "name": entry.tag, "columns": columns, "evidence": ref}
+        try:
+            rows_count = pgdump.count_rows(info, entry) if readable else -1
+        except ValueError as error:
+            # fail-honest: una tabla ilegible es un hueco declarado, no un mapa sin ella ni un traceback
+            report.gap(f"pg_dump_custom: {entry.tag}: {error}")
+            rows_count = -1
+        counts[(entry.namespace, entry.tag)] = rows_count
+        item: Dict[str, Any] = {"kind": "table", "name": table_name(entry.namespace, entry.tag), "columns": columns, "evidence": ref}
         if rows_count >= 0:
             item["count"] = rows_count
         report.data.append(item)
@@ -224,7 +237,11 @@ def _extract_pg_dump(spec: Dict[str, Any], report: "MapReport", dump: Optional[P
         is_catalog = (rows_count <= catalog_max and not _match_any(catalog_exclude, entry.tag)
                       and (not catalog_include or _match_any(catalog_include, entry.tag)))
         if is_catalog:
-            rows = [_redact_row(columns, row) for row in pgdump.iter_rows(info, entry, limit=catalog_max)]
+            try:
+                rows = [_redact_row(columns, row) for row in pgdump.iter_rows(info, entry, limit=catalog_max)]
+            except ValueError as error:
+                report.gap(f"pg_dump_custom: {entry.tag}: {error}")
+                continue
             report.catalogs.append({"table": entry.tag, "columns": columns, "count": rows_count,
                                     "rows": rows, "evidence": ref})
         elif rows_count > 0:
@@ -255,8 +272,8 @@ def _extract_pg_dump(spec: Dict[str, Any], report: "MapReport", dump: Optional[P
                         "values": [{"value": (v[:80] if isinstance(v, str) else v), "count": n} for v, n in top],
                         "evidence": ref,
                     })
-    for name in sorted(t for t in tables if t not in counts):
-        report.data.append({"kind": "table", "name": name, "columns": pgdump.table_columns(tables[name].defn),
+    for key in sorted(t for t in tables if t not in counts):
+        report.data.append({"kind": "table", "name": table_name(*key), "columns": pgdump.table_columns(tables[key].defn),
                             "detail": "sin datos en el respaldo", "evidence": ref})
     for entry in info.by_desc("VIEW"):
         report.data.append({"kind": "view", "name": entry.tag, "definition": entry.defn.strip(), "evidence": ref})
@@ -380,10 +397,22 @@ def _extract_jvm_routes(artifact: Path, spec: Dict[str, Any], report: "MapReport
         classes = _class_names(artifact, spec.get("class_root", "WEB-INF/classes"),
                                spec.get("package_prefixes", []), False, Path(tmp))
         outputs = _javap_batches(javap, classes, ["-p", "-v"])
+        _report_unreadable("jvm_route_annotations", classes, outputs, report)
         for fqn, _ in classes:
             out = outputs.get(fqn)
             if out:
                 _parse_javap(out, fqn.split(".")[-1], report, spec.get("job_signatures") or {})
+
+
+def _report_unreadable(mechanism: str, classes, outputs: Dict[str, str], report: "MapReport") -> None:
+    """Una clase que javap no pudo leer (artefacto compilado con un JDK más nuevo, .class
+    corrupto) desaparecía en silencio y el mapa salía COMPLETO. Fail-honest: es un hueco
+    con nombre y apellido."""
+    missing = [fqn for fqn, _ in classes if fqn not in outputs]
+    if missing:
+        shown = ", ".join(missing[:5]) + (f" … y {len(missing) - 5} más" if len(missing) > 5 else "")
+        report.gap(f"{mechanism}: {len(missing)} de {len(classes)} clases no se pudieron leer con javap "
+                   f"(¿JDK más viejo que el del artefacto? ¿.class corrupto?): {shown}")
 
 
 def _parse_javap(out: str, class_name: str, report: "MapReport",
@@ -462,6 +491,7 @@ def _extract_jvm_classes(artifact: Path, spec: Dict[str, Any], report: "MapRepor
         classes = _class_names(artifact, spec.get("class_root", "WEB-INF/classes"),
                                spec.get("package_prefixes", []), bool(spec.get("include_own_libs", True)), Path(tmp))
         outputs = _javap_batches(javap, classes, ["-p", "-c", "-constants"])
+        _report_unreadable("jvm_class_inventory", classes, outputs, report)
         for fqn, _ in classes:
             out = outputs.get(fqn)
             if not out:

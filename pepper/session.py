@@ -65,6 +65,8 @@ class Session:
         if missing:
             raise ValueError(f"{path}: faltan campos en session.json: {', '.join(missing)}")
 
+        if "timezone" not in data and not re.search(r"(Z|[+-]\d{2}:?\d{2})$", str(data["observed_start"])):
+            raise ValueError(f"{path}: session.json no declara timezone y observed_start no trae zona: sin zona las fuentes no se alinean")
         tz = parse_timezone(data.get("timezone", "Z"))
         collectors = [
             Collector(
@@ -76,6 +78,9 @@ class Session:
             for item in data["collectors"]
         ]
         environment = data.get("environment") or {}
+        start, end = parse_datetime(data["observed_start"], tz), parse_datetime(data["observed_end"], tz)
+        if end < start:
+            raise ValueError(f"{path}: observed_end ({data['observed_end']}) es anterior a observed_start ({data['observed_start']})")
         return cls(
             session_id=data["session_id"],
             flow_name=data.get("flow_name", data["session_id"]),

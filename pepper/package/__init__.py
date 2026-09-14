@@ -26,7 +26,10 @@ from pepper import manifest as evidence_manifest
 from pepper.workspace import is_tool_path, tool_paths
 
 _EVIDENCE_FILES = ("events.jsonl", "flow.json", "flow.md", "reduction.md")
-_LEGACY_IGNORE = shutil.ignore_patterns("target", ".git", "node_modules", "__pycache__", "*.class", ".DS_Store")
+from pepper.sensitive import IGNORED_DIRS, IGNORED_SUFFIXES
+
+# Lo que se copia se escanea y lo que no se escanea no se copia: la misma lista que el escáner.
+_LEGACY_IGNORE = shutil.ignore_patterns(*IGNORED_DIRS, *[f"*{suffix}" for suffix in IGNORED_SUFFIXES], ".DS_Store")
 SCHEMA_NAME = "functional-discovery.schema.json"
 OUTPUT_JSON = "funcional.json"
 OUTPUT_MD = "funcional.md"
@@ -153,7 +156,9 @@ def _readme(session: Dict[str, Any], flow: Dict[str, Any], legacy_dirs: List[str
     return "\n".join(lines)
 
 
-_CREDENTIAL_LINE_RE = re.compile(r"(?im)^(\s*(?:pass\w*|contrase\w*|clave|secret\w*|token|pwd)\s*[:=]\s*)(\S.*)$")
+# La palabra clave puede ir en cualquier parte de la línea ("Contraseña de la base: x",
+# "clave del usuario admin = x"): se redacta todo lo que sigue al separador.
+_CREDENTIAL_LINE_RE = re.compile(r"(?im)^(.*?\b(?:pass\w*|contrase\w*|clave|secret\w*|token|pwd|psw)\b[^:=\n]{0,40}[:=]\s*)(\S.*)$")
 
 
 def _assert_no_symlinks(root: Path, label: str, ignore=None) -> None:
@@ -269,9 +274,20 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
     roots = [("evidence", correlated_dir, None)]
     if legacy_dir is not None:
         roots.append(("legacy", legacy_dir, _legacy_ignore(legacy_dir)))
+    map_tmp = None
     if system_map is not None and system_map.is_file():
-        roots.append(("map", system_map.parent / "map", None))
+        # Se escanea EXACTAMENTE lo que va a viajar: el mapa rendido aquí, no una carpeta
+        # que quizá no existe (si faltaba, antes se regeneraba después del escaneo y una
+        # CURP de un catálogo entraba al paquete remoto sin ser vista).
+        import tempfile
+        from pepper.inspect import render_map
+        map_tmp = tempfile.TemporaryDirectory()
+        for name, text in render_map(json.loads(system_map.read_text(encoding="utf-8"))).items():
+            (Path(map_tmp.name) / name).write_text(text, encoding="utf-8")
+        roots.append(("map", Path(map_tmp.name), None))
     data_report = scan_sensitive(roots)
+    if map_tmp is not None:
+        map_tmp.cleanup()
     # `synthetic` lo escribe quien produce session.json: informa, pero NO exime del gate.
     synthetic = bool(session.get("synthetic"))
     if data_mode == "remote":

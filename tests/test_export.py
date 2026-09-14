@@ -159,7 +159,14 @@ class ExportTest(unittest.TestCase):
         self.assertTrue(any("E-999" in error for error in report.errors), report.errors)
 
     def test_observed_source_from_a_previous_session_is_trusted_if_declared(self):
-        # el documento es acumulativo: lo observado en otra sesión ya se verificó al exportarla
+        # el documento es acumulativo: lo observado en otra sesión vale si esa sesión y esa
+        # misma fuente están en previous/funcional.json; sin previous/ no hay contra qué comprobarlo
+        previous = json.loads(GOLDEN.read_text(encoding="utf-8"))
+        previous["sessions"] = [{"session_id": "flow-000", "flow_name": "anterior"}]
+        previous["sources"] = [{"id": "S-1", "kind": "observado", "ref": "E-999", "session_id": "flow-000"}]
+        (self.package / "previous").mkdir()
+        (self.package / "previous" / "funcional.json").write_text(json.dumps(previous), encoding="utf-8")
+
         def add(d):
             d["sessions"].append({"session_id": "flow-000", "flow_name": "anterior"})
             d["sources"].append({"id": "S-800", "kind": "observado", "ref": "E-999", "session_id": "flow-000"})
@@ -170,10 +177,20 @@ class ExportTest(unittest.TestCase):
         self.assertFalse(any("S-800" in e for e in report.errors), report.errors)
         self.assertTrue(any("S-801" in e and "no está declarada" in e for e in report.errors), report.errors)
 
+    def test_observed_source_from_a_previous_session_needs_previous_document(self):
+        # sin previous/ (o con otra fuente ahí) "ya se verificó antes" es una frase, no un check
+        def add(d):
+            d["sessions"].append({"session_id": "flow-000", "flow_name": "anterior"})
+            d["sources"].append({"id": "S-800", "kind": "observado", "ref": "E-999", "session_id": "flow-000"})
+            d["rules"][0]["sources"].append("S-800")
+        self._rewrite(add)
+        _, report = validate(self.package, self.manifest)
+        self.assertTrue(any("S-800" in e and "previous/" in e for e in report.errors), report.errors)
+
     def test_code_source_must_exist_in_package(self):
         self._rewrite(lambda d: d["sources"][-1].__setitem__("ref", "legacy/source/NoExiste.java"))
         _, report = validate(self.package, self.manifest)
-        self.assertTrue(any("no resuelve" in error for error in report.errors), report.errors)
+        self.assertTrue(any("S-022" in error and "no es un archivo del paquete" in error for error in report.errors), report.errors)
 
     def test_claim_without_sources_is_rejected(self):
         if jsonschema is None:

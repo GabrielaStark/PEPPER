@@ -43,6 +43,13 @@
     "rules": [
       {
         "when": {
+          "field": "kind",
+          "matches": "^STATEMENT$"
+        },
+        "value": "sql"
+      },
+      {
+        "when": {
           "field": "message",
           "matches": "^(statement|execute [^:]*):\\s"
         },

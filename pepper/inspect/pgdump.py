@@ -40,6 +40,8 @@ class TocEntry:
     has_data: bool
     data_pos: int
     owner: str = ""
+    has_copy: bool = True     # False: los datos van como INSERT (pg_dump --inserts): no se inventarían
+    data_state: int = 2       # K_OFFSET_POS_SET; 1 = escrito a un pipe, sin posición: no se leen
 
 
 @dataclass
@@ -86,12 +88,16 @@ class _Reader:
         self.offsize = 8
 
     def byte(self) -> int:
+        if self.p >= len(self.d):
+            raise ValueError("respaldo truncado o corrupto: se acabaron los bytes a mitad de la tabla de contenidos")
         value = self.d[self.p]
         self.p += 1
         return value
 
     def int(self) -> int:
         sign = self.byte()
+        if self.p + self.intsize > len(self.d):
+            raise ValueError("respaldo truncado o corrupto: entero incompleto")
         value = 0
         for i in range(self.intsize):
             value |= self.d[self.p + i] << (8 * i)
@@ -102,12 +108,16 @@ class _Reader:
         n = self.int()
         if n < 0:
             return None
+        if self.p + n > len(self.d):
+            raise ValueError("respaldo truncado o corrupto: cadena incompleta")
         raw = self.d[self.p:self.p + n]
         self.p += n
         return raw.decode("utf-8", errors="replace")
 
     def offset(self) -> Tuple[int, int]:
         state = self.byte()
+        if self.p + self.offsize > len(self.d):
+            raise ValueError("respaldo truncado o corrupto: offset incompleto")
         value = 0
         for i in range(self.offsize):
             value |= self.d[self.p + i] << (8 * i)
@@ -158,7 +168,7 @@ def read_toc(path: Path) -> DumpInfo:
         r.int()  # section
         defn = r.str() or ""
         r.str()  # dropStmt
-        r.str()  # copyStmt
+        copy_stmt = r.str()
         namespace = r.str() or ""
         r.str()  # tablespace
         if version >= (1, 14, 0):
@@ -169,9 +179,10 @@ def read_toc(path: Path) -> DumpInfo:
         r.str()  # withOids (siempre "false")
         while r.str() is not None:  # dependencias, terminadas por NULL
             pass
-        _, pos = r.offset()  # extra del formato custom: posición del bloque de datos
+        state, pos = r.offset()  # extra del formato custom: posición del bloque de datos
         info.entries.append(TocEntry(dump_id=dump_id, desc=desc, tag=tag, namespace=namespace,
-                                     defn=defn, has_data=bool(has_dumper), data_pos=pos, owner=owner))
+                                     defn=defn, has_data=bool(has_dumper), data_pos=pos, owner=owner,
+                                     has_copy=bool(copy_stmt), data_state=state))
     return info
 
 
@@ -179,9 +190,16 @@ def iter_rows(info: DumpInfo, entry: TocEntry, limit: Optional[int] = None) -> I
     """Filas de una tabla en formato COPY: lista de columnas, `None` donde había `\\N`."""
     if info.compression not in ("none", "gzip"):
         raise ValueError(f"{info.path.name}: compresión {info.compression} no soportada por el lector")
+    if entry.data_state != 2:
+        raise ValueError(f"{entry.tag}: el respaldo no guardó la posición de sus datos (se escribió a un pipe, `pg_dump | …`); "
+                         "sus filas no se pueden leer sin restaurarlo")
+    if not entry.has_copy:
+        raise ValueError(f"{entry.tag}: datos en formato INSERT (pg_dump --inserts), no en COPY; no se inventarían")
     data = info.bytes
     r = _Reader(data)
     r.intsize, r.offsize = _sizes(data)
+    if entry.data_pos >= len(data):
+        raise ValueError(f"{entry.tag}: la posición de sus datos cae fuera del archivo (respaldo truncado)")
     r.p = entry.data_pos
     block_type = r.byte()
     if block_type != 1:  # BLK_DATA
@@ -224,14 +242,20 @@ def count_rows(info: DumpInfo, entry: TocEntry) -> int:
 _COPY_ESCAPES = {b"\\N": None}
 
 
+_COPY_UNESCAPE = {"t": "\t", "n": "\n", "r": "\r", "b": "\b", "f": "\f", "v": "\v", "\\": "\\"}
+_COPY_ESCAPE_RE = re.compile(r"\\(.)", re.S)
+
+
 def _split_copy(line: bytes) -> List[Optional[str]]:
+    """Formato COPY: `\\N` es NULL; los escapes se resuelven en UNA pasada (dos pasadas
+    convertían `a\\\\tb` —barra+t literal— en tabulador)."""
     cells: List[Optional[str]] = []
     for cell in line.split(b"\t"):
         if cell == b"\\N":
             cells.append(None)
         else:
             text = cell.decode("utf-8", errors="replace")
-            cells.append(text.replace("\\t", "\t").replace("\\n", "\n").replace("\\\\", "\\"))
+            cells.append(_COPY_ESCAPE_RE.sub(lambda m: _COPY_UNESCAPE.get(m.group(1), m.group(1)), text))
     return cells
 
 

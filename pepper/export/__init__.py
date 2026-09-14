@@ -50,7 +50,7 @@ def _schema_errors(discovery: Dict[str, Any]) -> List[str]:
         # Fail-closed: sin validación de forma no hay publicación.
         return ["jsonschema es obligatorio para Export: pip install jsonschema — sin él no se valida la forma y no se publica"]
     schema = json.loads((SCHEMAS_DIR / SCHEMA_NAME).read_text(encoding="utf-8"))
-    validator = jsonschema.Draft202012Validator(schema)
+    validator = jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker())
     errors = sorted(validator.iter_errors(discovery), key=lambda e: list(e.absolute_path))
     messages = []
     for error in errors[:_MAX_SCHEMA_ERRORS]:
@@ -61,14 +61,65 @@ def _schema_errors(discovery: Dict[str, Any]) -> List[str]:
     return messages
 
 
+def count_lines(text: str) -> int:
+    """Líneas como las cuenta un editor o `wc -l`: solo `\\n` separa (splitlines() partía en
+    \\x0c, \\u2028, \\x85 y desfasaba cada raw_ref respecto a lo que el humano ve)."""
+    if not text:
+        return 0
+    return text.count("\n") + (0 if text.endswith("\n") else 1)
+
+
 def _raw_line_counts(raw_dir: Path) -> Dict[str, int]:
     counts: Dict[str, int] = {}
     if raw_dir.is_dir():
         for path in raw_dir.rglob("*"):
             if path.is_file():
                 relative = path.relative_to(raw_dir).as_posix()
-                counts[relative] = len(path.read_text(encoding="utf-8", errors="replace").splitlines())
+                counts[relative] = count_lines(path.read_text(encoding="utf-8", errors="replace"))
     return counts
+
+
+_LEGACY_DATA_SUFFIXES = {".sql", ".dump", ".backup", ".bak", ".psql", ".dmp", ".gz", ".tar"}
+_NOT_A_SOURCE = ("output/", "evidence/", "schemas/", "previous/", "README.md", "CLAUDE.md", "AGENTS.md",
+                 "prompt.md", "session.json", "evidence-manifest.json")
+
+
+def _legacy_ref(package_dir: Path, ref: str) -> Tuple[Optional[Path], Optional[int], Optional[str]]:
+    """`legacy/<ruta>[:línea]` → (archivo, línea, error). Solo archivos bajo legacy/: un agente
+    que escriba su propio 'respaldo' en output/ y lo cite (o cite la raíz, un directorio,
+    el README o el manifest) no sostiene nada."""
+    m = re.match(r"^(.+?):(\d+)$", ref)
+    path_part, line = (m.group(1), int(m.group(2))) if m else (ref, None)
+    if path_part.startswith(_NOT_A_SOURCE) or path_part in (".", "", "/") or path_part.startswith(("/", "..")):
+        return None, None, f"{ref!r} no es una fuente: solo `map:<colección>:<nombre>` o un archivo bajo legacy/ (no output/, evidence/, la raíz ni los metadatos del paquete)"
+    if not path_part.startswith("legacy/"):
+        return None, None, f"{ref!r} no está bajo legacy/ ni es `map:…`"
+    candidate = package_dir / path_part
+    try:
+        candidate.resolve().relative_to(package_dir.resolve())
+    except ValueError:
+        return None, None, f"{ref!r} sale del paquete"
+    if not candidate.is_file():
+        return None, None, f"{ref!r} no es un archivo del paquete" + (" (es un directorio)" if candidate.is_dir() else "")
+    return candidate, line, None
+
+
+def _file_lines(path: Path) -> int:
+    try:
+        return count_lines(path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return 0
+
+
+def _previous_document(package_dir: Path) -> Optional[Dict[str, Any]]:
+    path = package_dir / "previous" / OUTPUT_JSON
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _verify_manifest(package_dir: Path, report: Report, external: Optional[Path]) -> None:
@@ -140,12 +191,13 @@ def _map_index(package_dir: Path) -> Optional[Dict[str, Set[str]]]:
 
 def _check_source(entry: Dict[str, Any], package_dir: Path, event_ids: Set[str], raw_counts: Dict[str, int],
                   map_index: Optional[Dict[str, Set[str]]], report: Report,
-                  package_session: Optional[str] = None, declared_sessions: Optional[Set[str]] = None) -> None:
+                  package_session: Optional[str] = None, declared_sessions: Optional[Set[str]] = None,
+                  events_present: bool = False, previous: Optional[Dict[str, Any]] = None) -> None:
     """Cada fuente resuelve a algo que existe en el paquete, según su tipo.
 
-    Una fuente observada de OTRA sesión (el documento es acumulativo) ya se
-    verificó cuando esa sesión se exportó: aquí solo se exige que la sesión esté
-    declarada en `sessions`. Lo de esta sesión se verifica contra la evidencia."""
+    Una fuente observada de OTRA sesión solo vale si esa sesión y esa misma fuente
+    están en `previous/funcional.json` (amarrado por hash): sin previous/ no hay
+    contra qué comprobarla, y "ya se verificó antes" era una frase, no un check."""
     sid, kind, ref = entry.get("id"), entry.get("kind"), str(entry.get("ref", "")).strip()
     if not ref:
         report.errors.append(f"fuente {sid}: ref vacío")
@@ -155,9 +207,20 @@ def _check_source(entry: Dict[str, Any], package_dir: Path, event_ids: Set[str],
         if other and package_session and other != package_session:
             if declared_sessions is not None and other not in declared_sessions:
                 report.errors.append(f"fuente {sid}: cita la sesión {other!r}, que no está declarada en sessions")
+                return
+            if previous is None:
+                report.errors.append(f"fuente {sid}: cita la sesión {other!r} pero el paquete no trae previous/{OUTPUT_JSON}: no hay contra qué comprobarla")
+                return
+            prev_sessions = {s.get("session_id") for s in previous.get("sessions") or [] if isinstance(s, dict)}
+            if other not in prev_sessions:
+                report.errors.append(f"fuente {sid}: la sesión {other!r} no aparece en previous/{OUTPUT_JSON}")
+                return
+            if not any(isinstance(s, dict) and s.get("kind") == "observado" and str(s.get("ref", "")).strip() == ref
+                       for s in previous.get("sources") or []):
+                report.errors.append(f"fuente {sid}: {ref!r} no está entre las fuentes observadas del documento anterior")
             return
         if _EVENT_REF_RE.match(ref):
-            if event_ids and ref not in event_ids:
+            if events_present and ref not in event_ids:
                 report.errors.append(f"fuente {sid}: event_id {ref!r} no existe en evidence/events.jsonl")
             return
         m = _RAW_REF_RE.match(ref)
@@ -170,42 +233,40 @@ def _check_source(entry: Dict[str, Any], package_dir: Path, event_ids: Set[str],
         elif not 1 <= line <= raw_counts[file_name]:
             report.errors.append(f"fuente {sid}: raw_ref {ref!r} fuera de rango ({raw_counts[file_name]} líneas)")
         return
-    if kind in ("en_codigo", "en_base", "en_datos"):
+    if kind in ("en_codigo", "en_base", "en_datos", "en_config", "en_doc"):
         m = _MAP_REF_RE.match(ref)
-        if m:
-            if map_index is None:
+        if m or ref.startswith("map:"):
+            if not m:
+                report.errors.append(f"fuente {sid}: {ref!r} no tiene la forma map:<colección>:<nombre>")
+            elif map_index is None:
                 report.errors.append(f"fuente {sid}: cita el mapa ({ref}) pero el paquete no trae map/")
             elif m.group(2) not in map_index.get(m.group(1), set()):
                 report.errors.append(f"fuente {sid}: {ref!r} no existe en map/system-map.json")
             return
-        if _exists_in_package(package_dir, ref):
+        path, line, error = _legacy_ref(package_dir, ref)
+        if error:
+            external = kind in ("en_config", "en_doc") and not ref.startswith(("legacy/", "output/", "evidence/", ".", "/"))
+            if external:
+                # un manual o una configuración que no viene en el paquete: se acepta SOLO descrita
+                if str(entry.get("description") or "").strip():
+                    report.warnings.append(f"fuente {sid}: {ref!r} no está en el paquete; se acepta como cita externa descrita")
+                else:
+                    report.errors.append(f"fuente {sid}: {ref!r} no está en el paquete; una cita externa necesita `description` (qué documento es y dónde está)")
+                return
+            report.errors.append(f"fuente {sid}: {error}")
             return
-        report.errors.append(
-            f"fuente {sid}: una fuente {kind} es `map:<colección>:<nombre>` (clase, pantalla, tabla, catálogo, "
-            f"distribución tabla.columna, job, ruta) o un archivo del paquete (legacy/…[:línea]); {ref!r} no resuelve")
+        if kind in ("en_base", "en_datos") and path.suffix.lower() not in _LEGACY_DATA_SUFFIXES:
+            report.errors.append(f"fuente {sid}: una fuente {kind} es `map:<colección>:<nombre>` o un respaldo bajo legacy/ (.sql, .dump…); {ref!r} no lo es")
+            return
+        if line is not None:
+            total = _file_lines(path)
+            if not 1 <= line <= total:
+                report.errors.append(f"fuente {sid}: {ref!r} fuera de rango ({total} líneas)")
         return
-    if kind in ("en_config", "en_doc"):
-        if ref.startswith("map:"):
-            m = _MAP_REF_RE.match(ref)
-            if not m or map_index is None or m.group(2) not in map_index.get(m.group(1), set()):
-                report.errors.append(f"fuente {sid}: {ref!r} no existe en el mapa")
-        elif not _exists_in_package(package_dir, ref):
-            report.warnings.append(f"fuente {sid}: {ref!r} no es un archivo del paquete; se acepta como cita externa")
+    if kind == "humano":
+        if not str(entry.get("description") or "").strip():
+            report.errors.append(f"fuente {sid}: una fuente humana lleva `description` con el nombre o el rol de quien lo dijo")
         return
-    # humano: se cita con nombre o rol; no es verificable por máquina
-
-
-def _exists_in_package(package_dir: Path, ref: str) -> bool:
-    path_part = ref
-    m = _RAW_REF_RE.match(ref)
-    if m and not Path(ref).exists():
-        path_part = m.group(1)
-    candidate = (package_dir / path_part)
-    try:
-        candidate.resolve().relative_to(package_dir.resolve())
-    except ValueError:
-        return False
-    return candidate.is_file() or candidate.is_dir()
 
 
 def _iter_sourced(discovery: Dict[str, Any]):
@@ -247,8 +308,9 @@ def validate(package_dir: Path, external_manifest: Optional[Path] = None) -> Tup
     declared = {s.get("session_id") for s in discovery.get("sessions") or [] if isinstance(s, dict)}
     if session_path.is_file():
         session_id = json.loads(session_path.read_text(encoding="utf-8")).get("session_id")
-        if session_id and declared and session_id not in declared:
+        if session_id and session_id not in declared:
             report.errors.append(f"sessions no incluye la sesión de este paquete ({session_id!r}); declaradas: {sorted(declared)}")
+    previous = _previous_document(package_dir)
 
     events_path = package_dir / "evidence" / "events.jsonl"
     event_ids = {record.get("event_id") for record in read_jsonl(events_path)} if events_path.is_file() else set()
@@ -266,7 +328,8 @@ def validate(package_dir: Path, external_manifest: Optional[Path] = None) -> Tup
         if sid in source_ids:
             report.errors.append(f"sources[{index}]: id repetido {sid!r}")
         source_ids[sid] = index
-        _check_source(entry, package_dir, event_ids, raw_counts, map_index, report, session_id, declared)
+        _check_source(entry, package_dir, event_ids, raw_counts, map_index, report, session_id, declared,
+                      events_present=events_path.is_file(), previous=previous)
 
     referenced: Set[str] = set()
     for where, refs in _iter_sourced(discovery):
@@ -283,8 +346,33 @@ def validate(package_dir: Path, external_manifest: Optional[Path] = None) -> Tup
         report.warnings.append("ninguna fuente es 'observado' aunque el paquete trae evidencia de ejecución")
     if not discovery.get("unknowns"):
         report.errors.append("unknowns está vacío: en un legacy siempre hay algo que no se sabe; decláralo")
-    if not (package_dir / "output" / OUTPUT_MD).is_file():
+    md_path = package_dir / "output" / OUTPUT_MD
+    if not md_path.is_file():
         report.errors.append(f"falta output/{OUTPUT_MD}: el documento legible ES el entregable")
+    else:
+        # El .md es lo que el humano lee: doce secciones fijas y contenido de verdad, no una línea.
+        text = md_path.read_text(encoding="utf-8", errors="replace")
+        found = {int(n) for n in re.findall(r"^##\s+(\d{1,2})\.", text, flags=re.M)}
+        missing = sorted(set(range(1, 13)) - found)
+        if missing:
+            report.errors.append(f"{OUTPUT_MD}: faltan las secciones {', '.join(map(str, missing))} de las doce fijas (## N. …)")
+        if len(text.split()) < 300:
+            report.errors.append(f"{OUTPUT_MD}: {len(text.split())} palabras no son el documento de un sistema")
+    if previous is not None:
+        # Acumulativo de verdad: lo anterior no desaparece en silencio.
+        prev_sessions = {s.get("session_id") for s in previous.get("sessions") or [] if isinstance(s, dict)}
+        lost_sessions = sorted(s for s in prev_sessions if s and s not in declared)
+        if lost_sessions:
+            report.errors.append(f"sessions perdió sesiones del documento anterior: {', '.join(lost_sessions)}")
+        ids_now = {r.get("id") for r in discovery.get("rules") or [] if isinstance(r, dict)}
+        lost_rules = sorted(r.get("id") for r in previous.get("rules") or [] if isinstance(r, dict) and r.get("id") not in ids_now)
+        if lost_rules:
+            report.warnings.append(f"reglas del documento anterior que desaparecieron: {', '.join(map(str, lost_rules))} — si dejaron de ser ciertas, van a contradictions")
+        q_now = {str(u.get("question", "")).strip() for u in discovery.get("unknowns") or [] if isinstance(u, dict)}
+        lost_unknowns = [str(u.get("question", "")).strip()[:60] for u in previous.get("unknowns") or []
+                         if isinstance(u, dict) and str(u.get("question", "")).strip() not in q_now]
+        if lost_unknowns:
+            report.warnings.append(f"desconocidos del documento anterior que desaparecieron sin resolverse a la vista: {'; '.join(lost_unknowns)}")
 
     report.stats = {
         key: len(discovery.get(key) or [])
@@ -348,4 +436,8 @@ def publish(package_dir: Path, out_dir: Path, external_manifest: Optional[Path] 
         system_doc_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(output_dir / OUTPUT_JSON, system_doc_dir / OUTPUT_JSON)
         shutil.copy2(output_dir / OUTPUT_MD, system_doc_dir / OUTPUT_MD)
+        # La entrega a stark que el README promete y nadie escribía: docs/analysis/funcional.md
+        analysis_dir = system_doc_dir.parent / "analysis"
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(output_dir / OUTPUT_MD, analysis_dir / OUTPUT_MD)
     return report

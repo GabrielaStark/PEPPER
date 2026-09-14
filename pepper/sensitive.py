@@ -15,18 +15,32 @@ from typing import Callable, Iterable, List, Optional, Tuple
 
 _MAX_TEXT_BYTES = 2_000_000
 _MAX_FINDINGS = 200
-_IGNORED_DIRS = {".git", "node_modules", "target", "__pycache__", ".idea", ".vscode"}
-_IGNORED_SUFFIXES = {".class", ".pyc"}
+# Una sola lista para el escáner Y para lo que Package copia: lo que se copia se
+# escanea, y lo que no se escanea no se copia (.idea/dataSources.local.xml guarda
+# contraseñas de base; antes se copiaba sin mirarse — auditoría 2026-09-11).
+IGNORED_DIRS = {".git", "node_modules", "target", "__pycache__", ".idea", ".vscode"}
+IGNORED_SUFFIXES = {".class", ".pyc"}
+_IGNORED_DIRS, _IGNORED_SUFFIXES = IGNORED_DIRS, IGNORED_SUFFIXES
 
+_KEYWORDS = r"(?:password|passwd|passphrase|pwd|psw|contrase\w*|clave|secret|token|api[_-]?key|client[_-]?secret|credencial)"
+# clave=valor, clave: valor, clave => valor; con sufijos (db_password_prod, passwordEncrypted)
 _SECRET_ASSIGNMENT = re.compile(
-    r"(?i)[\"']?(?:password|passwd|passphrase|pwd|psw|contrase\w*|clave|secret|token|api[_-]?key|client[_-]?secret|credencial)"
-    r"[\"']?\s*[:=]\s*[\"']?([^\s\"'#,;<>]{4,})"
+    r"(?i)[\"']?" + _KEYWORDS + r"\w*[\"']?\s*(?:[:=]|=>)\s*[\"']?([^\s\"'<>()]{4,})"
 )
 _SECRET_XML = re.compile(
-    r"(?i)<(?:password|passwd|passphrase|pwd|psw|contrase\w*|clave|secret|token|api[_-]?key|client[_-]?secret|credencial)[^>]*>"
-    r"\s*([^<\s]{4,})\s*</"
+    r"(?i)<" + _KEYWORDS + r"[^>]*>\s*([^<\s]{4,})\s*</"
 )
-_PRIVATE_KEY = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----")
+# SQL: CREATE ROLE … PASSWORD 'x'; CREATE USER MAPPING … OPTIONS (user 'u', password 'x') — el caso de D19
+_SECRET_SQL = re.compile(r"(?i)\b(?:password|passwd)\s+'([^']{1,})'")
+# esquema://usuario:clave@host (jdbc, postgres://, amqp://, http://)
+_SECRET_URL = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s/:@\"']+:([^\s@\"']{1,})@")
+_SECRET_AUTH = re.compile(r"(?i)\bauthorization\s*[:=]\s*(?:basic|bearer)\s+([^\s\"']{8,})")
+_PRIVATE_KEY = re.compile(r"-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----")   # RSA, EC, OPENSSH, DSA, ENCRYPTED, PGP…
+# Archivos que SON material sensible por su nombre, aunque sean binarios.
+_SENSITIVE_NAMES = {".pgpass", ".netrc", ".htpasswd", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}
+_SENSITIVE_SUFFIXES = {".jks", ".p12", ".pfx", ".key", ".pem", ".keystore", ".ppk"}
+_CLABE = re.compile(r"\b\d{18}\b")
+_TARJETA = re.compile(r"\b(?:\d{4}[ -]?){3}\d{4}\b")
 _CURP = re.compile(r"\b[A-Z][AEIOUX][A-Z]{2}\d{6}[HM][A-Z]{5}[A-Z0-9]\d\b", re.IGNORECASE)
 # RFC (persona moral 3 letras, física 4) con fecha válida y homoclave que termina en dígito o A,
 # solo en mayúsculas: un patrón más laxo bloquearía identificadores inocentes de logs y SQL.
@@ -101,11 +115,19 @@ def _scan_text(text: str, display: str, report: Report) -> None:
         if _PRIVATE_KEY.search(line):
             report.add_sensitive("private_key", display, number)
         for match in _SECRET_ASSIGNMENT.finditer(line):
+            # `String token = request.getHeader(` es código, no un secreto: el valor es una llamada
+            if line[match.end(1):match.end(1) + 1] == "(":
+                continue
             if not _safe_secret_value(match.group(1)):
                 report.add_sensitive("credential", display, number)
-        for match in _SECRET_XML.finditer(line):
-            if not _safe_secret_value(match.group(1)):
-                report.add_sensitive("credential", display, number)
+        for pattern in (_SECRET_XML, _SECRET_SQL, _SECRET_URL, _SECRET_AUTH):
+            for match in pattern.finditer(line):
+                if not _safe_secret_value(match.group(1)):
+                    report.add_sensitive("credential", display, number)
+        if _CLABE.search(line):
+            report.add_sensitive("clabe", display, number)
+        if _TARJETA.search(line):
+            report.add_sensitive("tarjeta", display, number)
         if _CURP.search(line):
             report.add_sensitive("curp", display, number)
         if _RFC.search(line):
@@ -130,6 +152,9 @@ def scan(roots: Iterable[Tuple[str, Path, Optional[Ignore]]]) -> Report:
             display = f"{label}/{relative}"
             if path.is_symlink():
                 report.add_unscanned("symlink", display)
+                continue
+            if path.name.lower() in _SENSITIVE_NAMES or path.suffix.lower() in _SENSITIVE_SUFFIXES:
+                report.add_sensitive("key_material", display, None)
                 continue
             try:
                 size = path.stat().st_size

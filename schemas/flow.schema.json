@@ -84,7 +84,8 @@
       "properties": {
         "events": { "type": "integer" },
         "assigned": { "type": "integer" },
-        "unassigned": { "type": "integer" }
+        "unassigned": { "type": "integer" },
+        "open_traces": { "type": "integer", "description": "peticiones sin respuesta observada (ventana abierta hasta la siguiente petición)" }
       }
     }
   }

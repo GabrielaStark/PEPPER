@@ -41,7 +41,9 @@
       "additionalProperties": false,
       "properties": {
         "group": { "type": "string", "default": "timestamp" },
-        "format": { "type": "string", "description": "Formato strptime. Si omite zona, se aplica la de la sesión. Sin 'format', se parsea como ISO 8601." }
+        "format": { "type": "string", "description": "Formato strptime. Si omite zona, se aplica la de la sesión. Sin 'format', se parsea como ISO 8601." },
+        "tz_group": { "type": "string", "description": "Grupo de la regex con la zona de la línea (UTC, CST, +00:00…): si viene, manda sobre la de la sesión." },
+        "tz_map": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Nombre de zona → desplazamiento (CST → -06:00). Un nombre sin mapa se intenta tal cual; si no se entiende, queda la zona de la sesión." }
       }
     },
     "fields": {

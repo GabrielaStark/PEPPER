@@ -116,7 +116,8 @@ def _wstr(value):
 
 def _toc_entry(dump_id, desc, tag, defn, has_data, pos):
     out = _wint(dump_id) + _wint(1 if has_data else 0) + _wstr("1259") + _wstr(str(1000 + dump_id))
-    out += _wstr(tag) + _wstr(desc) + _wint(1) + _wstr(defn) + _wstr("") + _wstr("")
+    copy_stmt = f"COPY public.{tag} FROM stdin;\n" if has_data else ""   # como pg_dump: sin él son INSERT
+    out += _wstr(tag) + _wstr(desc) + _wint(1) + _wstr(defn) + _wstr("") + _wstr(copy_stmt)
     out += _wstr("public") + _wstr("") + _wstr("") + _wint(0) + _wstr("owner") + _wstr("false") + _wstr(None)
     out += bytes([2]) + struct.pack("<q", pos)  # K_OFFSET_POS_SET
     return out
