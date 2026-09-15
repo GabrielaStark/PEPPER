@@ -220,6 +220,86 @@
         "stub_ports": {
           "type": "string",
           "description": "Puertos que el stub escucha además de los que declaren las URLs externas (coma)."
+        },
+        "components": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Cómo repartir varios desplegables en servicios. Sin esto, un legacy con más de un desplegable es BLOCKED: levantar uno y callar los otros produciría un ambiente a medias.",
+          "required": [
+            "classify"
+          ],
+          "properties": {
+            "classify": {
+              "type": "array",
+              "minItems": 1,
+              "description": "Reglas en orden; la primera que case decide el papel del artefacto.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "role",
+                  "when"
+                ],
+                "properties": {
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "backend",
+                      "frontend",
+                      "gateway",
+                      "discovery",
+                      "worker"
+                    ],
+                    "description": "Qué papel juega la pieza en el sistema."
+                  },
+                  "engine": {
+                    "type": "string",
+                    "description": "Con qué corre; la llave dentro de server_images (java, static, node…)."
+                  },
+                  "image": {
+                    "type": "string",
+                    "description": "Imagen fija, si no se deduce de server_images."
+                  },
+                  "port": {
+                    "type": "integer",
+                    "description": "Puerto fijo; si se omite, se lee de la configuración embebida del artefacto."
+                  },
+                  "when": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "description": "Todo lo declarado debe cumplirse para que la regla case.",
+                    "properties": {
+                      "member_glob": {
+                        "type": "string",
+                        "description": "Glob contra los miembros del artefacto, p. ej. 'BOOT-INF/lib/*.jar'."
+                      },
+                      "config_contains": {
+                        "type": "string",
+                        "description": "Texto que aparece en la configuración embebida."
+                      },
+                      "name_matches": {
+                        "type": "string",
+                        "description": "Regex contra el nombre del archivo."
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "ingress_role": {
+              "type": "string",
+              "description": "Papel al que apunta el ingress (p. ej. 'gateway'); si se omite, el único backend."
+            }
+          }
+        },
+        "artifact_suffixes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "description": "Qué extensiones cuentan como desplegable en este stack (default: .war/.ear/.jar). Un front que viaja en .zip o .tgz se declara aquí; si no, es invisible para el plan."
         }
       }
     },

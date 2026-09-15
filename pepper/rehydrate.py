@@ -35,6 +35,7 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -42,6 +43,9 @@ from pepper import REPO_ROOT
 from pepper.profiles import Profile
 
 DEFAULT_PORT = 18080
+# Por defecto, los desplegables de la JVM. Un stack cuyo front viaja en .zip o .tgz lo
+# declara en `rehydrate.artifact_suffixes`: qué cuenta como desplegable es del perfil,
+# no del núcleo — si no, el front de un sistema es invisible (2026-09-15).
 _ARTIFACT_SUFFIXES = (".war", ".ear", ".jar")
 _DUMP_SUFFIXES = (".dump", ".backup")   # formato custom de pg_dump: lo único que pg_restore restaura y el lector lee
 _FILES_KEY_RE = re.compile(r"(?i)(ruta|path|dir|folder)")
@@ -225,7 +229,96 @@ def _under(path: Path, root: Path) -> bool:
         return False
 
 
-def find_all_inputs(legacy_dir: Path) -> Tuple[List[Path], List[Path]]:
+@dataclass
+class Component:
+    """Una pieza desplegable del legacy: un servicio, un front, lo que sea.
+
+    Un legacy no siempre es un desplegable. Puede ser tres servicios y un front, o un
+    backend y un panel aparte. Cada pieza tiene su artefacto, su configuración embebida,
+    su puerto y su IP; el perfil dice cómo reconocerla y con qué imagen corre.
+    """
+    name: str
+    artifact: Path
+    role: str          # backend · frontend · gateway · discovery · worker
+    engine: str        # lo que el perfil llame: java, static, node…
+    image: str
+    ip: str
+    port: int
+    config_profile: str = ""
+    notes: List[str] = field(default_factory=list)
+
+
+def _member_names(artifact: Path) -> List[str]:
+    if not (artifact.is_file() and zipfile.is_zipfile(artifact)):
+        return []
+    with zipfile.ZipFile(artifact) as archive:
+        return archive.namelist()
+
+
+def _rule_matches(rule: Dict[str, Any], artifact: Path, members: List[str], configs: Dict[str, Dict[str, str]]) -> bool:
+    """Una regla de clasificación del perfil contra UN artefacto. Todo lo que declare debe cumplirse."""
+    when = rule.get("when") or {}
+    glob = when.get("member_glob")
+    if glob and not any(fnmatch(name, glob) for name in members):
+        return False
+    needle = when.get("config_contains")
+    if needle:
+        blob = "\n".join(f"{k}={v}" for cfg in configs.values() for k, v in cfg.items())
+        if needle not in blob:
+            return False
+    name_re = when.get("name_matches")
+    if name_re and not re.search(name_re, artifact.name):
+        return False
+    return bool(when)
+
+
+def classify_components(artifacts: List[Path], profile: Profile, subnet_base: str,
+                        first_ip: int = 10) -> Tuple[List[Component], List[str]]:
+    """Reparte los artefactos en componentes según las reglas del perfil.
+
+    El núcleo no sabe qué es un gateway ni un descubrimiento de servicios: aplica las
+    reglas que el perfil declara y, lo que ninguna regla reconozca, lo dice en vez de
+    inventarle un papel.
+    """
+    recipe = profile.data.get("rehydrate", {})
+    spec = recipe.get("components") or {}
+    rules: List[Dict[str, Any]] = spec.get("classify") or []
+    images: Dict[str, Dict[str, str]] = recipe.get("server_images") or {}
+    patterns = recipe.get("config_patterns") or [r"application.*\.(yml|yaml|properties)$"]
+    components: List[Component] = []
+    sin_clasificar: List[str] = []
+    for index, artifact in enumerate(artifacts):
+        members = _member_names(artifact)
+        try:
+            configs = read_artifact_configs(artifact, patterns)
+        except (zipfile.BadZipFile, OSError):
+            configs = {}
+        rule = next((r for r in rules if _rule_matches(r, artifact, members, configs)), None)
+        if rule is None:
+            sin_clasificar.append(artifact.name)
+            continue
+        engine = rule.get("engine", "app")
+        image = rule.get("image") or next(iter((images.get(engine) or {}).values()), "")
+        # Solo la pieza que habla con la base tiene datasource; una puerta de enlace o un
+        # descubrimiento de servicios no, y eso es normal — aquí solo se busca su puerto.
+        try:
+            profile_name, cfg, _ = choose_spring_profile(configs) if configs else ("", {}, [])
+        except Blocked:
+            profile_name, cfg = "", next((c for c in configs.values() if c.get("server.port")), {})
+        port_raw = rule.get("port") or cfg.get("server.port") or next(
+            (c["server.port"] for c in configs.values() if c.get("server.port")), None)
+        try:
+            port = int(str(port_raw).strip())
+        except (TypeError, ValueError):
+            port = 8080
+        components.append(Component(
+            name=re.sub(r"[^a-z0-9]+", "-", artifact.stem.split("-")[0].lower()).strip("-") or f"pieza{index}",
+            artifact=artifact, role=rule.get("role", "backend"), engine=engine, image=image,
+            ip=f"{subnet_base}.{first_ip + index}", port=port, config_profile=profile_name))
+    return components, sin_clasificar
+
+
+def find_all_inputs(legacy_dir: Path, artifact_suffixes: Optional[Tuple[str, ...]] = None) -> Tuple[List[Path], List[Path]]:
     """TODOS los desplegables y TODOS los respaldos, de mayor a menor.
 
     Un legacy no siempre es un desplegable: puede ser tres servicios y un front (un
@@ -233,12 +326,13 @@ def find_all_inputs(legacy_dir: Path) -> Tuple[List[Path], List[Path]]:
     grande y callar los demás es exactamente la clase de silencio que esta herramienta
     no se permite: quien llama decide qué usa, pero tiene que SABER qué había.
     """
-    artifacts = sorted((p for p in legacy_dir.iterdir() if p.suffix.lower() in _ARTIFACT_SUFFIXES),
+    suffixes = tuple(s.lower() for s in (artifact_suffixes or _ARTIFACT_SUFFIXES))
+    artifacts = sorted((p for p in legacy_dir.iterdir() if p.suffix.lower() in suffixes),
                        key=lambda p: -p.stat().st_size)
     dumps = sorted((p for p in legacy_dir.iterdir() if p.suffix.lower() in _DUMP_SUFFIXES),
                    key=lambda p: -p.stat().st_size)
     if not artifacts:
-        raise Blocked(f"no hay desplegable (.war/.ear/.jar) en {legacy_dir}")
+        raise Blocked(f"no hay desplegable ({'/'.join(suffixes)}) en {legacy_dir}")
     if not dumps:
         raise Blocked(f"no hay respaldo de la base en {legacy_dir}: se necesita el formato custom de pg_dump (`pg_dump -Fc`, .dump/.backup)")
     return artifacts, dumps
@@ -290,7 +384,8 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
               notes_path: Optional[Path] = None) -> Plan:
     from pepper.inspect import pgdump
 
-    artifacts, dumps = find_all_inputs(legacy_dir)
+    recipe_early = profile.data.get("rehydrate", {})
+    artifacts, dumps = find_all_inputs(legacy_dir, recipe_early.get("artifact_suffixes"))
     artifact, dump = artifacts[0], dumps[0]
     notes_text = notes_path.read_text(encoding="utf-8", errors="replace") if notes_path and notes_path.is_file() else ""
     recipe = profile.data.get("rehydrate", {})

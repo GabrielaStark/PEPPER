@@ -173,6 +173,79 @@ def _profile(recipe):
     return Profile(id="perfil-de-prueba", dir=PROFILE.dir, data={"id": "perfil-de-prueba", "rehydrate": recipe})
 
 
+class ComponentesTest(unittest.TestCase):
+    """El perfil reparte los artefactos en componentes; el núcleo no sabe qué es un gateway."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.legacy = Path(self._tmp.name) / "legacy"
+        self.legacy.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _jar(self, name, config=""):
+        with zipfile.ZipFile(self.legacy / name, "w") as z:
+            z.writestr("BOOT-INF/lib/spring-core.jar", "x")
+            z.writestr("BOOT-INF/classes/application.yml", config or "server:\n  port: 8080\n")
+
+    def _front(self, name):
+        with zipfile.ZipFile(self.legacy / name, "w") as z:
+            z.writestr("dist/index.html", "<html></html>")
+
+    RECETA = {
+        "config_patterns": [r"^BOOT-INF/classes/application.*\.yml$"],
+        "server_images": {"java": {"8": "eclipse-temurin:8-jre"}, "static": {"*": "httpd:2.4-alpine"}},
+        "components": {"classify": [
+            {"role": "discovery", "engine": "java", "when": {"config_contains": "eureka"}},
+            {"role": "gateway", "engine": "java", "when": {"config_contains": "cloud.gateway"}},
+            {"role": "frontend", "engine": "static", "port": 80, "when": {"member_glob": "*index.html"}},
+            {"role": "backend", "engine": "java", "when": {"member_glob": "BOOT-INF/lib/*.jar"}},
+        ]},
+    }
+
+    def test_cada_artefacto_recibe_su_papel_su_puerto_y_su_ip(self):
+        from pepper.rehydrate import classify_components
+
+        self._jar("descubrimiento-1.0.jar", "server:\n  port: 8097\neureka:\n  server:\n    enabled: true\n")
+        self._jar("puerta-1.0.jar", "server:\n  port: 8098\nspring:\n  cloud.gateway:\n    enabled: true\n")
+        self._jar("recursos-1.0.jar", "server:\n  port: 8099\n")
+        self._front("front.zip")
+        artifacts = sorted(self.legacy.glob("*"), key=lambda p: p.name)
+        componentes, sin_clasificar = classify_components(artifacts, _profile(self.RECETA), "10.100.0")
+
+        self.assertEqual(sin_clasificar, [])
+        papeles = {c.name: c.role for c in componentes}
+        self.assertEqual(papeles["descubrimiento"], "discovery")
+        self.assertEqual(papeles["puerta"], "gateway")
+        self.assertEqual(papeles["recursos"], "backend")
+        self.assertEqual(papeles["front"], "frontend")
+        puertos = {c.name: c.port for c in componentes}
+        self.assertEqual(puertos["recursos"], 8099, "el puerto sale de la configuración del propio artefacto")
+        self.assertEqual(puertos["front"], 80, "y si el perfil lo fija, manda el perfil")
+        self.assertEqual(len({c.ip for c in componentes}), 4, "cada componente con su IP")
+        self.assertEqual({c.image for c in componentes if c.engine == "java"}, {"eclipse-temurin:8-jre"})
+
+    def test_lo_que_ninguna_regla_reconoce_se_declara_no_se_inventa(self):
+        from pepper.rehydrate import classify_components
+
+        self._jar("recursos-1.0.jar")
+        (self.legacy / "misterio.ear").write_bytes(b"PK\x03\x04sin-nada")
+        artifacts = sorted(self.legacy.glob("*"), key=lambda p: p.name)
+        componentes, sin_clasificar = classify_components(artifacts, _profile(self.RECETA), "10.100.0")
+        self.assertEqual(sin_clasificar, ["misterio.ear"])
+        self.assertEqual([c.name for c in componentes], ["recursos"])
+
+    def test_sin_reglas_en_el_perfil_no_se_clasifica_nada(self):
+        from pepper.rehydrate import classify_components
+
+        self._jar("recursos-1.0.jar")
+        componentes, sin_clasificar = classify_components(
+            sorted(self.legacy.glob("*")), _profile({"config_patterns": [r"application.*\.yml$"]}), "10.100.0")
+        self.assertEqual(componentes, [])
+        self.assertEqual(sin_clasificar, ["recursos-1.0.jar"])
+
+
 class VariosDesplegablesTest(unittest.TestCase):
     """Un sistema de microservicios no se levanta escogiendo el archivo más grande.
 
