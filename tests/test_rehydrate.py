@@ -166,6 +166,67 @@ def _make_war_with(path, prod_config, base_config="spring:\n  profiles:\n    act
             z.writestr("WEB-INF/jboss-web.xml", "<jboss-web/>")
 
 
+def _profile(recipe):
+    """Un perfil mínimo en memoria: solo la receta de rehydrate que la prueba necesita."""
+    from pepper.profiles import Profile
+
+    return Profile(id="perfil-de-prueba", dir=PROFILE.dir, data={"id": "perfil-de-prueba", "rehydrate": recipe})
+
+
+class VariosDesplegablesTest(unittest.TestCase):
+    """Un sistema de microservicios no se levanta escogiendo el archivo más grande.
+
+    Con tres jars y un front, `find_inputs` devolvía el mayor y callaba los otros: el
+    ambiente arrancaba a medias (sin gateway, sin descubrimiento) y todo lo que se
+    observara encima sería basura presentada como evidencia (2026-09-15).
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.legacy = Path(self._tmp.name) / "legacy"
+        self.legacy.mkdir()
+        (self.legacy / "respaldo.dump").write_bytes(b"PGDMP" + b"\0" * 64)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _jar(self, name, size_mb=1):
+        with zipfile.ZipFile(self.legacy / name, "w") as z:
+            z.writestr("BOOT-INF/classes/application.yml", "x" * (size_mb * 1024))
+
+    def test_todos_los_desplegables_se_ven(self):
+        from pepper.rehydrate import find_all_inputs
+
+        for name in ("api-core.jar", "gateway.jar", "descubrimiento.jar"):
+            self._jar(name)
+        artifacts, dumps = find_all_inputs(self.legacy)
+        self.assertEqual({a.name for a in artifacts}, {"api-core.jar", "gateway.jar", "descubrimiento.jar"})
+        self.assertEqual([d.name for d in dumps], ["respaldo.dump"])
+
+    def test_varios_desplegables_sin_perfil_que_los_reparta_es_blocked(self):
+        from pepper.rehydrate import Blocked, make_plan
+
+        for name in ("api-core.jar", "gateway.jar", "descubrimiento.jar"):
+            self._jar(name)
+        profile = _profile({"config_patterns": [r"application.*\.yml$"]})
+        with self.assertRaises(Blocked) as caught:
+            make_plan(self.legacy, profile)
+        mensaje = str(caught.exception)
+        self.assertIn("3 desplegables", mensaje)
+        for name in ("api-core.jar", "gateway.jar", "descubrimiento.jar"):
+            self.assertIn(name, mensaje, "el reporte debe nombrar cada desplegable que vio")
+
+    def test_un_solo_desplegable_sigue_su_camino(self):
+        from pepper.rehydrate import Blocked, make_plan
+
+        self._jar("api-core.jar")
+        profile = _profile({"config_patterns": [r"application.*\.yml$"]})
+        with self.assertRaises(Blocked) as caught:
+            make_plan(self.legacy, profile)
+        self.assertNotIn("desplegables y el perfil", str(caught.exception),
+                         "con uno solo no debe hablar de varios desplegables")
+
+
 class AuditoriaRehydrateTest(unittest.TestCase):
     """Lo que salió en la auditoría del 2026-09-11 sobre rehydrate, fijado para siempre."""
 

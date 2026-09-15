@@ -225,7 +225,14 @@ def _under(path: Path, root: Path) -> bool:
         return False
 
 
-def find_inputs(legacy_dir: Path) -> Tuple[Path, Path]:
+def find_all_inputs(legacy_dir: Path) -> Tuple[List[Path], List[Path]]:
+    """TODOS los desplegables y TODOS los respaldos, de mayor a menor.
+
+    Un legacy no siempre es un desplegable: puede ser tres servicios y un front (un
+    sistema de microservicios), o un backend y un panel aparte. Quedarse con el más
+    grande y callar los demás es exactamente la clase de silencio que esta herramienta
+    no se permite: quien llama decide qué usa, pero tiene que SABER qué había.
+    """
     artifacts = sorted((p for p in legacy_dir.iterdir() if p.suffix.lower() in _ARTIFACT_SUFFIXES),
                        key=lambda p: -p.stat().st_size)
     dumps = sorted((p for p in legacy_dir.iterdir() if p.suffix.lower() in _DUMP_SUFFIXES),
@@ -234,6 +241,11 @@ def find_inputs(legacy_dir: Path) -> Tuple[Path, Path]:
         raise Blocked(f"no hay desplegable (.war/.ear/.jar) en {legacy_dir}")
     if not dumps:
         raise Blocked(f"no hay respaldo de la base en {legacy_dir}: se necesita el formato custom de pg_dump (`pg_dump -Fc`, .dump/.backup)")
+    return artifacts, dumps
+
+
+def find_inputs(legacy_dir: Path) -> Tuple[Path, Path]:
+    artifacts, dumps = find_all_inputs(legacy_dir)
     return artifacts[0], dumps[0]
 
 
@@ -278,9 +290,21 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
               notes_path: Optional[Path] = None) -> Plan:
     from pepper.inspect import pgdump
 
-    artifact, dump = find_inputs(legacy_dir)
+    artifacts, dumps = find_all_inputs(legacy_dir)
+    artifact, dump = artifacts[0], dumps[0]
     notes_text = notes_path.read_text(encoding="utf-8", errors="replace") if notes_path and notes_path.is_file() else ""
     recipe = profile.data.get("rehydrate", {})
+    # Un sistema de varios desplegables (microservicios, o un backend y un panel aparte) no se
+    # levanta escogiendo el archivo más grande: sin sus compañeros el ambiente arranca a medias
+    # y todo lo que se observe encima es basura. Mientras el perfil no sepa repartirlos en
+    # servicios, esto se detiene diciendo qué hay — no se finge un ambiente (2026-09-15).
+    if len(artifacts) > 1 and not recipe.get("components"):
+        lista = "\n".join(f"      · {a.name}  ({a.stat().st_size // (1024 * 1024)} MB)" for a in artifacts)
+        raise Blocked(
+            f"el legacy trae {len(artifacts)} desplegables y el perfil {profile.id} levanta uno solo:\n{lista}\n"
+            "    Para seguir, una de dos: deja en legacy/ únicamente el desplegable a levantar "
+            "(los demás no se mapean ni se levantan), o usa un perfil que declare `rehydrate.components` "
+            "y sepa repartirlos en servicios.")
     configs = read_artifact_configs(artifact, recipe.get("config_patterns") or [r"application.*\.(yml|yaml|properties)$"])
     if not configs:
         raise Blocked("el artefacto no trae configuración embebida (application*.yml) y no se dio configuración externa")
