@@ -41,6 +41,26 @@ class DetectTest(unittest.TestCase):
             results = detect(root)
             self.assertFalse(any(r["applicable"] for r in results))
 
+    def test_un_artefacto_se_reconoce_por_su_contenido_no_por_su_extension(self):
+        """`app.jar.original` es lo que el plugin de Spring Boot deja junto al jar real,
+        y es un artefacto como cualquier otro. Decidir "¿es un archivo comprimido?" por la
+        extensión lo volvía invisible: detect no lo abría, no veía su configuración y
+        concluía "ningún perfil cubre este stack" sin haber mirado nada (2026-09-15).
+        """
+        import zipfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("servicio-web-1.0-SNAPSHOT.jar.original", "front", "respaldo-sin-extension"):
+                with zipfile.ZipFile(root / name, "w") as z:
+                    z.writestr("application.yml",
+                               "spring:\n  datasource:\n    url: jdbc:postgresql://10.0.0.2:5432/negocio\n")
+            results = detect(root)
+            hits = {m["pattern"]: m["hit"] for r in results for m in r["matches"]}
+            self.assertIn("jdbc:postgresql", hits,
+                          "no abrió ningún artefacto: decide por extensión, no por contenido")
+            self.assertIn("!application.yml", hits["jdbc:postgresql"])
+
     def test_un_perfil_de_war_no_aplica_a_un_sistema_de_jars(self):
         """Tres JARs y un dist comparten con un WAR casi todas las señales (pom.xml,
         application.yml, jdbc:postgresql) y sumaban 8 sobre un mínimo de 4: el perfil

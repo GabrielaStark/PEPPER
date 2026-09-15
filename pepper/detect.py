@@ -70,15 +70,36 @@ def _is_tar(path: Path) -> bool:
             or any(lowered.endswith(suffix) for suffix in _TAR_DOUBLE_SUFFIXES))
 
 
+def _sniff(path: Path) -> Optional[str]:
+    """Qué ES el archivo, por sus primeros bytes, no por cómo se llama.
+
+    Un `app.jar.original` (lo que deja el plugin de Spring Boot), un `respaldo` sin
+    extensión o un `front.zip` renombrado son artefactos como cualquier otro. Decidir
+    por extensión los volvía invisibles: detect decía "ningún perfil cubre este stack"
+    cuando lo que pasaba es que no había abierto nada (2026-09-15, sistema de tres JARs).
+    """
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(262)
+    except OSError:
+        return None
+    if head[:4] in (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"):
+        return "zip"
+    if head[257:262] == b"ustar" or head[:2] == b"\x1f\x8b":
+        return "tar"
+    return None
+
+
 def _open_archive(path: Path, relative: str) -> Optional[_Archive]:
-    if path.suffix.lower() in _ZIP_SUFFIXES:
+    kind = _sniff(path)   # el contenido manda; la extensión solo ahorra el sondeo
+    if path.suffix.lower() in _ZIP_SUFFIXES or kind == "zip":
         try:
             archive = zipfile.ZipFile(path)
         except (zipfile.BadZipFile, OSError):
             return None
         members = [(i.filename, i.file_size) for i in archive.infolist() if not i.is_dir()]
         return _Archive(relative, members, archive.read, archive.close)
-    if _is_tar(path):
+    if _is_tar(path) or kind == "tar":
         try:
             archive = tarfile.open(path)
         except (tarfile.TarError, OSError):
