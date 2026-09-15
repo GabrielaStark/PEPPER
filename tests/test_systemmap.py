@@ -270,6 +270,32 @@ class SystemMapTest(unittest.TestCase):
             self.skipTest("jsonschema no instalado")
         self.assertEqual(errors, [], errors)
 
+    def test_una_llave_en_el_bytecode_no_llega_al_mapa(self):
+        """El redactor juzgaba el NOMBRE de la constante y la forma `password=`.
+
+        Una constante con una llave criptográfica literal, llamada con cualquier otro
+        nombre, pasaba entera al mapa y de ahí al documento del sistema — que es producto
+        que se versiona y viaja al modelo (auditoría 2026-09-15). Ahora se juzga el VALOR:
+        sin espacios, larga y con pinta de ruido es material criptográfico, y se declara
+        por ubicación sin transcribirla.
+        """
+        from pepper.inspect.systemmap import looks_like_secret_value
+
+        for valor, que_es in (("A1b2C3d4E5f6G7h8", "llave AES de 16"),
+                              ("7f3a9c2e5b8d10467f3a9c2e5b8d1046", "hex de 32"),
+                              ("c29tZXNlY3JldGtleTEyMzQ1Ng==", "base64"),
+                              ("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.firmita", "JWT"),
+                              ("-----BEGIN PRIVATE KEY-----", "PEM")):
+            self.assertTrue(looks_like_secret_value(valor), f"no redactó: {que_es}")
+
+        for valor, que_es in (("Solicitud registrada correctamente", "mensaje al usuario"),
+                              ("http://10.0.0.5:8080/api", "URL de un externo"),
+                              ("yyyy-MM-dd HH:mm:ss", "formato de fecha"),
+                              ("mx.gob.organismo.App", "nombre de clase"),
+                              ("ESTADO_PENDIENTE", "constante de negocio"),
+                              ("/solicitud/registrar", "ruta")):
+            self.assertFalse(looks_like_secret_value(valor), f"redactó de más: {que_es}")
+
     def test_cero_clases_donde_el_perfil_busca_es_hueco_no_mapa_completo(self):
         """Con `class_root` apuntando a donde no están las clases (el caso real: un perfil
         de WAR —`WEB-INF/classes`— aplicado a un fat JAR de Spring Boot —`BOOT-INF/classes`—)
@@ -319,7 +345,9 @@ class SystemMapTest(unittest.TestCase):
         const = by_name["Constantes"]
         self.assertEqual(const["constants"].get("ESTATUS_ACTIVO"), "ACTIVO")
         self.assertEqual(const["constants"].get("ID_ROL_ADMIN"), "1l")
-        self.assertNotIn("PASSWORD", const["constants"])
+        # por ubicación, nunca el valor: que exista una credencial en duro ES un hallazgo,
+        # y borrar la constante entera lo escondería
+        self.assertEqual(const["constants"].get("PASSWORD"), "[REDACTADO]")
 
     def test_pantallas_con_etiquetas_resueltas(self):
         m = self._map()

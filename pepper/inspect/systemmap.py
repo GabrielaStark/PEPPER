@@ -39,6 +39,7 @@ credenciales se omiten.
 from __future__ import annotations
 
 import html
+import math
 import re
 import shutil
 import subprocess
@@ -65,7 +66,10 @@ _PII_VALUE_RE = re.compile(
     r"\b\d{2,3}[ -]?\d{3}[ -]?\d{2}[ -]?\d{2}\b|\b\d{10}\b|\b\d{11}\b|\b\d{18}\b"
 )
 # Renglones de tablas parámetro/clave-valor donde la CLAVE delata un secreto.
-_SECRET_KEY_RE = re.compile(r"(?i)pass|pwd|contrase|secret|token|credencial|smtp\.user|mail\.user|api.?key")
+_SECRET_KEY_RE = re.compile(
+    r"(?i)pass(?:word|phrase)?|pwd|psw|contrase|clave|llave|secret|token|credencial|smtp\.user|mail\.user|"
+    r"api.?key|\bkey\b|_key|key_|cipher|crypt|aes|des\b|rsa|hmac|salt|seed|\biv\b|firma|sign(?:ature)?|"
+    r"keystore|truststore|jks|p12|pfx|privat|auth")
 # Cadenas del bytecode que no aportan negocio o pueden ser secretos.
 _NOISE_STRING_RE = re.compile(
     r"^(?:[A-Za-z]+:[/\\]|/|\\|<|\{|\[|%|\d+$|[a-z]{1,3}$|yyyy|dd[/-]|HH:|UTF|ISO|null$|"
@@ -73,6 +77,42 @@ _NOISE_STRING_RE = re.compile(
     r"insert |INSERT |update |UPDATE |delete |DELETE |where |WHERE )"
 )
 _SECRET_STRING_RE = re.compile(r"(?i)(password|contrase|secret|token|pwd)\s*[:=]")
+_PEM_RE = re.compile(r"(?i)-----BEGIN [A-Z ]*PRIVATE KEY|-----BEGIN CERTIFICATE|\bssh-rsa\b")
+_JWT_RE = re.compile(r"^eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.")
+_HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
+_B64_RE = re.compile(r"^[A-Za-z0-9+/]+={0,2}$")
+# Formas que parecen material criptográfico pero son inofensivas y sí dicen algo del negocio.
+_NOT_A_KEY_RE = re.compile(r"://|^[\w.-]+\.[a-z]{2,}$|^/|\\|\s|^\d+$|^[A-Za-z]+$")
+
+
+def _entropy(value: str) -> float:
+    """Bits por carácter. Una llave se ve como ruido; una palabra, no."""
+    if not value:
+        return 0.0
+    total = len(value)
+    return -sum((n / total) * math.log2(n / total) for n in Counter(value).values())
+
+
+def looks_like_secret_value(value: str) -> bool:
+    """¿El VALOR es material criptográfico, se llame como se llame?
+
+    El redactor juzgaba el NOMBRE y una forma `password=`. Una constante del bytecode
+    con una llave AES literal pasó entera al mapa y al documento del sistema
+    (auditoría 2026-09-15). Una llave no tiene espacios, es larga y se ve como ruido;
+    eso se puede medir sin saber cómo se llama.
+    """
+    text = value.strip().strip('"').strip()
+    if not text:
+        return False
+    if _PEM_RE.search(text) or _JWT_RE.match(text):
+        return True
+    if _NOT_A_KEY_RE.search(text):
+        return False
+    if len(text) >= 16 and _HEX_RE.match(text) and len(text) % 8 == 0:
+        return True
+    if len(text) >= 16 and _B64_RE.match(text) and _entropy(text) >= 3.3:
+        return True
+    return len(text) >= 12 and _entropy(text) >= 4.0
 
 
 # ---------------------------------------------------------------- utilidades
@@ -535,7 +575,11 @@ def _extract_jvm_classes(artifact: Path, spec: Dict[str, Any], report: "MapRepor
                 m = re.match(r"^(?:public |private |protected )?static final [\w.<>\[\]]+ (\w+) = (.+);$", s)
                 if m:
                     value = m.group(2).strip()
-                    if not _SECRET_STRING_RE.search(f"{m.group(1)}={value}") and not _SECRET_KEY_RE.search(m.group(1)):
+                    if _SECRET_STRING_RE.search(f"{m.group(1)}={value}") or _SECRET_KEY_RE.search(m.group(1)) \
+                            or looks_like_secret_value(value):
+                        # por ubicación, nunca el valor: que se sepa que ahí hay una llave
+                        constants[m.group(1)] = _REDACTED
+                    else:
                         constants[m.group(1)] = value.strip('"')[:120]
                     continue
                 m = re.search(r"\bldc2?_?w?\s+#\d+\s+// String (.*)$", s)
@@ -543,6 +587,7 @@ def _extract_jvm_classes(artifact: Path, spec: Dict[str, Any], report: "MapRepor
                     text = m.group(1).strip()
                     if (len(text) >= 4 and re.search(r"[A-Za-zÁÉÍÓÚáéíóúñÑ]", text)
                             and not _NOISE_STRING_RE.search(text) and not _SECRET_STRING_RE.search(text)
+                            and not looks_like_secret_value(text)
                             and not _PII_VALUE_RE.search(text) and text not in strings):
                         strings.append(text[:200])
             if not methods and not constants and not strings:
