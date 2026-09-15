@@ -110,6 +110,11 @@ def looks_like_secret_value(value: str) -> bool:
         return False
     if len(text) >= 16 and _HEX_RE.match(text) and len(text) % 8 == 0:
         return True
+    # Una llave mezcla clases de caracteres. Un identificador largo no: `lldocumentoexpediente=`
+    # es un campo en un toString(), y redactarlo perdería el negocio que el mapa existe para contar.
+    clases = sum((any(c.islower() for c in text), any(c.isupper() for c in text), any(c.isdigit() for c in text)))
+    if clases < 2:
+        return False
     if len(text) >= 16 and _B64_RE.match(text) and _entropy(text) >= 3.3:
         return True
     return len(text) >= 12 and _entropy(text) >= 4.0

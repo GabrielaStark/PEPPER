@@ -288,7 +288,9 @@ class SystemMapTest(unittest.TestCase):
                               ("-----BEGIN PRIVATE KEY-----", "PEM")):
             self.assertTrue(looks_like_secret_value(valor), f"no redactó: {que_es}")
 
-        for valor, que_es in (("Solicitud registrada correctamente", "mensaje al usuario"),
+        for valor, que_es in (("lldocumentoexpediente=", "campo de un toString() del modelo"),
+                              ("dsnombredocumento=", "otro campo del modelo"),
+                              ("Solicitud registrada correctamente", "mensaje al usuario"),
                               ("http://10.0.0.5:8080/api", "URL de un externo"),
                               ("yyyy-MM-dd HH:mm:ss", "formato de fecha"),
                               ("mx.gob.organismo.App", "nombre de clase"),
