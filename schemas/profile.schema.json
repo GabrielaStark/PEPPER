@@ -224,7 +224,7 @@
         "components": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Cómo repartir varios desplegables en servicios. Sin esto, un legacy con más de un desplegable es BLOCKED: levantar uno y callar los otros produciría un ambiente a medias.",
+          "description": "Cómo repartir varios desplegables en servicios (classify_components). Sin esto, un legacy con más de un desplegable es BLOCKED: levantar uno y callar los otros produciría un ambiente a medias. Con esto, hoy también termina en BLOCKED —listando cada pieza con su papel— porque el levantamiento por componente (compose, arranque, validación, environment.json) aún no existe; la única excepción es un solo desplegable clasificado como backend (D27, corrección 2026-09-21).",
           "required": [
             "classify"
           ],

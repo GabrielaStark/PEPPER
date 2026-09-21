@@ -1,4 +1,4 @@
-# Sistema de Solicitudes — qué hace el sistema
+# Sistema de Solicitudes (legacy-demo) — qué hace el sistema
 
 > Fuentes: código fuente (`legacy/source/`), manual técnico de 2018, configuración, y una ventana observada (flow-001: dos intentos de registro).
 > Orígenes: [código] [base] [datos] [observado] [config] [doc] [humano].
@@ -54,7 +54,7 @@ No hay autenticación en el código. [código]
 | Sistema | Para qué | Si falla |
 |---|---|---|
 | PostgreSQL | padrón, folios, solicitudes [observado] | no se registra |
-| Correo SMTP | según el manual, confirmación al ciudadano [doc] [config] | desconocido: **no se observó ningún envío** y el código nunca lo invoca [código: NotificationService] |
+| Correo SMTP institucional | según el manual, confirmación al ciudadano [doc] [config] | desconocido: **no se observó ningún envío** y el código nunca lo invoca [código: NotificationService] |
 
 ## 9. Reportes
 
@@ -71,5 +71,5 @@ El consecutivo de folios iba en 42 y la solicitud creada recibió el id 87: hay 
 ## 12. Lo que no sé (y a quién preguntarle)
 
 1. **¿Qué pasa con un ciudadano extranjero?** El código lo manda a revisión consular; nadie lo ejercitó. → Observar un registro con el ciudadano 1005 (BR).
-2. **¿Qué pasa si el ciudadano no existe?** El código responde 404; no se observó. → Observar un registro con un id inexistente.
-3. **¿El correo se envía en otro momento, o nunca?** → Quien opere el sistema: ¿los ciudadanos reciben correo?
+2. **¿Qué pasa si el ciudadano no existe en el padrón?** El código responde 404; no se observó. → Observar un registro con un id inexistente.
+3. **¿El correo de confirmación se envía en otro momento, o nunca?** → Quien opere el sistema: ¿los ciudadanos reciben correo?

@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional
 
 from pepper import SCHEMAS_DIR, SKILLS_DIR
 from pepper import manifest as evidence_manifest
+from pepper.sensitive import summarize as summarize_sensitive
 from pepper.workspace import is_tool_path, tool_paths
 
 _EVIDENCE_FILES = ("events.jsonl", "flow.json", "flow.md", "reduction.md")
@@ -268,47 +269,70 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
     session = json.loads((correlated_dir / "session.json").read_text(encoding="utf-8"))
     flow = json.loads((correlated_dir / "flow.json").read_text(encoding="utf-8"))
 
-    from pepper.sensitive import scan as scan_sensitive
-    from pepper.sensitive import summarize as summarize_sensitive
-
-    roots = [("evidence", correlated_dir, None)]
-    if legacy_dir is not None:
-        roots.append(("legacy", legacy_dir, _legacy_ignore(legacy_dir)))
-    map_tmp = None
-    if system_map is not None and system_map.is_file():
-        # Se escanea EXACTAMENTE lo que va a viajar: el mapa rendido aquí, no una carpeta
-        # que quizá no existe (si faltaba, antes se regeneraba después del escaneo y una
-        # CURP de un catálogo entraba al paquete remoto sin ser vista).
-        import tempfile
-        from pepper.inspect import render_map
-        map_tmp = tempfile.TemporaryDirectory()
-        for name, text in render_map(json.loads(system_map.read_text(encoding="utf-8"))).items():
-            (Path(map_tmp.name) / name).write_text(text, encoding="utf-8")
-        roots.append(("map", Path(map_tmp.name), None))
-    data_report = scan_sensitive(roots)
-    if map_tmp is not None:
-        map_tmp.cleanup()
-    # `synthetic` lo escribe quien produce session.json: informa, pero NO exime del gate.
-    synthetic = bool(session.get("synthetic"))
-    if data_mode == "remote":
-        if data_report.sensitive and not allow_sensitive:
-            raise ValueError(
-                "datos sensibles detectados; no se creó el paquete remoto. "
-                f"Ubicaciones: {summarize_sensitive(data_report.sensitive)}. "
-                "Sanea la fuente o repite con --allow-sensitive únicamente tras autorización humana"
-            )
-        if data_report.unscanned and not acknowledge_unscanned:
-            raise ValueError(
-                "hay archivos que PEPPER no puede inspeccionar antes de enviarlos a un agente remoto. "
-                f"Ubicaciones: {summarize_sensitive(data_report.unscanned)}. "
-                "Revísalos o repite con --acknowledge-unscanned tras autorización humana"
-            )
-
     external_manifest = manifest_out or out_dir.with_name(f"{out_dir.name}.{evidence_manifest.MANIFEST_NAME}")
     if not _outside_package(external_manifest, out_dir):
         raise ValueError("--manifest-out debe estar FUERA del paquete, fuera del alcance normal del agente")
     if external_manifest.exists():
         raise FileExistsError(f"el manifest externo ya existe: {external_manifest}; no se sobrescribe")
+
+    # El paquete se arma primero en un staging al lado del destino y se escanea AHÍ, archivo por
+    # archivo, exactamente lo que va a viajar: la copia de la evidencia, el legacy ya redactado,
+    # el mapa completo (system-map.json incluido) y el discovery anterior. Antes se escaneaban
+    # las fuentes y una representación del mapa, y previous/funcional.json y system-map.json se
+    # copiaban sin mirarse: un paquete remoto salía con sensitive_findings: 0 llevando una
+    # credencial (revisión 2026-09-21). Si el gate cae, el staging se borra y no queda nada.
+    staging = out_dir.parent / f".{out_dir.name}.staging-{os.getpid()}"
+    if staging.exists():
+        shutil.rmtree(staging)
+    try:
+        data_report, redacted_notes, legacy_dirs, map_summary, previous_summary = _stage(
+            staging, correlated_dir, legacy_dir, system_map, previous)
+        # `synthetic` lo escribe quien produce session.json: informa, pero NO exime del gate.
+        synthetic = bool(session.get("synthetic"))
+        if data_mode == "remote":
+            if data_report.sensitive and not allow_sensitive:
+                raise ValueError(
+                    "datos sensibles detectados; no se creó el paquete remoto. "
+                    f"Ubicaciones: {summarize_sensitive(data_report.sensitive)}. "
+                    "Sanea la fuente o repite con --allow-sensitive únicamente tras autorización humana"
+                )
+            if data_report.unscanned and not acknowledge_unscanned:
+                raise ValueError(
+                    "hay archivos que PEPPER no puede inspeccionar antes de enviarlos a un agente remoto. "
+                    f"Ubicaciones: {summarize_sensitive(data_report.unscanned)}. "
+                    "Revísalos o repite con --acknowledge-unscanned tras autorización humana"
+                )
+        _finish(staging, correlated_dir, source_manifest, session, flow, legacy_dirs, data_mode,
+                data_report, allow_sensitive, acknowledge_unscanned, map_summary, previous_summary,
+                synthetic, external_manifest)
+        if out_dir.exists():
+            out_dir.rmdir()  # existía vacío (se comprobó arriba); rename exige que no exista
+        staging.rename(out_dir)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+    return {
+        "session_id": session.get("session_id"),
+        "redacted_notes": redacted_notes,
+        "events": flow.get("stats", {}).get("events", 0),
+        "traces": len(flow.get("traces", [])),
+        "legacy": legacy_dirs,
+        "map": map_summary,
+        "previous": previous_summary,
+        "data_mode": data_mode,
+        "sensitive_findings": len(data_report.sensitive),
+        "unscanned_files": len(data_report.unscanned),
+        "external_manifest": str(external_manifest),
+        "files": sum(1 for path in out_dir.rglob("*") if path.is_file()),
+        "out_dir": str(out_dir),
+    }
+
+
+def _stage(out_dir: Path, correlated_dir: Path, legacy_dir: Optional[Path], system_map: Optional[Path],
+           previous: Optional[Path]):
+    """Copia al staging todo lo que viaja, redacta las notas y escanea la copia. → (reporte, …)."""
+    from pepper.sensitive import scan as scan_sensitive
 
     evidence = out_dir / "evidence"
     evidence.mkdir(parents=True)
@@ -344,7 +368,29 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
                 (out_dir / "legacy").mkdir(exist_ok=True)
                 shutil.copy2(child, out_dir / "legacy" / child.name)
                 legacy_dirs.append(child.name)
+    redacted_notes = _redact_notes(out_dir / "legacy")
 
+    # Se escanea la COPIA, después de redactar: cada archivo que el manifest va a amarrar.
+    roots = [("evidence", evidence, None)]
+    for scope in ("legacy", "map", "previous"):
+        if (out_dir / scope).is_dir():
+            roots.append((scope, out_dir / scope, None))
+    data_report = scan_sensitive(roots)
+    session_report = scan_sensitive([("", out_dir, _only_session_json)])
+    data_report.sensitive.extend(session_report.sensitive)
+    data_report.unscanned.extend(session_report.unscanned)
+    return data_report, redacted_notes, legacy_dirs, map_summary, previous_summary
+
+
+def _only_session_json(directory: str, names: List[str]) -> List[str]:
+    return [name for name in names if name != "session.json"]
+
+
+def _finish(out_dir: Path, correlated_dir: Path, source_manifest: Dict[str, Any], session: Dict[str, Any],
+            flow: Dict[str, Any], legacy_dirs: List[str], data_mode: str, data_report,
+            allow_sensitive: bool, acknowledge_unscanned: bool, map_summary: str, previous_summary: str,
+            synthetic: bool, external_manifest: Path) -> None:
+    """Lo que PEPPER genera (puertas de entrada, prompt, schema, manifest) — nada del legacy."""
     shutil.copy2(SCHEMAS_DIR / SCHEMA_NAME, out_dir / "schemas" / SCHEMA_NAME)
     prompt = strip_frontmatter(DISCOVERY_SKILL.read_text(encoding="utf-8"))
     (out_dir / "prompt.md").write_text(prompt, encoding="utf-8")
@@ -377,7 +423,6 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
         if actual != digest:
             raise ValueError(f"la copia de {original_rel} no coincide con el manifest de Correlate: {package_rel}")
         package_files[package_rel] = digest
-    redacted_notes = _redact_notes(out_dir / "legacy")
     for scope in ("legacy", "map", "previous"):
         base = out_dir / scope
         if base.is_dir():
@@ -397,19 +442,3 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
     internal_manifest = evidence_manifest.write(out_dir, manifest)
     external_manifest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(internal_manifest, external_manifest)
-
-    return {
-        "session_id": session.get("session_id"),
-        "redacted_notes": redacted_notes,
-        "events": flow.get("stats", {}).get("events", 0),
-        "traces": len(flow.get("traces", [])),
-        "legacy": legacy_dirs,
-        "map": map_summary,
-        "previous": previous_summary,
-        "data_mode": data_mode,
-        "sensitive_findings": len(data_report.sensitive),
-        "unscanned_files": len(data_report.unscanned),
-        "external_manifest": str(external_manifest),
-        "files": sum(1 for path in out_dir.rglob("*") if path.is_file()),
-        "out_dir": str(out_dir),
-    }

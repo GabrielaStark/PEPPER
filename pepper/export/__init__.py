@@ -285,6 +285,84 @@ def _iter_sourced(discovery: Dict[str, Any]):
                         yield f"{key}[{index}].{sub}[{j}]", nested["sources"]
 
 
+_OBSERVED_TAG_RE = re.compile(r"\[observado\s+([A-Za-z0-9_.-]+)\]")
+_SECTION_RE = re.compile(r"^##\s+(\d{1,2})\.[^\n]*\n(.*?)(?=^##\s+\d{1,2}\.|\Z)", re.M | re.S)
+_WORD_RE = re.compile(r"[0-9a-záéíóúüñ]+")
+
+
+def _normalize(text: str) -> str:
+    return re.sub(r"\s+", " ", text.replace("`", "").replace("*", "")).strip().lower()
+
+
+def _mentioned(name: str, normalized_text: str) -> bool:
+    """Un nombre del JSON aparece en el .md: literal, o todas sus palabras significativas.
+
+    `PostgreSQL (base solicitudes)` puede salir en el .md como «PostgreSQL … base … solicitudes»;
+    lo que no se admite es que el nombre no esté en absoluto."""
+    target = _normalize(name)
+    if not target:
+        return True
+    if target in normalized_text:
+        return True
+    words = [w for w in _WORD_RE.findall(target) if len(w) >= 3]
+    return bool(words) and all(w in normalized_text for w in words)
+
+
+def _check_markdown_matches(discovery: Dict[str, Any], text: str, declared: Set[str], report: Report) -> None:
+    """El .md corresponde al JSON validado: comprobación determinística de cobertura.
+
+    El JSON es la espina validada (schema, fuentes, manifest); el .md es lo que la persona
+    lee. Export no puede juzgar prosa, pero sí exigir que todo lo que el JSON afirma que
+    existe —cada rol, capacidad, recorrido, estado, automatismo, integración, reporte,
+    catálogo, sesión y desconocido— esté nombrado en el .md, y que el .md no cite
+    sesiones que el JSON no declara. Un .md contradictorio en lo nombrable no pasa; uno
+    inventado en lo demás sigue siendo trabajo del humano que revisa (revisión 2026-09-21)."""
+    normalized = _normalize(text)
+    sections: Dict[int, str] = {int(n): body for n, body in _SECTION_RE.findall(text)}
+
+    system_name = str((discovery.get("system") or {}).get("name") or "").strip()
+    title = next((line for line in text.splitlines() if line.startswith("# ")), "")
+    if system_name and not _mentioned(system_name, _normalize(title)):
+        report.errors.append(f"{OUTPUT_MD}: el título no nombra el sistema del JSON ({system_name!r}): {title.strip()!r}")
+
+    def expect(label: str, names, where: str = "") -> None:
+        scope = _normalize(sections.get(int(where), "")) if where else normalized
+        for name in names:
+            name = str(name or "").strip()
+            if name and not _mentioned(name, scope):
+                place = f"en la sección {where}" if where else "en ningún lado"
+                report.errors.append(f"{OUTPUT_MD}: {label} {name!r} está en el JSON y no aparece {place} del .md")
+
+    def names(key: str, field: str):
+        return [item.get(field) for item in discovery.get(key) or [] if isinstance(item, dict)]
+
+    expect("el rol", names("actors", "name"))
+    expect("la capacidad", names("permissions", "capability"))
+    expect("el recorrido", names("journeys", "name"))
+    for cycle in discovery.get("states") or []:
+        if isinstance(cycle, dict):
+            expect("el estado", [st.get("name") for st in cycle.get("states") or [] if isinstance(st, dict)])
+    expect("lo automático", names("automation", "name"))
+    expect("el sistema externo", names("integrations", "name"))
+    expect("el reporte", names("reports", "name"))
+    expect("el catálogo", names("catalogs", "name"))
+    expect("la sesión", sorted(s for s in declared if s))
+
+    unknowns = [u.get("question") for u in discovery.get("unknowns") or [] if isinstance(u, dict)]
+    if 12 in sections:
+        expect("el desconocido", unknowns, where="12")
+        numbered = len(re.findall(r"^\s*\d+\.\s", sections[12], flags=re.M))
+        if numbered < len(unknowns):
+            report.errors.append(
+                f"{OUTPUT_MD}: la sección 12 numera {numbered} desconocido(s) y el JSON declara {len(unknowns)}")
+    else:
+        expect("el desconocido", unknowns)
+
+    for cited in sorted(set(_OBSERVED_TAG_RE.findall(text))):
+        if cited not in declared:
+            report.errors.append(f"{OUTPUT_MD}: cita [observado {cited}] y esa sesión no está en `sessions` del JSON")
+
+
 def validate(package_dir: Path, external_manifest: Optional[Path] = None) -> Tuple[Optional[Dict[str, Any]], Report]:
     report = Report()
     _verify_manifest(package_dir, report, external_manifest)
@@ -358,6 +436,7 @@ def validate(package_dir: Path, external_manifest: Optional[Path] = None) -> Tup
             report.errors.append(f"{OUTPUT_MD}: faltan las secciones {', '.join(map(str, missing))} de las doce fijas (## N. …)")
         if len(text.split()) < 300:
             report.errors.append(f"{OUTPUT_MD}: {len(text.split())} palabras no son el documento de un sistema")
+        _check_markdown_matches(discovery, text, declared, report)
     if previous is not None:
         # Acumulativo de verdad: lo anterior no desaparece en silencio.
         prev_sessions = {s.get("session_id") for s in previous.get("sessions") or [] if isinstance(s, dict)}
@@ -405,6 +484,9 @@ def render_report(report: Report, package_dir: Path, published: bool = True) -> 
         "en código/base/datos → un elemento del mapa (`map:<colección>:<nombre>`) o un archivo del paquete.",
         "- La evidencia, el mapa, el legacy y el discovery anterior conservan sus hashes (manifest interno = externo).",
         "- La sesión del paquete aparece en `sessions`; hay desconocidos declarados; existe el `.md` legible.",
+        "- El `.md` corresponde al JSON: nombra cada rol, capacidad, recorrido, estado, automatismo, integración, "
+        "reporte, catálogo y sesión del JSON; la sección 12 lleva cada desconocido; ningún `[observado <sesión>]` "
+        "cita una sesión que el JSON no declare. (Cobertura de lo nombrable: la prosa la revisa una persona.)",
         "",
     ]
     return "\n".join(lines)

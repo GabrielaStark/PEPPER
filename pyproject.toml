@@ -1,24 +1,15 @@
-[project]
-name = "pepper-discovery"
-version = "0.1.0"
-description = "Descubrimiento dinámico de sistemas legacy: reconstruye, observa, correlaciona y exporta evidencia de ejecución."
-readme = "README.md"
-requires-python = ">=3.9"
-license = { text = "MIT" }
-dependencies = [
-    "jsonschema>=4",
-]
-
-[project.optional-dependencies]
-explore = ["playwright>=1.50"]
-
-# Sin entrypoint instalable: el núcleo lee `schemas/`, `profiles/` y `examples/` del clon,
-# así que se usa desde ahí con `python3 -m pepper` (README). Un `pip install .` dejaría un
-# ejecutable que no encuentra sus perfiles.
+# PEPPER no es un paquete instalable: se usa desde el clon con `python3 -m pepper …`.
+# El núcleo lee `schemas/`, `profiles/`, `examples/` y `.claude/skills/` de la raíz del
+# repositorio; un wheel solo llevaría `pepper/` y dejaría un ejecutable que no encuentra
+# sus perfiles (D28, docs/documentacion/DECISIONES.md). Antes este archivo declaraba un
+# proyecto `pepper-discovery` con setuptools y `pip install .` producía justo ese
+# artefacto a medias sin quejarse (revisión 2026-09-21). Ahora cualquier intento de
+# construirlo falla con el porqué: scripts/pepper_no_install.py.
+#
+# Dependencias de desarrollo y validación: `pip install -r requirements-dev.txt`.
+# Python 3.9+.
 
 [build-system]
-requires = ["setuptools>=61"]
-build-backend = "setuptools.build_meta"
-
-[tool.setuptools.packages.find]
-include = ["pepper*"]
+requires = []
+build-backend = "pepper_no_install"
+backend-path = ["scripts"]

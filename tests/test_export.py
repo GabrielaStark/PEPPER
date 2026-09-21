@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from pepper.correlate import run  # noqa: E402
-from pepper.export import publish, validate  # noqa: E402
+from pepper.export import publish, render_report, validate  # noqa: E402
 from pepper.package import assemble  # noqa: E402
 
 FIXTURE = ROOT / "examples" / "legacy-demo"
@@ -230,3 +230,53 @@ class ExportTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MarkdownMatchesJsonTest(ExportTest):
+    """El .md corresponde al JSON validado: lo nombrable se comprueba, no se supone.
+
+    Export validaba el JSON (schema, fuentes, manifest) y del .md solo contaba doce
+    encabezados y 300 palabras: un agente podía entregar un JSON correcto y un .md
+    contradictorio o inventado, y era el .md lo que la persona leía (revisión 2026-09-21).
+    """
+
+    def _md(self, mutate):
+        path = self.package / "output" / "funcional.md"
+        path.write_text(mutate(path.read_text(encoding="utf-8")), encoding="utf-8")
+
+    def test_un_rol_del_json_que_el_md_no_nombra_no_pasa(self):
+        self._md(lambda t: t.replace("Ventanilla", "Mostrador"))
+        _, report = validate(self.package, self.manifest)
+        self.assertTrue(any("el rol 'Ventanilla'" in e for e in report.errors), report.errors)
+
+    def test_un_cambio_de_nombre_en_el_json_tiene_que_llegar_al_md(self):
+        self._rewrite(lambda d: d["integrations"][1].__setitem__("name", "Servicio de mensajería nuevo"))
+        _, report = validate(self.package, self.manifest)
+        self.assertTrue(any("'Servicio de mensajería nuevo'" in e for e in report.errors), report.errors)
+
+    def test_un_estado_del_json_que_el_md_no_nombra_no_pasa(self):
+        self._md(lambda t: t.replace("SUSPENDED", "SUSPENDIDA"))
+        _, report = validate(self.package, self.manifest)
+        self.assertTrue(any("el estado 'SUSPENDED'" in e for e in report.errors), report.errors)
+
+    def test_la_seccion_12_lleva_cada_desconocido(self):
+        self._md(lambda t: "\n".join(line for line in t.splitlines()
+                                     if not line.startswith("3. **¿El correo de confirmación")) + "\n")
+        _, report = validate(self.package, self.manifest)
+        self.assertTrue(any("el desconocido" in e and "sección 12" in e for e in report.errors), report.errors)
+        self.assertTrue(any("numera 2 desconocido(s) y el JSON declara 3" in e for e in report.errors), report.errors)
+
+    def test_el_md_no_cita_sesiones_que_el_json_no_declara(self):
+        self._md(lambda t: t + "\nUn cierre visto en otra ventana. [observado flow-777]\n")
+        _, report = validate(self.package, self.manifest)
+        self.assertTrue(any("[observado flow-777]" in e for e in report.errors), report.errors)
+
+    def test_el_titulo_nombra_el_sistema(self):
+        self._md(lambda t: t.replace("# Sistema de Solicitudes (legacy-demo) — qué hace el sistema", "# Otro sistema — qué hace"))
+        _, report = validate(self.package, self.manifest)
+        self.assertTrue(any("el título no nombra el sistema" in e for e in report.errors), report.errors)
+
+    def test_el_golden_corresponde(self):
+        _, report = validate(self.package, self.manifest)
+        self.assertEqual([e for e in report.errors if e.startswith("funcional.md")], [])
+        self.assertIn("El `.md` corresponde al JSON", render_report(report, self.package))

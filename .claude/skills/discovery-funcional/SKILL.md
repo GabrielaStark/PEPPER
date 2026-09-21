@@ -140,6 +140,7 @@ Cómo se escribe: prosa corta, en palabras de la oficina; cada afirmación con s
 
 - [ ] `pepper export --check` en verde.
 - [ ] Toda afirmación del `.md` existe en el JSON con sus `sources`, y todo `ref` resuelve (event_id, archivo:línea, `map:…`, `legacy/…`).
+- [ ] El `.md` nombra, con las mismas palabras que el JSON, cada rol, capacidad, recorrido, estado, automatismo, integración, reporte, catálogo y sesión; el título lleva `system.name`; la sección 12 numera cada `unknowns[].question` tal cual; `[observado <sesión>]` solo con sesiones declaradas en `sessions`. Export lo comprueba y rechaza lo que no corresponda.
 - [ ] `sessions` incluye esta sesión y las anteriores; si había `previous/`, nada verdadero se perdió.
 - [ ] Ningún recorrido no ejecutado está marcado `observed: true`; ninguna integración sin rastro está `observed: true`.
 - [ ] Cada regla tiene `kind`, `basis`, `confidence` y una frase entendible sin leer código; las de trigger/constante llevan `hidden: true`.

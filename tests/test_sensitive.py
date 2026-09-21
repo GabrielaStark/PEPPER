@@ -136,3 +136,71 @@ class SensitiveDataGateTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GateOnWhatTravelsTest(SensitiveDataGateTest):
+    """El gate escanea la COPIA que viaja, archivo por archivo — no las fuentes ni una representación.
+
+    Antes se escaneaban evidencia, legacy y el mapa rendido, y después se copiaban sin
+    mirarse `previous/funcional.json` y `map/system-map.json`: un paquete remoto salía con
+    `sensitive_findings: 0` llevando una credencial (revisión 2026-09-21).
+    """
+
+    def _legacy_limpio(self):
+        legacy = self.root / "legacy-limpio"
+        legacy.mkdir()
+        (legacy / "LEEME.txt").write_text("nada sensible aquí\n", encoding="utf-8")
+        return legacy
+
+    def test_remoto_bloquea_credencial_en_el_discovery_anterior(self):
+        previous = self.root / "funcional-anterior.json"
+        previous.write_text(json.dumps({"summary": {"context": "db.password=ValorQueNoDebeSalir123"}}), encoding="utf-8")
+        package = self.root / "package-previous"
+        with self.assertRaises(ValueError) as raised:
+            assemble(self.correlated, package, self._legacy_limpio(), data_mode="remote", previous=previous)
+        message = str(raised.exception)
+        self.assertIn("previous/funcional.json:1", message)
+        self.assertNotIn("ValorQueNoDebeSalir123", message)
+        self.assertFalse(package.exists())
+        self.assertEqual([p.name for p in self.root.iterdir() if "staging" in p.name], [], "el staging no sobrevive al gate")
+
+    def test_remoto_bloquea_credencial_en_el_mapa_estructurado(self):
+        # El valor va en el JSON del mapa, no en su versión legible: es el archivo que se copiaba sin escanear.
+        system_map = {"schema_version": "0.2.0", "profile_id": None, "artifact": {"name": "x.war"},
+                      "complete": True, "coverage_gaps": [], "entrypoints": [], "jobs": [],
+                      "external_dependencies": [], "data_stores": [], "catalogs": [], "distributions": [],
+                      "classes": [], "screens": [], "labels": 0,
+                      "notes": ["datasource: password=ValorQueNoDebeSalir456"]}
+        docs = self.root / "docs"
+        docs.mkdir()
+        (docs / "system-map.json").write_text(json.dumps(system_map, indent=2), encoding="utf-8")
+        package = self.root / "package-map"
+        with self.assertRaises(ValueError) as raised:
+            assemble(self.correlated, package, self._legacy_limpio(), data_mode="remote",
+                     system_map=docs / "system-map.json")
+        message = str(raised.exception)
+        self.assertIn("map/system-map.json:", message)
+        self.assertNotIn("ValorQueNoDebeSalir456", message)
+        self.assertFalse(package.exists())
+
+    def test_el_conteo_del_manifest_es_el_de_la_copia(self):
+        previous = self.root / "funcional-anterior.json"
+        previous.write_text(json.dumps({"summary": {"context": "db.password=ValorQueNoDebeSalir123"}}), encoding="utf-8")
+        package = self.root / "package-contado"
+        summary = assemble(self.correlated, package, self._legacy_limpio(), data_mode="remote",
+                           previous=previous, allow_sensitive=True)
+        manifest = json.loads(Path(summary["external_manifest"]).read_text(encoding="utf-8"))
+        self.assertGreaterEqual(manifest["data_policy"]["sensitive_findings"], 1)
+        self.assertIn("previous/funcional.json", manifest["files"])
+        self.assertTrue((package / "previous" / "funcional.json").is_file())
+        self.assertFalse(any("staging" in p.name for p in self.root.iterdir()))
+
+    def test_las_notas_se_escanean_ya_redactadas(self):
+        # La redacción de notas es una mitigación: lo que se escanea (y cuenta) es la copia redactada.
+        legacy = self._legacy_limpio()
+        (legacy / "NOTAS.md").write_text("Contraseña de la base: ValorQueNoDebeSalir789\n", encoding="utf-8")
+        package = self.root / "package-notas"
+        summary = assemble(self.correlated, package, legacy, data_mode="remote")
+        self.assertEqual(summary["redacted_notes"], ["NOTAS.md"])
+        self.assertEqual(summary["sensitive_findings"], 0)
+        self.assertNotIn("ValorQueNoDebeSalir789", (package / "legacy" / "NOTAS.md").read_text(encoding="utf-8"))

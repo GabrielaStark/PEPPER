@@ -14,3 +14,24 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: python3 scripts/verificar.py
       - run: python3 -m unittest discover -s tests
+      - name: PEPPER no se instala (fail-closed, D28)
+        run: |
+          set -o pipefail
+          if pip wheel . --no-deps -w /tmp/pepper-wheel > /tmp/pip-wheel.log 2>&1; then
+            echo "se construyó un wheel: PEPPER no debe ser instalable" >&2
+            cat /tmp/pip-wheel.log >&2
+            exit 1
+          fi
+          grep -q "PEPPER no se instala" /tmp/pip-wheel.log || { cat /tmp/pip-wheel.log >&2; exit 1; }
+          test -z "$(ls -A /tmp/pepper-wheel 2>/dev/null)"
+      - name: Demo sintética de punta a punta (correlate → package → export)
+        run: |
+          python3 -m pepper demo --out /tmp/pepper-demo
+          cp examples/legacy-demo/expected/funcional.json examples/legacy-demo/expected/funcional.md /tmp/pepper-demo/package/output/
+          python3 -m pepper export /tmp/pepper-demo/package --manifest /tmp/pepper-demo/package.evidence-manifest.json --check
+          python3 -m pepper export /tmp/pepper-demo/package --manifest /tmp/pepper-demo/package.evidence-manifest.json --out /tmp/pepper-demo/export --system-doc /tmp/pepper-demo/docs
+          test -f /tmp/pepper-demo/docs/funcional.md
+      - name: Sondas adversariales sobre el gate remoto y el proxy
+        run: |
+          python3 -m unittest -v tests.test_sensitive.GateOnWhatTravelsTest tests.test_proxy.UrlSanitizationTest \
+            tests.test_rehydrate.ComponentsTerminanEnBlockedTest tests.test_export.MarkdownMatchesJsonTest tests.test_tools.NoInstalableTest

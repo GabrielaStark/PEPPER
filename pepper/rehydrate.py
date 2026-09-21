@@ -400,6 +400,27 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
             "    Para seguir, una de dos: deja en legacy/ únicamente el desplegable a levantar "
             "(los demás no se mapean ni se levantan), o usa un perfil que declare `rehydrate.components` "
             "y sepa repartirlos en servicios.")
+    if recipe.get("components"):
+        # El perfil sabe repartir los desplegables en piezas (classify_components), pero el
+        # resto del camino — compose por componente, arranque, validación, environment.json —
+        # todavía levanta UNA aplicación. Seguir con `artifacts[0]` sería observar un sistema
+        # incompleto sin decirlo (revisión 2026-09-21). Se clasifica, se dice qué hay, y se
+        # para: un `components` en el perfil termina en BLOCKED hasta que el levantamiento
+        # multi-componente exista de verdad. La única excepción honesta es un legacy de un
+        # solo desplegable que la clasificación reconoce como backend: ese sí es una app.
+        subnet_hint = "10.100.0"
+        components, sin_clasificar = classify_components(artifacts, profile, subnet_hint)
+        lista = "\n".join(
+            f"      · {c.artifact.name}  → {c.role} ({c.engine}, puerto {c.port})" for c in components)
+        if sin_clasificar:
+            lista += ("\n" if lista else "") + "\n".join(f"      · {name}  → sin clasificar" for name in sin_clasificar)
+        solo_backend = len(artifacts) == 1 and len(components) == 1 and components[0].role == "backend"
+        if not solo_backend:
+            raise Blocked(
+                f"el perfil {profile.id} declara `rehydrate.components` y reparte así los {len(artifacts)} desplegable(s):\n{lista}\n"
+                "    PEPPER todavía levanta una sola aplicación: no hay compose, arranque ni validación por "
+                "componente, y seguir con uno solo sería observar un sistema incompleto sin decirlo. "
+                "Para seguir hoy: deja en legacy/ únicamente el backend a levantar con un perfil sin `components`.")
     configs = read_artifact_configs(artifact, recipe.get("config_patterns") or [r"application.*\.(yml|yaml|properties)$"])
     if not configs:
         raise Blocked("el artefacto no trae configuración embebida (application*.yml) y no se dio configuración externa")

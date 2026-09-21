@@ -390,3 +390,70 @@ class AuditoriaRehydrateTest(unittest.TestCase):
                                             [{"missing": "m", "recommended_evidence": "r"}] if status == "PARTIAL" else [],
                                             docs, self.root / "out")
             self.assertEqual(validate_file(env_path, "environment"), [], status)
+
+
+class ComponentsTerminanEnBlockedTest(unittest.TestCase):
+    """`classify_components` existe, pero el resto del camino levanta UNA aplicación.
+
+    Un perfil con `rehydrate.components` dejaba de bloquear y `make_plan` seguía con
+    `artifacts[0]`: PEPPER observaba un sistema incompleto sin decirlo (revisión 2026-09-21).
+    Hasta que exista compose, arranque y validación por componente, `components` termina en
+    BLOCKED diciendo qué hay — salvo un solo desplegable que la clasificación reconoce como backend.
+    """
+
+    RECETA = dict(ComponentesTest.RECETA, artifact_suffixes=[".jar", ".zip"])
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.legacy = Path(self._tmp.name) / "legacy"
+        self.legacy.mkdir()
+        (self.legacy / "respaldo.dump").write_bytes(b"PGDMP" + b"\0" * 64)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _jar(self, name, config=""):
+        ComponentesTest._jar(self, name, config)
+
+    def _front(self, name):
+        ComponentesTest._front(self, name)
+
+    def test_varios_componentes_es_blocked_y_dice_que_hay(self):
+        from pepper.rehydrate import Blocked, make_plan
+
+        self._jar("puerta-1.0.jar", "server:\n  port: 8098\nspring:\n  cloud.gateway:\n    enabled: true\n")
+        self._jar("recursos-1.0.jar", "server:\n  port: 8099\n")
+        self._front("front.zip")
+        with self.assertRaises(Blocked) as caught:
+            make_plan(self.legacy, _profile(self.RECETA))
+        mensaje = str(caught.exception)
+        self.assertIn("una sola aplicación", mensaje)
+        for pieza in ("puerta-1.0.jar", "gateway", "recursos-1.0.jar", "backend", "front.zip", "frontend"):
+            self.assertIn(pieza, mensaje, "el bloqueo nombra cada componente y su papel")
+
+    def test_lo_no_clasificado_tambien_se_nombra(self):
+        from pepper.rehydrate import Blocked, make_plan
+
+        self._jar("recursos-1.0.jar", "server:\n  port: 8099\n")
+        (self.legacy / "misterio.zip").write_bytes(b"PK\x03\x04sin-nada")
+        with self.assertRaises(Blocked) as caught:
+            make_plan(self.legacy, _profile(self.RECETA))
+        self.assertIn("misterio.zip  → sin clasificar", str(caught.exception))
+
+    def test_un_solo_front_no_es_una_aplicacion(self):
+        from pepper.rehydrate import Blocked, make_plan
+
+        self._front("front.zip")
+        with self.assertRaises(Blocked) as caught:
+            make_plan(self.legacy, _profile(self.RECETA))
+        self.assertIn("frontend", str(caught.exception))
+        self.assertIn("una sola aplicación", str(caught.exception))
+
+    def test_un_solo_backend_sigue_su_camino(self):
+        from pepper.rehydrate import Blocked, make_plan
+
+        self._jar("recursos-1.0.jar", "server:\n  port: 8099\n")
+        with self.assertRaises(Blocked) as caught:
+            make_plan(self.legacy, _profile(self.RECETA))  # se detiene más adelante (sin datasource), no por components
+        self.assertNotIn("rehydrate.components", str(caught.exception))
+        self.assertNotIn("una sola aplicación", str(caught.exception))

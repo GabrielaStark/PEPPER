@@ -400,3 +400,51 @@ class ProxyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UrlSanitizationTest(unittest.TestCase):
+    """Ninguna URL entra a http.jsonl con userinfo, query ni fragmento: ni la bloqueada ni la del documento.
+
+    `document_uri` se guardaba entera (con `?token=…`) y `blocked_host`/`blocked_uri`
+    conservaban `usuario:contraseña@host`; esa evidencia viaja en el paquete (revisión 2026-09-21).
+    """
+
+    def test_userinfo_query_y_fragmento_no_quedan_en_ninguna_url(self):
+        from pepper.proxy import blocked_record
+
+        entry = blocked_record("csp", {"csp-report": {
+            "blocked-uri": "https://usuario:ClaveSecreta@servidor.example:8443/calc?token=TokenSecreto&id=7#frag",
+            "document-uri": "http://127.0.0.1:18080/cita?token=OtroSecreto#x",
+            "effective-directive": "frame-src"}})
+        dumped = json.dumps(entry)
+        for secret in ("ClaveSecreta", "TokenSecreto", "OtroSecreto", "usuario:", "#frag"):
+            self.assertNotIn(secret, dumped)
+        self.assertEqual(entry["blocked_host"], "servidor.example:8443")
+        self.assertEqual(entry["blocked_uri"], "https://servidor.example:8443/calc")
+        self.assertEqual(entry["blocked_path"], "/calc")
+        self.assertEqual(entry["document_uri"], "http://127.0.0.1:18080/cita")
+        self.assertEqual(entry["blocked_query"], {"token": "[REDACTADO]", "id": "7"})
+
+    def test_el_reporte_del_guardian_recibe_la_misma_limpieza(self):
+        from pepper.proxy import blocked_record
+
+        entry = blocked_record("navigation", {
+            "kind": "window.open",
+            "blocked_uri": "https://u:ClaveSecreta@otro.example/x?password=Abc123",
+            "document_uri": "http://u:OtraClave@127.0.0.1:18080/home?sessionToken=T0k3n"})
+        dumped = json.dumps(entry)
+        for secret in ("ClaveSecreta", "OtraClave", "Abc123", "T0k3n", "@"):
+            self.assertNotIn(secret, dumped)
+        self.assertEqual(entry["document_uri"], "http://127.0.0.1:18080/home")
+        self.assertEqual(entry["blocked_uri"], "https://otro.example/x")
+
+    def test_un_destino_sin_esquema_tampoco_conserva_nada_detras(self):
+        from pepper.proxy import blocked_record
+
+        for raw, expected in (("inline", "inline"), ("data", "data"),
+                              ("u:ClaveSecreta@host?token=T0k3n#f", "host"),
+                              ("//u:ClaveSecreta@host/x?token=T0k3n", "//host/x")):
+            entry = blocked_record("navigation", {"kind": "form", "blocked_uri": raw, "document_uri": ""})
+            self.assertEqual(entry["blocked_uri"], expected, raw)
+            self.assertNotIn("ClaveSecreta", json.dumps(entry))
+            self.assertNotIn("T0k3n", json.dumps(entry))

@@ -198,34 +198,64 @@ def decode_body(content_encoding: str, payload: bytes) -> Tuple[bytes, bool]:
     return payload, encoding in ("", "identity")
 
 
+def _strip_userinfo(netloc: str) -> str:
+    """`usuario:clave@host:puerto` → `host:puerto`. El userinfo de una URL es una credencial."""
+    return netloc.rsplit("@", 1)[-1]
+
+
+def sanitize_url(uri: str) -> Tuple[str, str, str, Optional[Dict[str, Any]]]:
+    """(uri limpia, host, path, query redactado o None).
+
+    De una URL solo se guarda esquema, host, puerto y ruta. Se quita el userinfo
+    (`usuario:clave@`), el fragmento y el query; el query vuelve aparte, redactado por
+    nombre de campo, para que un `?token=…` o un `?password=…` jamás quede en claro en
+    http.jsonl. Aplica igual al destino bloqueado que a la página que lo intentó: los
+    dos viajan en el paquete (revisión 2026-09-21)."""
+    if "://" in uri or uri.startswith("//"):
+        parts = urlsplit(uri)
+        if parts.netloc:
+            host = _strip_userinfo(parts.netloc)
+            path = parts.path or "/"
+            query = None
+            if parts.query:
+                pairs = parse_qs(parts.query, keep_blank_values=True)
+                query = _redact({k: v[0] if len(v) == 1 else v for k, v in pairs.items()})
+            return f"{parts.scheme}://{host}{path}" if parts.scheme else f"//{host}{path}", host, path, query
+    # el navegador a veces reporta solo un origen sin ruta, un esquema (`data`, `blob`) o `inline`:
+    # aun así no se conserva nada después de `?` o `#`, ni un `usuario:clave@` delante
+    bare = re.split(r"[?#]", uri, 1)[0]
+    if "@" in bare:
+        head, _, tail = bare.rpartition("@")
+        bare = (head.split("//", 1)[0] + "//" if "//" in head else "") + tail
+    return bare, bare, "", None
+
+
 def blocked_record(kind: str, report: Dict[str, Any]) -> Dict[str, Any]:
     """Normaliza un reporte del navegador (CSP o guardián) a una línea de http.jsonl.
 
-    El query del destino bloqueado se guarda aparte y redactado: puede llevar
-    identificadores reales; nunca credenciales en claro."""
+    Ninguna URL se guarda entera: ni la bloqueada ni la del documento. El query del
+    destino bloqueado se guarda aparte y redactado: puede llevar identificadores reales;
+    nunca credenciales en claro."""
     if kind == "csp":
         body = report.get("csp-report") if isinstance(report.get("csp-report"), dict) else report
         uri = str(body.get("blocked-uri") or body.get("blockedURL") or "")
+        document = str(body.get("document-uri") or body.get("documentURL") or "")
         entry: Dict[str, Any] = {
             "ts": _now_iso(), "direction": "blocked", "kind": "csp",
             "directive": str(body.get("effective-directive") or body.get("violated-directive") or ""),
-            "document_uri": str(body.get("document-uri") or body.get("documentURL") or ""),
         }
     else:
         uri = str(report.get("blocked_uri") or "")
-        entry = {"ts": _now_iso(), "direction": "blocked", "kind": str(report.get("kind") or "navigation"),
-                 "document_uri": str(report.get("document_uri") or "")}
-    parts = urlsplit(uri) if "://" in uri else None
-    if parts and parts.netloc:
-        entry["blocked_host"] = parts.netloc
-        entry["blocked_path"] = parts.path or "/"
-        entry["blocked_uri"] = f"{parts.scheme}://{parts.netloc}{parts.path or '/'}"
-        if parts.query:
-            pairs = parse_qs(parts.query, keep_blank_values=True)
-            entry["blocked_query"] = _redact({k: v[0] if len(v) == 1 else v for k, v in pairs.items()})
-    else:
-        entry["blocked_uri"] = uri  # el navegador a veces reporta solo el origen o un esquema
-        entry["blocked_host"] = uri
+        document = str(report.get("document_uri") or "")
+        entry = {"ts": _now_iso(), "direction": "blocked", "kind": str(report.get("kind") or "navigation")}
+    entry["document_uri"] = sanitize_url(document)[0] if document else ""
+    clean, host, path, query = sanitize_url(uri)
+    entry["blocked_host"] = host
+    if path:
+        entry["blocked_path"] = path
+    entry["blocked_uri"] = clean
+    if query:
+        entry["blocked_query"] = query
     return entry
 
 

@@ -149,7 +149,7 @@ def scan(roots: Iterable[Tuple[str, Path, Optional[Ignore]]]) -> Report:
             continue
         for path in _iter_files(root, ignore):
             relative = path.relative_to(root).as_posix()
-            display = f"{label}/{relative}"
+            display = f"{label}/{relative}" if label else relative
             if path.is_symlink():
                 report.add_unscanned("symlink", display)
                 continue

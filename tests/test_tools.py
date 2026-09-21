@@ -271,3 +271,30 @@ class RepoDeLaHerramientaTest(unittest.TestCase):
             self.assertIsNone(tool_remote_warning(root), "sin legacy/ no hay nada que filtrar")
             (root / "legacy").mkdir()
             self.assertIsNone(tool_remote_warning(root), "legacy/ vacío tampoco")
+
+
+class NoInstalableTest(unittest.TestCase):
+    """PEPPER se usa desde el clon; construir un wheel falla con el porqué, nunca a medias.
+
+    `pip install .` producía `pepper_discovery-0.1.0` con solo `pepper/`: `detect` evaluaba
+    cero perfiles y `demo` no encontraba su fixture (revisión 2026-09-21).
+    """
+
+    def test_el_backend_de_build_se_niega(self):
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import pepper_no_install as backend
+
+        for build in (backend.build_wheel, backend.build_sdist, backend.build_editable,
+                      backend.prepare_metadata_for_build_wheel):
+            with self.assertRaisesRegex(backend.NotInstallable, "PEPPER no se instala"):
+                build(str(ROOT / "pepper-out"))
+        self.assertEqual(backend.get_requires_for_build_wheel(), [])
+
+    def test_pyproject_no_declara_un_proyecto_distribuible(self):
+        text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn('build-backend = "pepper_no_install"', text)
+        self.assertIn('backend-path = ["scripts"]', text)
+        self.assertNotIn("[project]", text)
+        efectivo = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+        self.assertNotIn("setuptools", efectivo, "ningún backend real: solo el que se niega")
+        self.assertIn("requires = []", efectivo)
