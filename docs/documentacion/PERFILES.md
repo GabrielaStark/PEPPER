@@ -18,7 +18,7 @@ Formato: carpeta en `profiles/<id>/` con `profile.json` (contrato: [`schemas/pro
 
 ## Los extractores: mecanismos del núcleo, patrones del perfil
 
-`pepper map` entiende seis mecanismos (`jvm_route_annotations`, `jvm_class_inventory`, `view_templates`, `pg_dump_custom`, `config_hosts`, `archive_url_scan`, ver [ARQUITECTURA.md](ARQUITECTURA.md)). Un perfil declara cuáles aplican y con qué patrones. Un stack con vistas JSP en vez de XHTML cambia `member_patterns` y las regex de `view_templates`; un stack sin JVM no declara los `jvm_*`. Si un stack necesita un mecanismo nuevo (p. ej. leer un respaldo de otro motor), el mecanismo se agrega al núcleo de forma genérica y el perfil lo parametriza.
+`pepper map` entiende diez mecanismos (`jvm_route_annotations`, `jvm_class_inventory`, `view_templates`, `pg_dump_custom`, `sql_dump`, `groovy_config_values`, `groovy_controller_actions`, `groovy_url_mappings`, `config_hosts`, `archive_url_scan`, ver [ARQUITECTURA.md](ARQUITECTURA.md)). Un perfil declara cuáles aplican y con qué patrones. Un stack con vistas JSP en vez de XHTML cambia `member_patterns` y las regex de `view_templates`; un stack sin JVM no declara los `jvm_*`. Si un stack necesita un mecanismo nuevo (p. ej. leer un respaldo de otro motor), el mecanismo se agrega al núcleo de forma genérica y el perfil lo parametriza.
 
 Lo que un mecanismo no puede leer se declara: el mapa sale `complete: false` con el hueco nombrado.
 

@@ -19,12 +19,20 @@ declara el perfil en `extractors.json`. Mecanismos:
                          con conteo y columnas, funciones y triggers con su
                          cuerpo, vistas, catálogos (tablas chicas completas) y
                          distribuciones de columnas de estado
+  sql_dump               lo mismo para un respaldo SQL en texto (mysqldump,
+                         mariadb-dump, pg_dump plano); detecta el respaldo que
+                         es el esquema de sistema del motor y no la aplicación
   jvm_route_annotations  rutas @*Mapping y jobs @Scheduled vía `javap`
   jvm_class_inventory    por clase: métodos públicos, constantes y cadenas de
                          negocio (mensajes, estados) vía `javap -c -constants`
   view_templates         pantallas: título, encabezados, campos, botones y sus
                          acciones, mensajes de validación, condiciones por rol;
                          con el bundle de etiquetas resuelto
+  groovy_config_values   Config/DataSource de Grails reconstruidos del bytecode:
+                         jobs con su cron y notas de configuración
+  groovy_controller_actions  acciones de controladores Grails (closures y métodos)
+                         → rutas por convención, con allowedMethods
+  groovy_url_mappings    UrlMappings de Grails → rutas declaradas
 
 Fail-honest (como isolate): si falta una herramienta (javap) o un extractor no
 puede correr, el mapa se marca `complete=false` y lo dice en `coverage_gaps`.
@@ -41,13 +49,13 @@ from __future__ import annotations
 import html
 import math
 import re
-import shutil
-import subprocess
 import tempfile
 import zipfile
 from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from pepper.inspect import jvm
 
 MAP_NAME = "system-map.json"
 MAP_DIR = "map"
@@ -136,19 +144,7 @@ def _members(artifact: Path):
                     yield info.filename, archive.read(info.filename)
 
 
-def _match_any(patterns: List[str], value: str) -> bool:
-    return any(re.search(p, value) for p in patterns)
-
-
-def _run_tool(binary: Optional[str], args: List[str], timeout: int = 300) -> Optional[str]:
-    if not binary:
-        return None
-    try:
-        out = subprocess.run([binary, *args], capture_output=True, text=True, timeout=timeout,
-                             errors="replace")
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return out.stdout if out.returncode == 0 else None
+_match_any = jvm.match_any
 
 
 # ------------------------------------------------------------- mecanismos
@@ -306,17 +302,7 @@ def _extract_pg_dump(spec: Dict[str, Any], report: "MapReport", dump: Optional[P
                                 value = value[:4] if value[:4].isdigit() else "∅"
                             counters[i][value if value is not None else "∅"] += 1
                 for i, column, mode in state_columns:
-                    if len(counters[i]) > 60:
-                        continue  # no es un estado: demasiados valores distintos
-                    top = counters[i].most_common(top_n)
-                    if mode == "year":
-                        top = sorted(top, key=lambda kv: kv[0])
-                    report.distributions.append({
-                        "table": entry.tag, "column": column + (" (año)" if mode == "year" else ""),
-                        "total": rows_count, "distinct": len(counters[i]),
-                        "values": [{"value": (v[:80] if isinstance(v, str) else v), "count": n} for v, n in top],
-                        "evidence": ref,
-                    })
+                    _emit_distribution(report, entry.tag, column, mode, rows_count, counters[i], top_n, ref)
     for key in sorted(t for t in tables if t not in counts):
         report.data.append({"kind": "table", "name": table_name(*key), "columns": pgdump.table_columns(tables[key].defn),
                             "detail": "sin datos en el respaldo", "evidence": ref})
@@ -341,89 +327,120 @@ def _extract_pg_dump(spec: Dict[str, Any], report: "MapReport", dump: Optional[P
                                 "detail": f"{n} {label}(s) en el respaldo", "evidence": ref})
 
 
-# ---- el bytecode ---------------------------------------------------------
 
-def _own_roots(names: List[str], class_root: str, depth: int = 3) -> List[str]:
-    """Paquetes raíz del sistema (p. ej. `mx/gob/organismo/`): los jars que los comparten son propios."""
-    root = class_root.rstrip("/") + "/"
-    roots = set()
-    for n in names:
-        if n.startswith(root) and n.endswith(".class"):
-            parts = n[len(root):].split("/")
-            if len(parts) > depth:
-                roots.add("/".join(parts[:depth]) + "/")
-    return sorted(roots)
+def _emit_distribution(report: "MapReport", table: str, column: str, mode: str, total: int,
+                       counter: Counter, top_n: int, ref: str) -> None:
+    """Una columna de estado/tipo (o el año de una fecha) como distribución, si de verdad es un estado."""
+    if len(counter) > 60:
+        return  # no es un estado: demasiados valores distintos
+    top = counter.most_common(top_n)
+    if mode == "year":
+        top = sorted(top, key=lambda kv: str(kv[0]))
+    report.distributions.append({
+        "table": table, "column": column + (" (año)" if mode == "year" else ""),
+        "total": total, "distinct": len(counter),
+        "values": [{"value": (v[:80] if isinstance(v, str) else v), "count": n} for v, n in top],
+        "evidence": ref,
+    })
 
 
-def _class_names(artifact: Path, class_root: str, package_prefixes: List[str],
-                 include_libs: bool, tmpdir: Path) -> List[Tuple[str, Path]]:
-    """Extrae las clases del artefacto (y de sus jars propios) a `tmpdir`.
+def _dump_patterns(spec: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "catalog_max": int(spec.get("catalog_max_rows", 300)),
+        "catalog_include": spec.get("catalog_include_patterns", []),
+        "catalog_exclude": spec.get("catalog_exclude_patterns",
+                                    [r"(?i)usuario|user|persona|trabajador|empleado|cliente|testigo|beneficiario|patron|empresa|"
+                                     r"ciudadano|contacto|proveedor|medico|paciente|solicitante|asegurado|derechohabiente|domicilio|direccion|telefono"]),
+        "state_re": re.compile(spec.get("state_column_pattern", r"(?i)estatus|status|estado$|^tipo|_tipo|tipo_|nivel|sector|rol$")),
+        "date_re": re.compile(spec.get("date_column_pattern", r"(?i)^fecha|^fc[a-z]|_fecha|fecha$|_date$|^date_|date$")),
+        "top_n": int(spec.get("distribution_top", 15)),
+    }
 
-    Los prefijos de paquete se anclan a un segmento de ruta (`beans/` no casa con
-    `xmlbeans/`). "Jar propio" = comparte paquete raíz con las clases del WAR,
-    así las librerías de terceros quedan fuera sin listas negras.
-    → [(nombre.calificado, classpath_root)] en orden determinístico."""
-    anchored = [r"(?:^|/)" + p.lstrip("^/") for p in package_prefixes]
-    wanted: List[Tuple[str, Path]] = []
-    with zipfile.ZipFile(artifact) as archive:
-        names = archive.namelist()
-        root = class_root.rstrip("/") + "/"
-        for n in sorted(names):
-            if n.startswith(root) and n.endswith(".class"):
-                relative = n[len(root):]
-                if not anchored or _match_any(anchored, relative):
-                    archive.extract(n, tmpdir)
-                    wanted.append((relative.removesuffix(".class").replace("/", "."), tmpdir / class_root))
-        if include_libs:
-            own = _own_roots(names, class_root)
-            for n in sorted(names):
-                if not n.endswith(".jar"):
+
+def _extract_sql_dump(spec: Dict[str, Any], report: "MapReport", dump: Optional[Path]) -> None:
+    """Respaldo SQL en texto (mysqldump / mariadb-dump / pg_dump plano): una pasada."""
+    from pepper.inspect import sqldump
+
+    if dump is None or not dump.is_file():
+        report.gap("sql_dump: no se encontró el respaldo (--dump); sin él no hay inventario de datos")
+        return
+    if not sqldump.is_sql_dump(dump):
+        report.gap(f"sql_dump: {dump.name} no es un respaldo SQL en texto (mysqldump/mariadb-dump/pg_dump plano)")
+        return
+    pat = _dump_patterns(spec)
+    ref = f"{dump.name} (lector sql_dump)"
+    # Distribuciones sobre la marcha: el conteo por columna de estado se acumula fila a fila,
+    # sin guardar las filas (un respaldo de aplicación puede traer millones).
+    counters: Dict[str, Dict[int, Tuple[str, str, Counter]]] = {}
+    saturated: Dict[str, set] = {}
+
+    def on_row(table: str, columns: List[str], cells: List[Optional[str]]) -> None:
+        if table not in counters:
+            cols: Dict[int, Tuple[str, str, Counter]] = {}
+            for i, c in enumerate(columns):
+                if _SENSITIVE_COLUMN_RE.search(c):
                     continue
-                jar_dir = tmpdir / "lib" / Path(n).stem
-                with zipfile.ZipFile(archive.open(n)) as jar:
-                    members = [m for m in sorted(jar.namelist())
-                               if m.endswith(".class") and any(m.startswith(o) for o in own)
-                               and (not anchored or _match_any(anchored, m))]
-                    if not members:
-                        continue
-                    jar_dir.mkdir(parents=True, exist_ok=True)
-                    for m in members:
-                        jar.extract(m, jar_dir)
-                        wanted.append((m.removesuffix(".class").replace("/", "."), jar_dir))
-    return wanted
-
-
-def _javap_batches(javap: str, classes: List[Tuple[str, Path]], flags: List[str], batch: int = 40) -> Dict[str, str]:
-    """Corre javap por lotes (una invocación por 40 clases) y separa la salida por clase."""
-    outputs: Dict[str, str] = {}
-    by_root: Dict[Path, List[str]] = {}
-    for fqn, root in classes:
-        by_root.setdefault(root, []).append(fqn)
-    for root, fqns in by_root.items():
-        for start in range(0, len(fqns), batch):
-            chunk = fqns[start:start + batch]
-            out = _run_tool(javap, [*flags, "-classpath", str(root), *chunk])
-            if out is None:
-                for fqn in chunk:  # un lote roto no oculta a los demás
-                    single = _run_tool(javap, [*flags, "-classpath", str(root), fqn])
-                    if single is not None:
-                        outputs[fqn] = single
+                if pat["state_re"].search(c):
+                    cols[i] = (c, "state", Counter())
+                elif pat["date_re"].search(c):
+                    cols[i] = (c, "year", Counter())
+            counters[table] = cols
+            saturated[table] = set()
+        for i, (_, mode, counter) in counters[table].items():
+            if i in saturated[table] or i >= len(cells):
                 continue
-            current: Optional[str] = None
-            buffer: List[str] = []
-            for line in out.splitlines():
-                m = re.match(r"^(?:public |final |abstract |private |protected )*(?:class|interface|enum) ([\w.$]+)", line)
-                if m and not line.startswith(" "):
-                    if current is not None:
-                        outputs[current] = "\n".join(buffer)
-                    current = m.group(1)
-                    buffer = [line]
-                else:
-                    buffer.append(line)
-            if current is not None:
-                outputs[current] = "\n".join(buffer)
-    return outputs
+            value = cells[i]
+            if mode == "year" and value:
+                value = value[:4] if value[:4].isdigit() else "∅"
+            counter[value if value is not None else "∅"] += 1
+            if len(counter) > 60:
+                saturated[table].add(i)
 
+    try:
+        info = sqldump.read_sql_dump(dump, keep_rows=pat["catalog_max"], on_row=on_row)
+    except (OSError, ValueError) as error:
+        report.gap(f"sql_dump: {dump.name}: {error}")
+        return
+    report.notes.append(f"respaldo {dump.name} · motor: {info.dialect} {info.server_version or '(versión no declarada)'}")
+    report.notes.append(f"respaldo {dump.name} · base de origen: {info.dbname or '(no declarada)'}"
+                        + (f" · host de origen: {info.source_host}" if info.source_host else ""))
+    if info.tool:
+        report.notes.append(f"respaldo {dump.name} · generado por {info.tool} {info.tool_version}".rstrip())
+    if info.system_only:
+        report.gap(f"sql_dump: {dump.name} es el esquema de SISTEMA del motor (base '{info.dbname or '?'}': "
+                   f"{len(info.tables)} tablas como user, db, tables_priv…), NO la base de la aplicación. "
+                   "Con él no hay tablas de negocio, catálogos ni volúmenes: consigue el respaldo de la base que el artefacto usa")
+        return
+    for key, table in info.tables.items():
+        item: Dict[str, Any] = {"kind": "table", "name": table.qualified, "columns": table.columns,
+                                "count": table.count, "evidence": ref}
+        if table.count == 0 and not table.rows:
+            item["detail"] = "sin datos en el respaldo"
+        report.data.append(item)
+        is_catalog = (table.count <= pat["catalog_max"] and not table.overflow
+                      and not _match_any(pat["catalog_exclude"], table.name)
+                      and (not pat["catalog_include"] or _match_any(pat["catalog_include"], table.name)))
+        if is_catalog and table.rows:
+            rows = [_redact_row(table.columns, row) for row in table.rows]
+            report.catalogs.append({"table": table.qualified, "columns": table.columns, "count": table.count,
+                                    "rows": rows, "evidence": ref})
+        elif table.count > 0:
+            for i, (column, mode, counter) in (counters.get(table.qualified) or {}).items():
+                if i in saturated.get(table.qualified, set()):
+                    continue
+                _emit_distribution(report, table.qualified, column, mode, table.count, counter, pat["top_n"], ref)
+    for name, definition in info.views:
+        report.data.append({"kind": "view", "name": name, "definition": definition, "evidence": ref})
+    for kind, name, definition in info.routines:
+        report.data.append({"kind": "function", "name": name, "detail": kind, "definition": definition, "evidence": ref})
+    for name, event, table, definition in info.triggers:
+        report.data.append({"kind": "trigger", "name": name, "detail": f"{event} en {table}",
+                            "definition": definition, "evidence": ref})
+    if info.owners:
+        report.notes.append(f"respaldo {dump.name} · definers/dueños referidos: {', '.join(info.owners[:10])}")
+
+
+# ---- el bytecode ---------------------------------------------------------
 
 _MAP_ANN = re.compile(r"annotation\.(RequestMapping|GetMapping|PostMapping|PutMapping|DeleteMapping)\(")
 
@@ -439,11 +456,12 @@ def _extract_jvm_routes(artifact: Path, spec: Dict[str, Any], report: "MapReport
         report.gap("jvm_route_annotations: el artefacto no es un archivo zip/WAR")
         return
     with tempfile.TemporaryDirectory() as tmp:
-        classes = _class_names(artifact, spec.get("class_root", "WEB-INF/classes"),
-                               spec.get("package_prefixes", []), False, Path(tmp))
+        classes = jvm.collect_classes(artifact, spec.get("class_root", "WEB-INF/classes"),
+                                      spec.get("package_prefixes", []), False, Path(tmp))
         if _report_no_classes("jvm_route_annotations", classes, spec.get("class_root", "WEB-INF/classes"), artifact, report):
             return
-        outputs = _javap_batches(javap, classes, ["-p", "-v"])
+        outputs, tool_notes = jvm.javap_outputs(tools, classes, ["-p", "-v"])
+        report.notes.extend(f"jvm_route_annotations: {n}" for n in tool_notes)
         _report_unreadable("jvm_route_annotations", classes, outputs, report)
         for fqn, _ in classes:
             out = outputs.get(fqn)
@@ -534,6 +552,7 @@ def _parse_javap(out: str, class_name: str, report: "MapReport",
 
 
 _ACCESSOR_RE = re.compile(r"^(get|set|is)[A-Z]|^(equals|hashCode|toString|canEqual|builder|lambda\$)")
+_CRYPTO_RE = re.compile(r"javax/crypto/|java/security/(?:Key|SecretKey|spec/|KeyStore|Signature|MessageDigest)|javax\$crypto\$|java\$security\$")
 
 
 def _extract_jvm_classes(artifact: Path, spec: Dict[str, Any], report: "MapReport",
@@ -549,11 +568,12 @@ def _extract_jvm_classes(artifact: Path, spec: Dict[str, Any], report: "MapRepor
     kinds: Dict[str, str] = spec.get("class_kinds") or {}
     max_strings = int(spec.get("max_strings_per_class", 80))
     with tempfile.TemporaryDirectory() as tmp:
-        classes = _class_names(artifact, spec.get("class_root", "WEB-INF/classes"),
-                               spec.get("package_prefixes", []), bool(spec.get("include_own_libs", True)), Path(tmp))
+        classes = jvm.collect_classes(artifact, spec.get("class_root", "WEB-INF/classes"),
+                                      spec.get("package_prefixes", []), bool(spec.get("include_own_libs", True)), Path(tmp))
         if _report_no_classes("jvm_class_inventory", classes, spec.get("class_root", "WEB-INF/classes"), artifact, report):
             return
-        outputs = _javap_batches(javap, classes, ["-p", "-c", "-constants"])
+        outputs, tool_notes = jvm.javap_outputs(tools, classes, ["-p", "-c", "-constants"])
+        report.notes.extend(f"jvm_class_inventory: {n}" for n in tool_notes)
         _report_unreadable("jvm_class_inventory", classes, outputs, report)
         for fqn, _ in classes:
             out = outputs.get(fqn)
@@ -567,6 +587,12 @@ def _extract_jvm_classes(artifact: Path, spec: Dict[str, Any], report: "MapRepor
                 if re.search(pattern, fqn):
                     kind = label
                     break
+            # Una clase que cifra o firma (javax.crypto, java.security) tiene sus llaves como
+            # cadenas literales: `passphrase`, la semilla de un DES, la sal de un hash. El
+            # redactor por valor no las reconoce cuando son una palabra (2026-09-21, un
+            # BlowfishCodec con su frase escrita). Toda cadena de una clase así se omite: el
+            # mapa dice que la clase existe y qué hace, no con qué llave.
+            cryptographic = bool(_CRYPTO_RE.search(out))
             methods: List[str] = []
             constants: Dict[str, str] = {}
             strings: List[str] = []
@@ -580,7 +606,7 @@ def _extract_jvm_classes(artifact: Path, spec: Dict[str, Any], report: "MapRepor
                 m = re.match(r"^(?:public |private |protected )?static final [\w.<>\[\]]+ (\w+) = (.+);$", s)
                 if m:
                     value = m.group(2).strip()
-                    if _SECRET_STRING_RE.search(f"{m.group(1)}={value}") or _SECRET_KEY_RE.search(m.group(1)) \
+                    if cryptographic or _SECRET_STRING_RE.search(f"{m.group(1)}={value}") or _SECRET_KEY_RE.search(m.group(1)) \
                             or looks_like_secret_value(value):
                         # por ubicación, nunca el valor: que se sepa que ahí hay una llave
                         constants[m.group(1)] = _REDACTED
@@ -588,19 +614,22 @@ def _extract_jvm_classes(artifact: Path, spec: Dict[str, Any], report: "MapRepor
                         constants[m.group(1)] = value.strip('"')[:120]
                     continue
                 m = re.search(r"\bldc2?_?w?\s+#\d+\s+// String (.*)$", s)
-                if m:
+                if m and not cryptographic:
                     text = m.group(1).strip()
                     if (len(text) >= 4 and re.search(r"[A-Za-zÁÉÍÓÚáéíóúñÑ]", text)
                             and not _NOISE_STRING_RE.search(text) and not _SECRET_STRING_RE.search(text)
                             and not looks_like_secret_value(text)
                             and not _PII_VALUE_RE.search(text) and text not in strings):
                         strings.append(text[:200])
-            if not methods and not constants and not strings:
+            if not methods and not constants and not strings and not cryptographic:
                 continue
-            report.classes.append({
+            item: Dict[str, Any] = {
                 "name": fqn, "kind": kind, "methods": methods, "constants": constants,
                 "strings": strings[:max_strings], "evidence": f"{simple}.class (javap -c -constants)",
-            })
+            }
+            if cryptographic:
+                item["strings_omitted"] = "clase criptográfica (javax.crypto / java.security): sus cadenas pueden ser llaves y no viajan"
+            report.classes.append(item)
 
 
 # ---- las pantallas -------------------------------------------------------
@@ -714,9 +743,13 @@ _MECHANISM_SURFACES: Dict[str, tuple] = {
     "archive_url_scan": ("external_dependencies",),
     "config_hosts": ("external_dependencies",),
     "pg_dump_custom": ("data_stores", "catalogs"),
+    "sql_dump": ("data_stores", "catalogs"),
     "jvm_route_annotations": ("entrypoints", "jobs"),
     "jvm_class_inventory": ("classes",),
     "view_templates": ("screens",),
+    "groovy_config_values": ("jobs",),
+    "groovy_controller_actions": ("entrypoints",),
+    "groovy_url_mappings": ("entrypoints",),
 }
 _SURFACES = ("entrypoints", "jobs", "external_dependencies", "data_stores", "catalogs", "classes", "screens")
 
@@ -728,25 +761,25 @@ _MECHANISMS: Dict[str, Callable] = {
     "jvm_route_annotations": lambda art, spec, rep, ctx: _extract_jvm_routes(art, spec, rep, ctx["tools"]),
     "jvm_class_inventory": lambda art, spec, rep, ctx: _extract_jvm_classes(art, spec, rep, ctx["tools"]),
     "view_templates": lambda art, spec, rep, ctx: _extract_views(art, spec, rep),
+    "sql_dump": lambda art, spec, rep, ctx: _extract_sql_dump(spec, rep, ctx["dump"]),
+    "groovy_config_values": lambda art, spec, rep, ctx: _groovy().extract_config_values(art, spec, rep, ctx["tools"]),
+    "groovy_controller_actions": lambda art, spec, rep, ctx: _groovy().extract_controller_actions(art, spec, rep, ctx["tools"]),
+    "groovy_url_mappings": lambda art, spec, rep, ctx: _groovy().extract_url_mappings(art, spec, rep, ctx["tools"]),
 }
 
 
-def _default_tools() -> Dict[str, str]:
-    tools = {}
-    for name in ("javap",):
-        found = shutil.which(name)
-        if found:
-            tools[name] = found
-    return tools
+def _groovy():
+    from pepper.inspect import groovy
+    return groovy
 
 
 def build_map(artifact: Path, extractors: List[Dict[str, Any]], profile_id: Optional[str],
-              dump: Optional[Path] = None, tools: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+              dump: Optional[Path] = None, tools: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     from pepper import __version__
 
     if not artifact.exists():
         raise FileNotFoundError(f"artefacto inexistente: {artifact}")
-    ctx = {"dump": dump, "tools": tools if tools is not None else _default_tools()}
+    ctx = {"dump": dump, "tools": tools if tools is not None else jvm.default_tools()}
     report = MapReport()
     for extractor in extractors:
         kind = extractor.get("mechanism")
@@ -824,9 +857,9 @@ def render_map(system_map: Dict[str, Any]) -> Dict[str, str]:
     for t in triggers:
         lines += [f"### `{t['name']}` — {t.get('detail','')}", "", "```sql", t.get("definition", ""), "```", ""]
     functions = [d for d in data if d["kind"] == "function"]
-    lines += [f"## Funciones ({len(functions)})", ""]
+    lines += [f"## Funciones y procedimientos ({len(functions)})", ""]
     for f in functions:
-        lines += [f"### `{f['name']}`", "", "```sql", f.get("definition", ""), "```", ""]
+        lines += [f"### `{f['name']}`" + (f" ({f['detail']})" if f.get("detail") else ""), "", "```sql", f.get("definition", ""), "```", ""]
     views = [d for d in data if d["kind"] == "view"]
     lines += [f"## Vistas ({len(views)})", ""]
     for v in views:
@@ -891,9 +924,28 @@ def render_map(system_map: Dict[str, Any]) -> Dict[str, str]:
                 lines.append("- **Constantes:** " + ", ".join(f"{k}={v}" for k, v in c["constants"].items()))
             if c.get("strings"):
                 lines.append("- **Cadenas:** " + " · ".join(f"“{s}”" for s in c["strings"]))
+            if c.get("strings_omitted"):
+                lines.append(f"- **Cadenas omitidas:** {c['strings_omitted']}")
             lines.append("")
     out["code.md"] = "\n".join(lines) + "\n"
     return out
+
+
+def route_pattern(path: str) -> "re.Pattern[str]":
+    """`/{controller}/{action}?/{id}?` → regex: un segmento por variable, `?` lo hace opcional, `**` lo que sea."""
+    out = "^"
+    for segment in path.split("/"):
+        if not segment:
+            continue
+        optional = segment.endswith("?")
+        core = segment[:-1] if optional else segment
+        if core == "**":
+            part = "/.*"
+        else:
+            part = re.sub(r"\\\{\w+\\\}", "[^/]+", re.escape(core))
+            part = "/" + part.replace("\\*\\*", ".*").replace("\\*", "[^/]*")
+        out += f"(?:{part})?" if optional else part
+    return re.compile(out + "/?$")
 
 
 def coverage(system_map: Dict[str, Any], observed_paths: List[str],
@@ -912,7 +964,13 @@ def coverage(system_map: Dict[str, Any], observed_paths: List[str],
     hit, miss = [], []
     for e in routes:
         path = e["path"].rstrip("/") or "/"
-        (hit if path in observed else miss).append(f"{e.get('method','')} {e['path']}".strip())
+        if "{" in path or "*" in path:
+            # ruta con plantilla (`/{controller}/{action}?/{id}?`, `/api/products/{id}`): casa por patrón
+            pattern = route_pattern(path)
+            seen = any(pattern.match(p) for p in observed)
+        else:
+            seen = path in observed
+        (hit if seen else miss).append(f"{e.get('method','')} {e['path']}".strip())
 
     evidence_text = ""
     stub_text = ""

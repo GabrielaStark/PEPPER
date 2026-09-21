@@ -284,15 +284,24 @@ class Explorer:
 
         secrets = [r["password"] for r in self.config.get("roles", []) if r.get("password")]
 
+        # El cliente de la base lo declara el perfil (`rehydrate.database.probe`: psql, mysql…);
+        # `pepper explore --profile` lo copia a `credentials.client`. Sin perfil, psql como antes.
+        client = creds.get("client") or ["psql", "-v", "ON_ERROR_STOP=1", "-U", "{db_user}", "-d", "{db_name}", "-Atc", "{sql}"]
+        client_env = creds.get("client_env") or {}
+        # El UPDATE con la clave de prueba y el usuario real no debe quedar en el log de la base
+        # (que viaja al paquete): el perfil dice cómo callar la sesión.
+        quiet = creds.get("quiet_prefix", "SET log_statement = 'none'; " if not creds.get("client") else "")
+
         def psql(sql: str) -> "subprocess.CompletedProcess[str]":
-            # `SET log_statement = 'none'` en esa sesión: el UPDATE con la clave de prueba y el
-            # usuario real no debe quedar en el log de la base (que viaja al paquete).
-            command = ["docker", "compose", "-f", str(docker_compose), "exec", "-T", creds.get("db_service", "db"),
-                       "psql", "-v", "ON_ERROR_STOP=1", "-U", creds.get("db_user", "postgres"), "-d", creds["db_name"],
-                       "-Atc", "SET log_statement = 'none'; " + sql]
+            values = {"db_user": creds.get("db_user", "postgres"), "db_name": creds["db_name"],
+                      "db_password": creds.get("db_password", ""), "sql": quiet + sql}
+            argv = [str(part).format(**values) for part in client]
+            env_flags = [f for k, v in client_env.items() for f in ("-e", f"{k}={str(v).format(**values)}")]
+            command = ["docker", "compose", "-f", str(docker_compose), "exec", "-T", *env_flags,
+                       creds.get("db_service", "db"), *argv]
             result = subprocess.run(command, capture_output=True, text=True)
             err = result.stderr
-            for secret in secrets:
+            for secret in secrets + ([creds["db_password"]] if creds.get("db_password") else []):
                 err = err.replace(secret, "[REDACTADO]")
             err = "\n".join(line for line in err.splitlines() if not line.startswith(("LINE ", "        ")))
             result.stderr = err

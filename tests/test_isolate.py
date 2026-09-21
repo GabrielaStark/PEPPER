@@ -95,6 +95,30 @@ class FugaTest(Base):
         report = self.leak(lambda c: c["services"]["app"].__setitem__("network_mode", "host"))
         self.assertTrue(any("network_mode" in f.check for f in report.errors))
 
+    def test_compartir_la_pila_de_red_de_la_base_es_valido(self):
+        # un datasource a localhost se reproduce con el app en la pila de red de db (tercer stack, 2026-09-21):
+        # sin redes ni dns propios (los hereda), y el ingress apunta a la IP de db
+        def mutate(c):
+            app = c["services"]["app"]
+            app["network_mode"] = "service:db"
+            app.pop("networks"); app.pop("dns")
+            c["services"]["ingress"]["command"][-1] = "10.4.2.186:8080"
+        report = self.leak(mutate)
+        self.assertEqual(report.verdict, "VERIFIED", [f.check for f in report.errors + report.unknowns])
+        self.assertTrue(any("comparte la pila de red del servicio `db`" in f.check for f in report.findings))
+
+    def test_compartir_la_pila_de_red_con_redes_propias_es_fuga(self):
+        report = self.leak(lambda c: c["services"]["app"].__setitem__("network_mode", "service:db"))
+        self.assertTrue(any("redes, dns o puertos propios" in f.check for f in report.errors))
+
+    def test_compartir_la_pila_de_red_del_ingress_es_fuga(self):
+        def mutate(c):
+            app = c["services"]["app"]
+            app["network_mode"] = "service:ingress"
+            app.pop("networks"); app.pop("dns")
+        report = self.leak(mutate)
+        self.assertTrue(any("network_mode" in f.check for f in report.errors))
+
     def test_servicio_en_red_no_declarada_es_fuga(self):
         report = self.leak(lambda c: c["services"]["app"].__setitem__("networks", {"otra": {}}))
         self.assertTrue(any("no declara" in f.check for f in report.errors))

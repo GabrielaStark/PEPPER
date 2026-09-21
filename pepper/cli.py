@@ -261,7 +261,7 @@ def _cmd_rehydrate(args: argparse.Namespace) -> int:
             ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return 1
     print(f"rehydrate · plan · {plan.artifact.name} + {plan.dump.name} · perfil de configuración '{plan.spring_profile}'")
-    print(f"  base: postgres:{plan.postgres_version} en {plan.db_ip}:{plan.db_port}/{plan.db_name} (usuario {plan.db_user}); restaura con postgres:{plan.pg_restore_version}")
+    print(f"  base: {plan.db_engine} {plan.db_version} ({plan.db_image}) en {plan.db_ip}:{plan.db_port}/{plan.db_name} (usuario {plan.db_user}); restaura con {plan.db_tool_image}")
     print(f"  app: {plan.server} → {plan.server_image} en {plan.app_ip}; ingress en http://127.0.0.1:{plan.host_port}")
     print(f"  externos al stub ({plan.stub_ip}): {', '.join(plan.external_hosts) or 'ninguno'}; puertos {plan.stub_ports}")
     if plan.external_by_ip:
@@ -302,6 +302,19 @@ def _cmd_explore(args: argparse.Namespace) -> int:
         print(f"pepper explore: --session {args.session!r} no es un identificador válido (letras, dígitos, _ . -)", file=sys.stderr)
         return 2
     config = _json.loads(args.config.read_text(encoding="utf-8"))
+    profile = load_profile(args.profile) if args.profile else None
+    probe = ((profile.data.get("rehydrate") or {}).get("database") or {}).get("probe") or {} if profile else {}
+    if probe.get("client") and (config.get("credentials") or {}).get("sql"):
+        # el cliente de la base desechable es del perfil, no del núcleo (psql, mysql…)
+        creds = config.setdefault("credentials", {})
+        creds.setdefault("client", probe["client"])
+        creds.setdefault("client_env", probe.get("env") or {})
+        creds.setdefault("quiet_prefix", probe.get("quiet_prefix", ""))
+        env_file = args.compose.resolve().parent / ".env"
+        if env_file.is_file() and "db_password" not in creds:
+            m = _re.search(r'^DB_PASSWORD="(.*)"$', env_file.read_text(encoding="utf-8"), _re.M)
+            if m:
+                creds["db_password"] = m.group(1).replace("$$", "$").replace('\\"', '"').replace("\\\\", "\\")
     problems = config_problems(config)
     if problems:
         print(f"pepper explore: {args.config} incompleto — " + "; ".join(problems), file=sys.stderr)

@@ -95,7 +95,8 @@ class PlanTest(unittest.TestCase):
         self.assertIn("587", plan.stub_ports.split(","))
         self.assertEqual(plan.app_package_env, "GOB_DEMO_NOMINAS")
         self.assertEqual(plan.files_root, "/archivos/app")
-        self.assertTrue(any("PostgreSQL 16" in d for d in plan.deviations), plan.deviations)
+        self.assertTrue(any("16" in d and "por fidelidad" in d for d in plan.deviations), plan.deviations)
+        self.assertEqual((plan.db_engine, plan.db_image, plan.db_tool_image), ("postgresql", "postgres:10", "postgres:17"))
         self.assertTrue(any("base_origen" in d for d in plan.deviations), plan.deviations)
         self.assertIn("owner", plan.create_roles)
 
@@ -115,7 +116,7 @@ class PlanTest(unittest.TestCase):
         self.assertIn("s3cr3t", (out / ".env").read_text(encoding="utf-8"))
         self.assertNotIn("s3cr3t", compose, "la credencial va en .env, no en el compose")
         restore = (out / "restore.sh").read_text(encoding="utf-8")
-        self.assertIn('CREATE ROLE \\"owner\\"', restore)
+        self.assertIn("for role in owner; do", restore, "los dueños del respaldo llegan como datos; el psql lo pone la plantilla")
         self.assertIn("SET host '10.42.7.3'", restore)
         self.assertTrue((out / "proxy" / "proxy.py").is_file() and (out / "stub" / "stub.py").is_file())
         self.assertEqual({w.name for w in written}, {"docker-compose.yml", "restore.sh", "proxy.py", "stub.py", ".env"})

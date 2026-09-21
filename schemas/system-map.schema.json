@@ -363,6 +363,10 @@
           },
           "evidence": {
             "type": "string"
+          },
+          "strings_omitted": {
+            "type": "string",
+            "description": "Por qué no viajan las cadenas de esta clase (clase criptográfica: sus literales pueden ser llaves)."
           }
         }
       }

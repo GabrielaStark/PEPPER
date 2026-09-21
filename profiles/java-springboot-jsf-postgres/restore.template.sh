@@ -12,7 +12,9 @@ set -u
 echo "== esperando a PostgreSQL en $PGHOST =="
 until pg_isready -q; do sleep 2; done
 echo "== roles que el respaldo referencia (sin login; el app usa el del datasource) =="
-{{create_roles}}
+for role in {{db_owners}}; do
+  psql -d postgres -c "CREATE ROLE \"$role\";" 2>&1 | grep -v "already exists" || true
+done
 echo "== restaurando (sin dueños ni privilegios) =="
 # El estado de pg_restore se conserva aparte: en un pipeline `sh` devuelve el de `head`, y un
 # restore a medias pasaba como éxito (auditoría 2026-09-11).

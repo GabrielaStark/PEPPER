@@ -300,6 +300,190 @@
           },
           "minItems": 1,
           "description": "Qué extensiones cuentan como desplegable en este stack (default: .war/.ear/.jar). Un front que viaja en .zip o .tgz se declara aquí; si no, es invisible para el plan."
+        },
+        "datasource": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Cómo leer la configuración embebida que dice a qué base se conecta el artefacto. spring_config: application*.yml/properties (config_patterns). groovy_config: DataSource.groovy compilado (Grails), reconstruido del bytecode con javap.",
+          "required": [
+            "mechanism"
+          ],
+          "properties": {
+            "mechanism": {
+              "type": "string",
+              "enum": [
+                "spring_config",
+                "groovy_config"
+              ]
+            },
+            "class_root": {
+              "type": "string",
+              "description": "groovy_config: raíz de clases dentro del artefacto (WEB-INF/classes)."
+            },
+            "script": {
+              "type": "string",
+              "description": "groovy_config: nombre del script (DataSource)."
+            },
+            "extra_scripts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "groovy_config: otros scripts cuyos valores aportan hosts externos (Config)."
+            },
+            "environment_key": {
+              "type": "string",
+              "description": "groovy_config: bloque de entornos (environments)."
+            },
+            "prefer": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "groovy_config: entornos preferidos, en orden (production, prod)."
+            },
+            "keys": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "groovy_config: claves de url/username/password dentro del entorno (dataSource.url…)."
+            }
+          }
+        },
+        "database": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "El motor de base es DATOS del perfil (Principio 4): qué motor espera el artefacto, en qué formato viene su respaldo, con qué imagen corre, cómo se le pregunta y qué hacer con un datasource a localhost.",
+          "required": [
+            "engine",
+            "dump",
+            "probe"
+          ],
+          "properties": {
+            "engine": {
+              "type": "string",
+              "description": "Motor que espera el artefacto, como aparece en jdbc:<engine>:// (postgresql, mysql)."
+            },
+            "engine_aliases": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Otros nombres del mismo motor en la URL (mariadb)."
+            },
+            "default_port": {
+              "type": "integer"
+            },
+            "images": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Imagen por versión exacta, mayor o '*' con {major}/{version}; la versión la dicta el respaldo."
+            },
+            "tool_images": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Imagen del cliente que restaura, por versión de la herramienta que generó el respaldo (default: images)."
+            },
+            "dump": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "format"
+              ],
+              "properties": {
+                "format": {
+                  "type": "string",
+                  "enum": [
+                    "pg_dump_custom",
+                    "sql_text"
+                  ]
+                },
+                "suffixes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1
+                }
+              }
+            },
+            "localhost": {
+              "type": "string",
+              "enum": [
+                "blocked",
+                "shared_network_namespace"
+              ],
+              "description": "Qué hacer si el datasource apunta a localhost: BLOCKED, o el app en la pila de red de la base (network_mode service:db)."
+            },
+            "subnet_hint": {
+              "type": "string",
+              "description": "Tres octetos de la subred a fabricar cuando el datasource no trae IP (10.100.0)."
+            },
+            "probe": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "client",
+                "tables_sql",
+                "marker_sql"
+              ],
+              "description": "Cómo le pregunta el núcleo a la base desechable. {db_user}, {db_name}, {db_password} y {sql} se sustituyen.",
+              "properties": {
+                "service": {
+                  "type": "string"
+                },
+                "client": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1
+                },
+                "env": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "quiet_prefix": {
+                  "type": "string",
+                  "description": "SQL que calla el log de la sesión antes de fijar credenciales de prueba."
+                },
+                "ready_sql": {
+                  "type": "string"
+                },
+                "ready_attempts": {
+                  "type": "integer"
+                },
+                "tables_sql": {
+                  "type": "string",
+                  "description": "Cuenta las tablas de la aplicación; '0' o vacío = base vacía."
+                },
+                "marker_sql": {
+                  "type": "string",
+                  "description": "Devuelve pepper:restored:<sha> que restore.sh dejó."
+                },
+                "foreign_servers_sql": {
+                  "type": "string"
+                },
+                "restore_ok_status": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "startup_timeout_s": {
+          "type": "integer",
+          "description": "Segundos máximos de espera al arranque del app (un Grails con Liquibase tarda minutos)."
         }
       }
     },

@@ -51,9 +51,13 @@ Mecanismos del núcleo, patrones del perfil:
 | `jvm_class_inventory` | por clase: métodos públicos, constantes, cadenas (mensajes, estados, JPQL) | `javap -c -constants` por lotes; solo clases propias (comparten paquete raíz con el WAR) |
 | `view_templates` | pantallas: encabezados, campos, botones→acción, mensajes de validación, condiciones por rol, inclusiones | regex declaradas en el perfil sobre las vistas; bundle i18n resuelto |
 | `pg_dump_custom` | tablas con conteo y columnas, triggers y funciones con cuerpo, vistas, catálogos completos, distribuciones de columnas de estado | lector propio del formato custom de `pg_dump` (`pepper/inspect/pgdump.py`), sin PostgreSQL |
+| `sql_dump` | lo mismo para un respaldo SQL en texto (mysqldump, mariadb-dump, pg_dump plano), y si el respaldo es el esquema de sistema del motor (`user`, `db`, `tables_priv`…) lo declara como hueco: no es la base de la aplicación | lector en una pasada (`pepper/inspect/sqldump.py`), sin motor |
+| `groovy_config_values` | jobs con su cron (de `Config.groovy` o del bloque `triggers` de cada job, resuelto) y notas de configuración | `Config`/`DataSource` reconstruidos del bytecode (`pepper/inspect/groovyconfig.py`: call sites, closures, `setGroovyObjectProperty`, `createMap`, GStrings) |
+| `groovy_controller_actions` | rutas por convención `/{controlador}/{acción}` con el verbo de `allowedMethods` | closures asignadas en el constructor de cada `*Controller` (Grails 1.x) o métodos públicos (Grails 2+) |
+| `groovy_url_mappings` | rutas declaradas en `UrlMappings`, con sus plantillas (`{id}`, `**?`) y sus verbos | cada mapeo = lo que pasa entre dos invocaciones del bytecode |
 | `config_hosts`, `archive_url_scan` | hosts externos | configuración y URLs incrustadas |
 
-Fail-honest: si falta `javap`, el respaldo no es custom, o ningún extractor cubre una superficie, el mapa sale `complete: false` con `coverage_gaps`. Sin datos personales ni secretos: las tablas de personas se cuentan pero no se vuelcan; columnas y renglones con pinta de credencial o de dato personal se redactan; las cadenas del bytecode que parezcan credenciales se omiten.
+Las clases se copian a un JAR temporal (no a archivos sueltos: en macOS `putAway/` y `putaway/` se pisan) y se leen con todos los `javap` de la máquina — lo que el primero rechaza (JDK 25 contra Groovy 1.7) lo lee el siguiente, y el mapa anota cuál. Fail-honest: si falta `javap`, el respaldo no es del formato declarado, o ningún extractor cubre una superficie, el mapa sale `complete: false` con `coverage_gaps`. Sin datos personales ni secretos: las tablas de personas se cuentan pero no se vuelcan; columnas y renglones con pinta de credencial o de dato personal se redactan; las cadenas del bytecode que parezcan credenciales se omiten, y las de una clase criptográfica (`javax.crypto`, `java.security`) se omiten todas: una frase de paso corta no se distingue de un mensaje por su forma.
 
 ## Escalera de soporte
 

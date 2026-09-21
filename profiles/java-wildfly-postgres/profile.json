@@ -77,7 +77,46 @@
       "desplegar el WAR en el directorio deployments",
       "levantar el proxy HTTP de PEPPER delante del puerto de la aplicación",
       "ejecutar validaciones"
-    ]
+    ],
+    "database": {
+      "engine": "postgresql",
+      "default_port": 5432,
+      "images": {
+        "*": "postgres:{major}"
+      },
+      "dump": {
+        "format": "pg_dump_custom",
+        "suffixes": [
+          ".dump",
+          ".backup"
+        ]
+      },
+      "localhost": "blocked",
+      "probe": {
+        "service": "db",
+        "client": [
+          "psql",
+          "-U",
+          "{db_user}",
+          "-d",
+          "{db_name}",
+          "-Atc",
+          "{sql}"
+        ],
+        "quiet_prefix": "SET log_statement = 'none'; ",
+        "ready_sql": "select 1",
+        "tables_sql": "select count(*) from pg_tables where schemaname not in ('pg_catalog','information_schema')",
+        "marker_sql": "select shobj_description((select oid from pg_database where datname = current_database()), 'pg_database')",
+        "foreign_servers_sql": "select string_agg(srvname||'→'||coalesce((select option_value from pg_options_to_table(srvoptions) where option_name='host'),'?'),', ') from pg_foreign_server",
+        "restore_ok_status": [
+          0,
+          1
+        ]
+      }
+    },
+    "datasource": {
+      "mechanism": "spring_config"
+    }
   },
   "collectors": [
     {

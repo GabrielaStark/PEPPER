@@ -254,6 +254,10 @@ def _check_upstream(name: str, service: Dict[str, Any], upstream: Optional[Tuple
     allowed: Dict[str, str] = {}
     for dependency in dependencies:
         target = services.get(dependency) or {}
+        mode = str(target.get("network_mode") or "")
+        if mode.startswith("service:") and mode[len("service:"):] in services:
+            # la dependencia vive en la pila de red de otro servicio: sus direcciones son las de ese
+            target = services.get(mode[len("service:"):]) or {}
         target_networks = _service_networks(target)
         shared = ingress_networks & {network for network in target_networks if internal.get(network)}
         if not shared:
@@ -438,9 +442,21 @@ def check_static(compose: Dict[str, Any], external_hosts: Optional[List[str]] = 
         is_ingress = name == ingress
         _check_service_hardening(name, service, is_ingress, report)
 
-        if service.get("network_mode"):
-            report.add("error", f"`{name}` usa network_mode: {service['network_mode']}",
-                       "comparte la pila de red del host: alcanza todo lo que la máquina alcanza")
+        mode = str(service.get("network_mode") or "")
+        if mode:
+            # `service:<otro>` comparte la pila de red de OTRO servicio del compose (así un
+            # datasource a localhost llega a la base): hereda sus redes y su DNS, que se
+            # verifican en ese servicio. Cualquier otro modo (host, container:<ajeno>) es fuga.
+            peer = mode[len("service:"):] if mode.startswith("service:") else ""
+            if peer and peer in services and peer != ingress and not is_ingress:
+                if service.get("networks") or service.get("dns") or service.get("ports"):
+                    report.add("error", f"`{name}` comparte la pila de red de `{peer}` y además declara redes, dns o puertos propios",
+                               "Docker lo rechaza o lo ignora: la configuración efectiva es la del otro servicio")
+                else:
+                    report.add("ok", f"`{name}` comparte la pila de red del servicio `{peer}` (sus redes y su DNS se verifican en `{peer}`)")
+                continue
+            report.add("error", f"`{name}` usa network_mode: {mode}",
+                       "comparte la pila de red del host o de un contenedor ajeno: alcanza todo lo que ese alcance")
             continue
 
         for net, spec in _service_networks(service).items():
@@ -733,8 +749,16 @@ def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
             report.add("error", f"`{service}` agrega capacidades en ejecución: {host_config['CapAdd']}")
         if host_config.get("Devices"):
             report.add("error", f"`{service}` monta dispositivos del host en ejecución")
-        if str(host_config.get("NetworkMode") or "") == "host":
+        network_mode = str(host_config.get("NetworkMode") or "")
+        if network_mode == "host":
             report.add("error", f"`{service}` comparte la red del host en ejecución")
+        shared_peer: Optional[Dict[str, Any]] = None
+        if network_mode.startswith("container:"):
+            shared_peer = _inspect_json(network_mode[len("container:"):])
+            if shared_peer is None:
+                report.add("error", f"`{service}` comparte la pila de red de un contenedor que no pude inspeccionar",
+                           "sin inspección no hay nada verificado")
+                continue
         for key, label in (("PidMode", "pid"), ("IpcMode", "ipc"), ("UTSMode", "uts")):
             if str(host_config.get(key) or "") == "host":
                 report.add("error", f"`{service}` comparte el namespace {label} del host en ejecución")
@@ -744,7 +768,17 @@ def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
                 report.add("error", f"`{service}` tiene montado el socket de Docker",
                            "el contenedor controla Docker: puede crear otro contenedor con salida")
 
-        networks = list(((info.get("NetworkSettings") or {}).get("Networks") or {}).keys())
+        if shared_peer is not None:
+            peer_name = str(shared_peer.get("Name") or "?").lstrip("/")
+            peer_services = {c.get("Name") or c.get("name"): c.get("Service") or c.get("service") for c in containers}
+            if peer_name not in peer_services:
+                report.add("error", f"`{service}` comparte la pila de red de `{peer_name}`, que no es de este compose",
+                           "un contenedor ajeno puede tener salida")
+                continue
+            networks = list(((shared_peer.get("NetworkSettings") or {}).get("Networks") or {}).keys())
+            report.add("ok", f"`{service}` comparte la pila de red de `{peer_services[peer_name]}` (según Docker)")
+        else:
+            networks = list(((info.get("NetworkSettings") or {}).get("Networks") or {}).keys())
         if not networks:
             report.add("error", f"`{service}`: no pude leer sus redes",
                        "sin redes legibles no hay nada verificado")
@@ -767,7 +801,8 @@ def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
             else:
                 external_networks.append(network)
         # DNS según Docker, no según el YAML: lo que no sea alias debe morir dentro
-        _check_dns(service, host_config.get("Dns"), container_subnets, report)
+        dns_owner = (shared_peer.get("HostConfig") or {}) if shared_peer is not None else host_config
+        _check_dns(service, dns_owner.get("Dns"), container_subnets, report)
         if service == ingress:
             _check_live_publication_network(service, name, external_networks, report)
 

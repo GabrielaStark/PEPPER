@@ -21,6 +21,14 @@ Lo que hace, igual cada vez:
 
 BLOCKED es un entregable: si falta el desplegable, el respaldo o la configuración
 no dice a qué conectarse, se escribe qué falta y se para.
+
+El motor de base es DATOS del perfil (Principio 4): `rehydrate.database` dice qué
+motor espera el artefacto, qué formato tiene su respaldo, con qué imagen corre, cómo
+se le pregunta (cliente, consulta de tablas, marca de restauración) y qué hacer si el
+datasource apunta a localhost. `rehydrate.datasource` dice cómo leer la configuración
+embebida (YAML de Spring, o Groovy compilado). El núcleo no sabe de PostgreSQL ni de
+MySQL: hasta 2026-09-21 sí sabía, y el tercer stack respondía BLOCKED con un motivo
+falso ("no dice a qué conectarse") por eso.
 """
 
 from __future__ import annotations
@@ -30,6 +38,7 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 import urllib.request
 import zipfile
@@ -47,7 +56,7 @@ DEFAULT_PORT = 18080
 # declara en `rehydrate.artifact_suffixes`: qué cuenta como desplegable es del perfil,
 # no del núcleo — si no, el front de un sistema es invisible (2026-09-15).
 _ARTIFACT_SUFFIXES = (".war", ".ear", ".jar")
-_DUMP_SUFFIXES = (".dump", ".backup")   # formato custom de pg_dump: lo único que pg_restore restaura y el lector lee
+_DUMP_SUFFIXES = (".dump", ".backup", ".sql")   # el perfil (`database.dump.suffixes`) manda; esto es el default
 _FILES_KEY_RE = re.compile(r"(?i)(ruta|path|dir|folder)")
 _FILES_KEY_EXCLUDE_RE = re.compile(r"(?i)redirect|direccion|context[-.]?path|servlet[-.]?path|classpath|url")
 _URL_RE = re.compile(r"https?://([A-Za-z0-9.-]+)(?::(\d+))?")
@@ -173,7 +182,7 @@ class Plan:
     stack_name: str
     artifact: Path
     dump: Path
-    spring_profile: str
+    spring_profile: str          # nombre del perfil/entorno de configuración elegido (Spring o Grails)
     db_engine: str
     db_ip: str
     db_port: int
@@ -186,38 +195,51 @@ class Plan:
     dns_sink: str
     server: str
     server_image: str
-    postgres_version: str
-    pg_restore_version: str
+    db_version: str              # la versión que declara el respaldo (mayor, o completa si la trae)
+    db_tool_version: str         # la de la herramienta que generó el respaldo (pg_dump 17 → cliente 17)
+    db_image: str
+    db_tool_image: str
     external_hosts: List[str]
     external_by_ip: List[str]
     stub_ports: str
     app_package_env: str
     files_root: str
-    create_roles: List[str]
+    create_roles: List[str]      # dueños/definers que el respaldo referencia y el usuario del datasource no es
     host_port: int
     db_alias: str = ""
     gateway_ip: str = ""
     dump_sha: str = ""
+    shared_namespace: bool = False   # el app corre en la pila de red de la base (datasource a localhost)
     deviations: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
+
+    # alias históricos: las primeras plantillas y pruebas los usan
+    @property
+    def postgres_version(self) -> str:
+        return self.db_version.split(".")[0]
+
+    @property
+    def pg_restore_version(self) -> str:
+        return self.db_tool_version.split(".")[0]
 
     def variables(self, out_dir: Path) -> Dict[str, str]:
         rel = lambda p: Path(*([".."] * len(out_dir.resolve().relative_to(REPO_ROOT).parts))) / p.resolve().relative_to(REPO_ROOT) \
             if _under(p, REPO_ROOT) and _under(out_dir, REPO_ROOT) else p.resolve()
         return {
-            "stack_name": self.stack_name, "subnet": self.subnet, "postgres_version": self.postgres_version,
-            "pg_restore_version": self.pg_restore_version, "dns_sink": f'"{self.dns_sink}"',
-            "db_name": self.db_name, "db_user": self.db_user, "db_ip": self.db_ip,
+            "stack_name": self.stack_name, "subnet": self.subnet,
+            "db_engine": self.db_engine, "db_version": self.db_version, "db_tool_version": self.db_tool_version,
+            "db_image": self.db_image, "db_tool_image": self.db_tool_image,
+            "postgres_version": self.postgres_version, "pg_restore_version": self.pg_restore_version,
+            "dns_sink": f'"{self.dns_sink}"',
+            "db_name": self.db_name, "db_user": self.db_user, "db_ip": self.db_ip, "db_port": str(self.db_port),
             "dump_path": str(rel(self.dump)), "stub_ports": self.stub_ports, "stub_ip": self.stub_ip,
             "external_hosts": "[" + ", ".join(self.external_hosts) + "]",
-            "server_image": self.server_image, "spring_profile": self.spring_profile,
+            "server_image": self.server_image, "spring_profile": self.spring_profile, "config_profile": self.spring_profile,
             "app_package_env": self.app_package_env, "app_ip": self.app_ip,
-            "war_path": str(rel(self.artifact)), "war_name": self.artifact.name,
+            "war_path": str(rel(self.artifact)), "war_name": self.artifact.name, "app_name": self.artifact.stem,
             "files_root": self.files_root, "host_port": str(self.host_port),
             "db_alias": "[" + (self.db_alias or "") + "]", "gateway_ip": self.gateway_ip, "dump_sha": self.dump_sha,
-            "create_roles": "\n".join(
-                f'psql -d postgres -c "CREATE ROLE \\"{role}\\";" 2>&1 | grep -v "already exists" || true'
-                for role in self.create_roles) or "true",
+            "db_owners": " ".join(self.create_roles),
         }
 
 
@@ -318,7 +340,8 @@ def classify_components(artifacts: List[Path], profile: Profile, subnet_base: st
     return components, sin_clasificar
 
 
-def find_all_inputs(legacy_dir: Path, artifact_suffixes: Optional[Tuple[str, ...]] = None) -> Tuple[List[Path], List[Path]]:
+def find_all_inputs(legacy_dir: Path, artifact_suffixes: Optional[Tuple[str, ...]] = None,
+                    dump_suffixes: Optional[Tuple[str, ...]] = None) -> Tuple[List[Path], List[Path]]:
     """TODOS los desplegables y TODOS los respaldos, de mayor a menor.
 
     Un legacy no siempre es un desplegable: puede ser tres servicios y un front (un
@@ -327,14 +350,15 @@ def find_all_inputs(legacy_dir: Path, artifact_suffixes: Optional[Tuple[str, ...
     no se permite: quien llama decide qué usa, pero tiene que SABER qué había.
     """
     suffixes = tuple(s.lower() for s in (artifact_suffixes or _ARTIFACT_SUFFIXES))
+    dump_sfx = tuple(s.lower() for s in (dump_suffixes or _DUMP_SUFFIXES))
     artifacts = sorted((p for p in legacy_dir.iterdir() if p.suffix.lower() in suffixes),
                        key=lambda p: -p.stat().st_size)
-    dumps = sorted((p for p in legacy_dir.iterdir() if p.suffix.lower() in _DUMP_SUFFIXES),
+    dumps = sorted((p for p in legacy_dir.iterdir() if p.suffix.lower() in dump_sfx),
                    key=lambda p: -p.stat().st_size)
     if not artifacts:
         raise Blocked(f"no hay desplegable ({'/'.join(suffixes)}) en {legacy_dir}")
     if not dumps:
-        raise Blocked(f"no hay respaldo de la base en {legacy_dir}: se necesita el formato custom de pg_dump (`pg_dump -Fc`, .dump/.backup)")
+        raise Blocked(f"no hay respaldo de la base en {legacy_dir} (se buscan {'/'.join(dump_sfx)})")
     return artifacts, dumps
 
 
@@ -344,7 +368,10 @@ def find_inputs(legacy_dir: Path) -> Tuple[Path, Path]:
 
 
 def _notes_version(notes_text: str, engine: str) -> Optional[str]:
-    m = re.search(rf"(?i){engine}\D{{0,20}}(\d+(?:\.\d+)*)", notes_text)
+    """`wildfly 21`, `PostgreSQL 16` en la prosa de NOTAS.md. Los comentarios HTML de la plantilla
+    (`<!-- PostgreSQL 16, MySQL 8, … -->`) son instrucciones, no notas: se ignoran."""
+    prose = re.sub(r"<!--.*?-->", " ", notes_text, flags=re.S)
+    m = re.search(rf"(?i)\b{re.escape(engine)}\D{{0,20}}(\d+(?:\.\d+)*)", prose)
     return m.group(1) if m else None
 
 
@@ -369,7 +396,8 @@ def _choose_server(artifact: Path, profile: Profile, notes_text: str) -> Tuple[s
     version = _notes_version(notes_text, server) or ""
     major = version.split(".")[0] if version else ""
     table = images.get(server, {})
-    image = table.get(major) or table.get("*", "").replace("{major}", major)
+    # sin versión no hay comodín que rendir: `tomcat:{major}-jre7` daría `tomcat:-jre7`
+    image = (table.get(major) or table.get("*", "").replace("{major}", major)) if major else ""
     if not image:
         if table:
             fallback_major = sorted(table, key=lambda k: -int(k) if k.isdigit() else 0)[0]
@@ -380,12 +408,129 @@ def _choose_server(artifact: Path, profile: Profile, notes_text: str) -> Tuple[s
     return server, image, deviations
 
 
+@dataclass
+class DumpFacts:
+    """Lo que el respaldo declara de sí mismo, venga en el formato que venga."""
+    dbname: str
+    server_version: str
+    tool_version: str
+    owners: List[str]
+    tables: int
+    system_only: bool = False
+    detail: str = ""
+
+
+def read_dump_facts(dump: Path, database: Dict[str, Any]) -> DumpFacts:
+    """Lee el respaldo con el lector que el perfil declara (`database.dump.format`)."""
+    fmt = (database.get("dump") or {}).get("format", "pg_dump_custom")
+    if fmt == "pg_dump_custom":
+        from pepper.inspect import pgdump
+        try:
+            info = pgdump.read_toc(dump)
+        except ValueError as error:
+            raise Blocked(f"el respaldo {dump.name} no se puede leer como formato custom de pg_dump ({error}); "
+                          "pg_restore tampoco lo restauraría. Consigue un respaldo hecho con `pg_dump -Fc`")
+        return DumpFacts(dbname=info.dbname, server_version=info.server_version, tool_version=info.pg_dump_version,
+                         owners=info.owners(), tables=len(info.by_desc("TABLE")))
+    if fmt == "sql_text":
+        from pepper.inspect import sqldump
+        if not sqldump.is_sql_dump(dump):
+            raise Blocked(f"el respaldo {dump.name} no es un script SQL en texto (mysqldump/mariadb-dump/pg_dump plano): "
+                          "el perfil espera ese formato")
+        try:
+            info = sqldump.read_sql_dump(dump, keep_rows=0)
+        except (OSError, ValueError) as error:
+            raise Blocked(f"el respaldo {dump.name} no se pudo leer: {error}")
+        detail = ", ".join(sorted(t.name for t in info.tables.values())[:8])
+        return DumpFacts(dbname=info.dbname, server_version=info.server_version, tool_version=info.tool_version,
+                         owners=info.owners, tables=len(info.tables), system_only=info.system_only, detail=detail)
+    raise Blocked(f"el perfil declara un formato de respaldo desconocido: {fmt!r} (pg_dump_custom | sql_text)")
+
+
+def _groovy_datasource(artifact: Path, spec: Dict[str, Any]) -> Tuple[str, Dict[str, str], List[str]]:
+    """DataSource.groovy compilado → (entorno elegido, {clave: valor}, desviaciones).
+
+    El WAR de Grails no trae YAML: trae `DataSource$_run_closure…class`. El lector de
+    `groovyconfig` reconstruye `environments.production.dataSource.url` desde el bytecode."""
+    from pepper.inspect import groovyconfig, jvm
+
+    tools = jvm.default_tools()
+    if not tools.get("javap"):
+        raise Blocked("leer el datasource de un artefacto Groovy compilado necesita `javap` (un JDK en PATH)")
+    script = spec.get("script", "DataSource")
+    extra = list(spec.get("extra_scripts") or [])
+    with tempfile.TemporaryDirectory() as tmp:
+        classes = jvm.collect_classes(artifact, spec.get("class_root", "WEB-INF/classes"), [script, *extra], False, Path(tmp))
+        classes = [(fqn, root) for fqn, root in classes if re.match(rf"^(?:{'|'.join(map(re.escape, [script, *extra]))})(?:\$|$)", fqn)]
+        if not classes:
+            raise Blocked(f"el artefacto no trae {script}.class bajo {spec.get('class_root', 'WEB-INF/classes')}: no dice a qué conectarse")
+        outputs, _ = jvm.javap_outputs(tools, classes, ["-p", "-c"])
+    values = groovyconfig.read_config(outputs, script)
+    if not values:
+        raise Blocked(f"{script}.class no se pudo reconstruir del bytecode (¿javap incompatible con la versión de Groovy?)")
+    keys = spec.get("keys") or {"url": "dataSource.url", "username": "dataSource.username", "password": "dataSource.password"}
+    envs = groovyconfig.environments(values, spec.get("environment_key", "environments"))
+    base = {k: v for k, v in values.items() if not k.startswith(spec.get("environment_key", "environments") + ".")}
+    candidates: Dict[str, Dict[str, str]] = {}
+    for name, cfg in ([("default", base)] + list(envs.items())):
+        flat = {k: ("" if v is None else str(v)) for k, v in cfg.items() if not isinstance(v, (dict, list))}
+        if flat.get(keys["url"]) and flat.get(keys["username"]) and keys["password"] in flat:
+            candidates[name] = flat
+    if not candidates:
+        raise Blocked(f"ningún entorno de {script}.groovy trae url, usuario y contraseña del datasource: no dice a qué conectarse. "
+                      "Consigue la configuración externa del ambiente")
+    deviations: List[str] = []
+    prefer = spec.get("prefer") or ["production", "prod"]
+    chosen = next((p for p in prefer if p in candidates), None)
+    if chosen is None:
+        chosen = sorted(candidates)[0]
+        if len(candidates) > 1:
+            deviations.append(f"varios entornos completos ({', '.join(sorted(candidates))}) y ninguno se llama {'/'.join(prefer)}: se usa '{chosen}'")
+    if extra:
+        # Config.groovy: hosts externos (correo, ldap, APIs). Los secretos los filtra quien lee `cfg`.
+        for other in extra:
+            for k, v in groovyconfig.read_config(outputs, other).items():
+                if not isinstance(v, (dict, list)) and v is not None:
+                    candidates[chosen].setdefault(f"{other}.{k}", str(v))
+    return chosen, candidates[chosen], deviations
+
+
+def discover_datasource(artifact: Path, recipe: Dict[str, Any]) -> Tuple[str, Dict[str, str], List[str], Dict[str, str]]:
+    """→ (perfil/entorno, configuración plana, desviaciones, {url, username, password}) según `rehydrate.datasource`."""
+    spec = recipe.get("datasource") or {"mechanism": "spring_config"}
+    mechanism = spec.get("mechanism", "spring_config")
+    if mechanism == "spring_config":
+        configs = read_artifact_configs(artifact, recipe.get("config_patterns") or [r"application.*\.(yml|yaml|properties)$"])
+        if not configs:
+            raise Blocked("el artefacto no trae configuración embebida (application*.yml) y no se dio configuración externa")
+        name, cfg, deviations = choose_spring_profile(configs)
+        creds = {
+            "url": next(v for k, v in cfg.items() if k.endswith("datasource.url")),
+            "username": next(v for k, v in cfg.items() if k.endswith("datasource.username")),
+            "password": next(v for k, v in cfg.items() if k.endswith("datasource.password")),
+        }
+        return name, cfg, deviations, creds
+    if mechanism == "groovy_config":
+        name, cfg, deviations = _groovy_datasource(artifact, spec)
+        keys = spec.get("keys") or {"url": "dataSource.url", "username": "dataSource.username", "password": "dataSource.password"}
+        return name, cfg, deviations, {k: cfg[keys[k]] for k in ("url", "username", "password")}
+    raise Blocked(f"el perfil declara un mecanismo de datasource desconocido: {mechanism!r} (spring_config | groovy_config)")
+
+
+def _db_image(database: Dict[str, Any], recipe: Dict[str, Any], version: str, key: str = "images") -> str:
+    """Imagen del motor para la versión que el respaldo declara: exacta, por mayor, o la comodín."""
+    table: Dict[str, str] = database.get(key) or (recipe.get("server_images") or {}).get(database.get("engine", ""), {}) or {}
+    major = version.split(".")[0] if version else ""
+    image = table.get(version) or table.get(major) or table.get("*", "")
+    return image.replace("{major}", major).replace("{version}", version or major)
+
+
 def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
               notes_path: Optional[Path] = None) -> Plan:
-    from pepper.inspect import pgdump
-
     recipe_early = profile.data.get("rehydrate", {})
-    artifacts, dumps = find_all_inputs(legacy_dir, recipe_early.get("artifact_suffixes"))
+    database: Dict[str, Any] = recipe_early.get("database") or {}
+    dump_suffixes = tuple((database.get("dump") or {}).get("suffixes") or ())
+    artifacts, dumps = find_all_inputs(legacy_dir, recipe_early.get("artifact_suffixes"), dump_suffixes or None)
     artifact, dump = artifacts[0], dumps[0]
     notes_text = notes_path.read_text(encoding="utf-8", errors="replace") if notes_path and notes_path.is_file() else ""
     recipe = profile.data.get("rehydrate", {})
@@ -421,55 +566,80 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
                 "    PEPPER todavía levanta una sola aplicación: no hay compose, arranque ni validación por "
                 "componente, y seguir con uno solo sería observar un sistema incompleto sin decirlo. "
                 "Para seguir hoy: deja en legacy/ únicamente el backend a levantar con un perfil sin `components`.")
-    configs = read_artifact_configs(artifact, recipe.get("config_patterns") or [r"application.*\.(yml|yaml|properties)$"])
-    if not configs:
-        raise Blocked("el artefacto no trae configuración embebida (application*.yml) y no se dio configuración externa")
-    spring_profile, cfg, profile_deviations = choose_spring_profile(configs)
-    url = next(v for k, v in cfg.items() if k.endswith("datasource.url"))
+    if not database.get("engine"):
+        raise Blocked(f"el perfil {profile.id} no declara `rehydrate.database` (motor, respaldo, imagen, sonda): "
+                      "sin eso el núcleo no sabe qué base fabricar")
+    spring_profile, cfg, profile_deviations, creds = discover_datasource(artifact, recipe)
+    url = creds["url"]
     m = _JDBC_RE.search(url)
     if not m:
         raise Blocked(f"no entiendo la URL del datasource: {url!r}")
-    engine, host, port, db_name = m.group(1), m.group(2), int(m.group(3) or 5432), m.group(4)
-    if engine != "postgresql":
-        raise Blocked(f"motor {engine}: este perfil solo reconstruye PostgreSQL")
-    db_user = next(v for k, v in cfg.items() if k.endswith("datasource.username"))
-    db_password = next(v for k, v in cfg.items() if k.endswith("datasource.password"))
+    engine, host, port, db_name = m.group(1), m.group(2), int(m.group(3) or database.get("default_port") or 0), m.group(4)
+    expected_engine = database["engine"]
+    if engine.lower() not in {expected_engine.lower(), *(e.lower() for e in database.get("engine_aliases") or [])}:
+        raise Blocked(f"el datasource es jdbc:{engine} y el perfil {profile.id} fabrica {expected_engine}: no es el perfil de este stack")
+    db_user = creds["username"]
+    db_password = creds["password"]
     deviations: List[str] = list(profile_deviations)
     notes: List[str] = []
     if "${" in db_password:
         raise Blocked(f"la contraseña del datasource es una referencia sin resolver ({db_password!r}): "
                       "el artefacto espera una variable de entorno que no trae; consíguela")
-    if host in ("localhost", "127.0.0.1", "::1"):
-        raise Blocked(f"el datasource del perfil '{spring_profile}' apunta a {host}: dentro del contenedor del app eso es el app mismo, "
-                      "no una base. Ese perfil no describe un ambiente reconstruible; elige otro o consigue la configuración externa")
+    shared_namespace = False
     db_alias = ""
-    try:
-        db_ip = str(ipaddress.IPv4Address(host))
-    except ValueError:
-        db_ip, db_alias = "10.100.0.2", host
-        deviations.append(f"el datasource apunta al nombre {host!r}: la base queda en {db_ip} y ese nombre es su alias en la red")
+    if host in ("localhost", "127.0.0.1", "::1"):
+        if database.get("localhost") != "shared_network_namespace":
+            raise Blocked(f"el datasource del perfil '{spring_profile}' apunta a {host}: dentro del contenedor del app eso es el app mismo, "
+                          "no una base. Ese perfil no describe un ambiente reconstruible; elige otro o consigue la configuración externa")
+        # En el servidor original la base vivía en la misma máquina que el app. Se reproduce
+        # poniendo al app en la pila de red de la base (network_mode: service:db): dentro del
+        # app, localhost:<puerto> ES la base. No se inventa un host.
+        shared_namespace = True
+        db_ip = database.get("subnet_hint", "10.100.0") + ".2"
+        deviations.append(f"el datasource apunta a {host}: el app comparte la pila de red de la base "
+                          f"(network_mode service:db) y {host}:{port} dentro del app es la base, en {db_ip}")
+    else:
+        try:
+            db_ip = str(ipaddress.IPv4Address(host))
+        except ValueError:
+            db_ip, db_alias = database.get("subnet_hint", "10.100.0") + ".2", host
+            deviations.append(f"el datasource apunta al nombre {host!r}: la base queda en {db_ip} y ese nombre es su alias en la red")
     net = ipaddress.IPv4Network(f"{db_ip}/24", strict=False)
     hosts = [str(h) for h in net.hosts()]
     taken = {db_ip}
     stub_ip = next(h for h in hosts[1:] if h not in taken); taken.add(stub_ip)
-    app_ip = next(h for h in hosts[8:] if h not in taken); taken.add(app_ip)
+    app_ip = db_ip if shared_namespace else next(h for h in hosts[8:] if h not in taken); taken.add(app_ip)
     dns_sink = next(h for h in reversed(hosts) if h not in taken); taken.add(dns_sink)
     # la puerta de enlace la fija PEPPER: si el datasource cae en la .1, Docker chocaría con ella
     gateway_ip = next(h for h in hosts if h not in taken); taken.add(gateway_ip)
 
-    try:
-        info = pgdump.read_toc(dump)
-    except ValueError as error:
-        raise Blocked(f"el respaldo {dump.name} no se puede leer como formato custom de pg_dump ({error}); "
-                      "pg_restore tampoco lo restauraría. Consigue un respaldo hecho con `pg_dump -Fc`")
+    facts = read_dump_facts(dump, database)
+    if facts.system_only:
+        raise Blocked(f"el respaldo {dump.name} es el esquema de SISTEMA del motor (base '{facts.dbname or '?'}': "
+                      f"{facts.tables} tablas como {facts.detail or 'user, db, tables_priv'}…), NO la base de la aplicación. "
+                      f"Restaurarlo reescribiría las cuentas del contenedor y dejaría un sistema sin datos. "
+                      f"Consigue el respaldo de la base que el artefacto usa ('{db_name}', o la que producción tenga configurada)")
+    if facts.tables == 0:
+        raise Blocked(f"el respaldo {dump.name} no trae ninguna tabla: no hay nada que restaurar")
     dump_sha = _sha256(dump)[:16]
-    postgres_version = info.server_version.split(".")[0]
-    pg_restore_version = info.pg_dump_version.split(".")[0] or postgres_version
-    noted_pg = _notes_version(notes_text, "postgres")
-    if noted_pg and noted_pg.split(".")[0] != postgres_version:
-        deviations.append(f"NOTAS.md dice PostgreSQL {noted_pg}; el respaldo declara origen {info.server_version}: por fidelidad se levanta {postgres_version}")
-    if info.dbname != db_name:
-        deviations.append(f"el respaldo viene de la base '{info.dbname}' y se restaura dentro de '{db_name}', que es la que el artefacto espera")
+    db_version = facts.server_version or ""
+    db_tool_version = facts.tool_version or db_version
+    if not db_version:
+        noted = _notes_version(notes_text, expected_engine) or _notes_version(notes_text, expected_engine.split("sql")[0])
+        if noted:
+            db_version = noted
+            deviations.append(f"el respaldo no declara versión del motor; se usa la de NOTAS.md ({noted})")
+        else:
+            raise Blocked(f"ni el respaldo {dump.name} ni NOTAS.md dicen la versión de {expected_engine}: por fidelidad no se adivina")
+    noted_db = _notes_version(notes_text, expected_engine) or _notes_version(notes_text, expected_engine.replace("postgresql", "postgres"))
+    if noted_db and noted_db.split(".")[0] != db_version.split(".")[0] and facts.server_version:
+        deviations.append(f"NOTAS.md dice {expected_engine} {noted_db}; el respaldo declara origen {facts.server_version}: por fidelidad se levanta {db_version}")
+    if facts.dbname and facts.dbname != db_name:
+        deviations.append(f"el respaldo viene de la base '{facts.dbname}' y se restaura dentro de '{db_name}', que es la que el artefacto espera")
+    db_image = _db_image(database, recipe, db_version)
+    db_tool_image = _db_image(database, recipe, db_tool_version, key="tool_images") or _db_image(database, recipe, db_tool_version)
+    if not db_image:
+        raise Blocked(f"el perfil {profile.id} no declara imagen de {expected_engine} para la versión {db_version} (rehydrate.database.images)")
 
     server, server_image, server_deviations = _choose_server(artifact, profile, notes_text)
     deviations += server_deviations
@@ -521,13 +691,13 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
     prefix = re.sub(r"[^a-z0-9]+", "-", artifact.stem.split("-")[0].lower()).strip("-") or "legacy"
     stack_name = f"{prefix}-{dump_sha[:8]}"
     return Plan(stack_name=stack_name, artifact=artifact, dump=dump, spring_profile=spring_profile,
-                db_engine=engine, db_ip=db_ip, db_port=port, db_name=db_name, db_user=db_user, db_password=db_password,
+                db_engine=expected_engine, db_ip=db_ip, db_port=port, db_name=db_name, db_user=db_user, db_password=db_password,
                 subnet=str(net), app_ip=app_ip, stub_ip=stub_ip, dns_sink=dns_sink,
-                server=server, server_image=server_image, postgres_version=postgres_version,
-                pg_restore_version=pg_restore_version, external_hosts=external, external_by_ip=by_ip,
+                server=server, server_image=server_image, db_version=db_version, db_tool_version=db_tool_version,
+                db_image=db_image, db_tool_image=db_tool_image, external_hosts=external, external_by_ip=by_ip,
                 stub_ports=stub_ports, app_package_env=app_package_env, files_root=files_root,
-                create_roles=[o for o in info.owners() if o != db_user], host_port=host_port,
-                db_alias=db_alias, gateway_ip=gateway_ip, dump_sha=dump_sha,
+                create_roles=[o for o in facts.owners if o != db_user], host_port=host_port,
+                db_alias=db_alias, gateway_ip=gateway_ip, dump_sha=dump_sha, shared_namespace=shared_namespace,
                 deviations=deviations, notes=notes)
 
 
@@ -585,8 +755,23 @@ def _compose(out_dir: Path, *args: str, timeout: int = 900) -> subprocess.Comple
                           capture_output=True, text=True, timeout=timeout)
 
 
-def _psql(out_dir: Path, plan: Plan, sql: str) -> str:
-    result = _compose(out_dir, "exec", "-T", "db", "psql", "-U", plan.db_user, "-d", plan.db_name, "-Atc", sql)
+def db_client_command(probe: Dict[str, Any], plan_vars: Dict[str, str], sql: str) -> Tuple[List[str], List[str]]:
+    """→ (argv del cliente dentro del contenedor, variables de entorno `K=V`) desde `database.probe`.
+
+    El perfil declara el cliente (`psql -U {db_user} -d {db_name} -Atc {sql}`, o `mysql -N -e {sql}`)
+    y su entorno (`MYSQL_PWD: {db_password}`): el núcleo solo sustituye."""
+    values = dict(plan_vars); values["sql"] = sql
+    argv = [str(part).format(**values) for part in (probe.get("client") or [])]
+    env = [f"{k}={str(v).format(**values)}" for k, v in (probe.get("env") or {}).items()]
+    return argv, env
+
+
+def _db_query(out_dir: Path, plan: Plan, probe: Dict[str, Any], sql: str) -> str:
+    if not probe.get("client"):
+        return ""
+    argv, env = db_client_command(probe, {"db_user": plan.db_user, "db_name": plan.db_name, "db_password": plan.db_password}, sql)
+    flags = [f for pair in env for f in ("-e", pair)]
+    result = _compose(out_dir, "exec", "-T", *flags, probe.get("service", "db"), *argv)
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
@@ -607,6 +792,12 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
 
     validations: List[Dict[str, str]] = []
     missing: List[Dict[str, str]] = []
+    database: Dict[str, Any] = profile.data.get("rehydrate", {}).get("database") or {}
+    probe: Dict[str, Any] = database.get("probe") or {}
+    if not probe.get("client") or not probe.get("tables_sql") or not probe.get("marker_sql"):
+        return "FAILED", [{"check": "sonda de la base declarada en el perfil", "result": "fail",
+                           "detail": "rehydrate.database.probe necesita client, tables_sql y marker_sql: sin eso no se puede "
+                                     "verificar que la base responde ni que el respaldo entró"}], missing
     compose_path = out_dir / "docker-compose.yml"
     compose, resolved = resolve_compose(compose_path)
     report = check_static(compose, plan.external_hosts, "ingress", resolved=resolved, compose_dir=out_dir)
@@ -623,8 +814,8 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
     if up.returncode != 0:
         return "FAILED", validations + [{"check": "docker compose up db stub", "result": "fail", "detail": up.stderr[-400:]}], missing
     alive = False
-    for _ in range(60):
-        if _psql(out_dir, plan, "select 1") == "1":
+    for _ in range(int(probe.get("ready_attempts", 60))):
+        if _db_query(out_dir, plan, probe, probe.get("ready_sql", "select 1")) == "1":
             alive = True
             break
         time.sleep(2)
@@ -633,11 +824,12 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
                                  capture_output=True, text=True).stdout
         return "FAILED", validations + [{"check": "la base responde", "result": "fail",
                                          "detail": "sin respuesta en 120 s · " + db_logs.strip()[-300:]}], missing
-    # Los comentarios de una BASE viven en pg_shdescription: obj_description() no los ve (devolvía
-    # vacío y un restore correcto salía como "marca ausente").
-    marker_sql = "select shobj_description((select oid from pg_database where datname = current_database()), 'pg_database')"
-    tables = _psql(out_dir, plan, "select count(*) from pg_tables where schemaname not in ('pg_catalog','information_schema')")
-    marker = _psql(out_dir, plan, marker_sql)
+    # La marca (`pepper:restored:<sha>`) la escribe restore.sh donde el motor pueda guardarla
+    # (un comentario de base en PostgreSQL, una tabla aparte en MySQL); el perfil dice cómo leerla.
+    marker_sql = probe["marker_sql"]
+    tables_sql = probe["tables_sql"]
+    tables = _db_query(out_dir, plan, probe, tables_sql)
+    marker = _db_query(out_dir, plan, probe, marker_sql)
     expected_marker = f"pepper:restored:{plan.dump_sha}"
     if tables not in ("", "0") and marker != expected_marker:
         return "FAILED", validations + [{"check": "la base del volumen corresponde a este respaldo", "result": "fail",
@@ -651,20 +843,22 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
         status_line = re.search(r"PEPPER_RESTORE status=(\d+) errors=(\d+)", out)
         status = int(status_line.group(1)) if status_line else -1
         ignored = int(status_line.group(2)) if status_line else 0
-        tables = _psql(out_dir, plan, "select count(*) from pg_tables where schemaname not in ('pg_catalog','information_schema')")
-        marker = _psql(out_dir, plan, marker_sql)
-        if status != 0 and status != 1 or marker != expected_marker or tables in ("", "0"):
+        tables = _db_query(out_dir, plan, probe, tables_sql)
+        marker = _db_query(out_dir, plan, probe, marker_sql)
+        ok_status = set(int(x) for x in (probe.get("restore_ok_status") or [0, 1]))
+        if status not in ok_status or marker != expected_marker or tables in ("", "0"):
             return "FAILED", validations + [{"check": "la base tiene los datos restaurados", "result": "fail",
-                                             "detail": f"pg_restore terminó con código {status} (restore.sh {restore.returncode}); "
+                                             "detail": f"la restauración terminó con código {status} (restore.sh {restore.returncode}); "
                                                        f"{tables or 0} tablas; marca {marker or 'ausente'} · " + out.strip()[-400:]}], missing
         validations.append({"check": "la base tiene los datos restaurados", "result": "pass",
-                            "detail": f"{tables} tablas en {plan.db_name}" + (f"; pg_restore ignoró {ignored} error(es), listados en el log de la restauración" if ignored else "")})
+                            "detail": f"{tables} tablas en {plan.db_name}" + (f"; la restauración ignoró {ignored} error(es), listados en el log de la restauración" if ignored else "")})
     else:
         validations.append({"check": "la base tiene los datos restaurados", "result": "pass",
                             "detail": f"{tables} tablas en {plan.db_name} (ya restaurada de este mismo respaldo)"})
-    foreign = _psql(out_dir, plan, "select string_agg(srvname||'→'||coalesce((select option_value from pg_options_to_table(srvoptions) where option_name='host'),'?'),', ') from pg_foreign_server")
-    if foreign:
-        validations.append({"check": "servidores foráneos re-apuntados al stub", "result": "pass" if all(plan.stub_ip in f for f in foreign.split(", ")) else "fail", "detail": foreign})
+    if probe.get("foreign_servers_sql"):
+        foreign = _db_query(out_dir, plan, probe, probe["foreign_servers_sql"])
+        if foreign:
+            validations.append({"check": "servidores foráneos re-apuntados al stub", "result": "pass" if all(plan.stub_ip in f for f in foreign.split(", ")) else "fail", "detail": foreign})
 
     log("  levantando app e ingress…")
     since = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -674,6 +868,7 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
     recipe = profile.data.get("rehydrate", {})
     ready_re = re.compile(recipe.get("ready_log_pattern") or "Started|started")
     failed_re = re.compile(recipe["failed_log_pattern"]) if recipe.get("failed_log_pattern") else None
+    wait_s = max(wait_s, int(recipe.get("startup_timeout_s") or 0))   # un Grails con Liquibase tarda minutos
     started = time.time()
     ready, failed_hit = False, None
     while time.time() - started < wait_s:
@@ -730,11 +925,12 @@ def write_environment(plan: Plan, profile: Profile, status: str, validations: Li
         "profile_id": profile.id,
         "support_tier": 1,
         "components": [
-            {"name": "db", "role": "database", "engine": "postgresql", "version": plan.postgres_version,
-             "container_image": f"postgres:{plan.postgres_version}", "endpoint": f"{plan.db_ip}:{plan.db_port}/{plan.db_name}",
+            {"name": "db", "role": "database", "engine": plan.db_engine, "version": plan.db_version,
+             "container_image": plan.db_image, "endpoint": f"{plan.db_ip}:{plan.db_port}/{plan.db_name}",
              "status": "running" if status in ("READY", "PARTIAL") else "unknown", "data_restored": status in ("READY", "PARTIAL")},
             {"name": "app", "role": "backend", "engine": plan.server, "artifact": plan.artifact.name,
-             "container_image": plan.server_image, "endpoint": f"{plan.app_ip}:8080",
+             "container_image": plan.server_image,
+             "endpoint": f"{plan.app_ip}:8080" + (" (en la pila de red de db)" if plan.shared_namespace else ""),
              "status": "running" if status in ("READY", "PARTIAL") else "unknown"},
             {"name": "ingress", "role": "proxy", "engine": "pepper-proxy", "container_image": "python:3-alpine",
              "endpoint": f"http://127.0.0.1:{plan.host_port}", "status": "running" if status in ("READY", "PARTIAL") else "unknown"},
