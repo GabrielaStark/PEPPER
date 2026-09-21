@@ -137,9 +137,11 @@ def read_artifact_configs(artifact: Path, patterns: List[str]) -> Dict[str, Dict
     return configs
 
 
-def choose_spring_profile(configs: Dict[str, Dict[str, str]]) -> Tuple[str, Dict[str, str], List[str]]:
+def choose_spring_profile(configs: Dict[str, Dict[str, str]], override: Optional[str] = None) -> Tuple[str, Dict[str, str], List[str]]:
     """El perfil completo (url, usuario y contraseña del datasource). Manda `spring.profiles.active`
-    del documento base si nombra uno completo; si no, `prod`; si hay varios, se declara cuáles había.
+    del documento base si nombra uno completo; si hay varios completos y ninguno activo, BLOCKED:
+    elegir `prod` por costumbre levantaba un ambiente que quizá no era el original (auditoría
+    2026-09-21, P1-02). La persona decide con `--config-profile`, y queda registrado.
     → (nombre, config fusionada con la base, desviaciones)."""
     base = configs.get("default", {})
     active = [a.strip() for a in (base.get("spring.profiles.active") or "").split(",") if a.strip()]
@@ -163,13 +165,18 @@ def choose_spring_profile(configs: Dict[str, Dict[str, str]]) -> Tuple[str, Dict
             return "default", dict(base), deviations
         raise Blocked("ningún perfil de configuración dentro del artefacto trae url, usuario y contraseña del datasource: "
                       "no dice a qué conectarse. Consigue la configuración externa del ambiente.")
+    if override:
+        if override not in complete:
+            raise Blocked(f"--config-profile {override!r} no es un perfil completo del artefacto; los completos son: {', '.join(sorted(complete))}")
+        deviations.append(f"perfil de configuración '{override}' elegido por la persona (--config-profile); "
+                          f"completos en el artefacto: {', '.join(sorted(complete))}")
+        return override, complete[override], deviations
     chosen = next((a for a in active if a in complete), None)
     if chosen is None:
-        chosen = next((n for n in complete if n == "prod"), None) or next((n for n in complete if "prod" in n), None) \
-            or sorted(complete)[0]
         if len(complete) > 1:
-            deviations.append(f"varios perfiles de configuración completos ({', '.join(sorted(complete))}); "
-                              f"spring.profiles.active no señala ninguno de ellos: se usa '{chosen}'")
+            raise Blocked(f"varios perfiles de configuración completos ({', '.join(sorted(complete))}) y spring.profiles.active "
+                          "no señala ninguno: elegir uno sería adivinar el ambiente. Di cuál con --config-profile <nombre>")
+        chosen = next(iter(complete))
     elif active and chosen != active[0]:
         deviations.append(f"spring.profiles.active = {','.join(active)}; el primero completo es '{chosen}'")
     return chosen, complete[chosen], deviations
@@ -396,15 +403,19 @@ def _choose_server(artifact: Path, profile: Profile, notes_text: str) -> Tuple[s
     version = _notes_version(notes_text, server) or ""
     major = version.split(".")[0] if version else ""
     table = images.get(server, {})
-    # sin versión no hay comodín que rendir: `tomcat:{major}-jre7` daría `tomcat:-jre7`
-    image = (table.get(major) or table.get("*", "").replace("{major}", major)) if major else ""
+    if not table:
+        raise Blocked(f"el perfil no declara imagen para el servidor {server}")
+    if not major:
+        raise Blocked(f"NOTAS.md no dice la versión de {server} y el artefacto no la trae: por fidelidad no se adivina. "
+                      f"Escribe en legacy/NOTAS.md cuál corre en producción (p. ej. \"{server} {sorted(k for k in table if k.isdigit())[-1] if any(k.isdigit() for k in table) else 'N'}\")")
+    # el comodín solo rinde una versión declarada; sin versión no hay `tomcat:{major}` que valga
+    image = table.get(major) or table.get("*", "").replace("{major}", major)
     if not image:
-        if table:
-            fallback_major = sorted(table, key=lambda k: -int(k) if k.isdigit() else 0)[0]
-            image = table[fallback_major]
-            deviations.append(f"{server} {version or '(versión no declarada)'}: no hay imagen para esa versión en el perfil; se usa {image}")
-        else:
-            raise Blocked(f"el perfil no declara imagen para el servidor {server}")
+        # Elegir "la mayor de la tabla" levantaba un servidor distinto del original y presentaba
+        # la evidencia como del legado (auditoría 2026-09-21, P1-02). Una versión que el perfil
+        # no representa es BLOCKED: el perfil se amplía, o NOTAS.md se corrige.
+        raise Blocked(f"NOTAS.md dice {server} {version} y el perfil no tiene imagen para esa versión "
+                      f"(tiene: {', '.join(sorted(table))}). Agrega la imagen al perfil o corrige la nota")
     return server, image, deviations
 
 
@@ -447,7 +458,7 @@ def read_dump_facts(dump: Path, database: Dict[str, Any]) -> DumpFacts:
     raise Blocked(f"el perfil declara un formato de respaldo desconocido: {fmt!r} (pg_dump_custom | sql_text)")
 
 
-def _groovy_datasource(artifact: Path, spec: Dict[str, Any]) -> Tuple[str, Dict[str, str], List[str]]:
+def _groovy_datasource(artifact: Path, spec: Dict[str, Any], override: Optional[str] = None) -> Tuple[str, Dict[str, str], List[str]]:
     """DataSource.groovy compilado → (entorno elegido, {clave: valor}, desviaciones).
 
     El WAR de Grails no trae YAML: trae `DataSource$_run_closure…class`. El lector de
@@ -481,11 +492,18 @@ def _groovy_datasource(artifact: Path, spec: Dict[str, Any]) -> Tuple[str, Dict[
                       "Consigue la configuración externa del ambiente")
     deviations: List[str] = []
     prefer = spec.get("prefer") or ["production", "prod"]
-    chosen = next((p for p in prefer if p in candidates), None)
-    if chosen is None:
-        chosen = sorted(candidates)[0]
-        if len(candidates) > 1:
-            deviations.append(f"varios entornos completos ({', '.join(sorted(candidates))}) y ninguno se llama {'/'.join(prefer)}: se usa '{chosen}'")
+    if override:
+        if override not in candidates:
+            raise Blocked(f"--config-profile {override!r} no es un entorno completo de {script}.groovy; los completos son: {', '.join(sorted(candidates))}")
+        chosen = override
+        deviations.append(f"entorno '{override}' elegido por la persona (--config-profile); completos: {', '.join(sorted(candidates))}")
+    else:
+        chosen = next((p for p in prefer if p in candidates), None)
+        if chosen is None:
+            if len(candidates) > 1:
+                raise Blocked(f"varios entornos completos en {script}.groovy ({', '.join(sorted(candidates))}) y ninguno se llama "
+                              f"{'/'.join(prefer)}: elegir uno sería adivinar. Di cuál con --config-profile <nombre>")
+            chosen = next(iter(candidates))
     if extra:
         # Config.groovy: hosts externos (correo, ldap, APIs). Los secretos los filtra quien lee `cfg`.
         for other in extra:
@@ -495,7 +513,8 @@ def _groovy_datasource(artifact: Path, spec: Dict[str, Any]) -> Tuple[str, Dict[
     return chosen, candidates[chosen], deviations
 
 
-def discover_datasource(artifact: Path, recipe: Dict[str, Any]) -> Tuple[str, Dict[str, str], List[str], Dict[str, str]]:
+def discover_datasource(artifact: Path, recipe: Dict[str, Any],
+                        override: Optional[str] = None) -> Tuple[str, Dict[str, str], List[str], Dict[str, str]]:
     """→ (perfil/entorno, configuración plana, desviaciones, {url, username, password}) según `rehydrate.datasource`."""
     spec = recipe.get("datasource") or {"mechanism": "spring_config"}
     mechanism = spec.get("mechanism", "spring_config")
@@ -503,7 +522,7 @@ def discover_datasource(artifact: Path, recipe: Dict[str, Any]) -> Tuple[str, Di
         configs = read_artifact_configs(artifact, recipe.get("config_patterns") or [r"application.*\.(yml|yaml|properties)$"])
         if not configs:
             raise Blocked("el artefacto no trae configuración embebida (application*.yml) y no se dio configuración externa")
-        name, cfg, deviations = choose_spring_profile(configs)
+        name, cfg, deviations = choose_spring_profile(configs, override)
         creds = {
             "url": next(v for k, v in cfg.items() if k.endswith("datasource.url")),
             "username": next(v for k, v in cfg.items() if k.endswith("datasource.username")),
@@ -511,7 +530,7 @@ def discover_datasource(artifact: Path, recipe: Dict[str, Any]) -> Tuple[str, Di
         }
         return name, cfg, deviations, creds
     if mechanism == "groovy_config":
-        name, cfg, deviations = _groovy_datasource(artifact, spec)
+        name, cfg, deviations = _groovy_datasource(artifact, spec, override)
         keys = spec.get("keys") or {"url": "dataSource.url", "username": "dataSource.username", "password": "dataSource.password"}
         return name, cfg, deviations, {k: cfg[keys[k]] for k in ("url", "username", "password")}
     raise Blocked(f"el perfil declara un mecanismo de datasource desconocido: {mechanism!r} (spring_config | groovy_config)")
@@ -526,13 +545,31 @@ def _db_image(database: Dict[str, Any], recipe: Dict[str, Any], version: str, ke
 
 
 def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
-              notes_path: Optional[Path] = None) -> Plan:
+              notes_path: Optional[Path] = None, config_profile: Optional[str] = None,
+              dump_choice: Optional[Path] = None) -> Plan:
     recipe_early = profile.data.get("rehydrate", {})
     database: Dict[str, Any] = recipe_early.get("database") or {}
     dump_suffixes = tuple((database.get("dump") or {}).get("suffixes") or ())
     artifacts, dumps = find_all_inputs(legacy_dir, recipe_early.get("artifact_suffixes"), dump_suffixes or None)
-    artifact, dump = artifacts[0], dumps[0]
-    notes_text = notes_path.read_text(encoding="utf-8", errors="replace") if notes_path and notes_path.is_file() else ""
+    artifact = artifacts[0]
+    human_choices: List[str] = []
+    if dump_choice is not None:
+        matching = [d for d in dumps if d.resolve() == dump_choice.resolve()]
+        if not matching:
+            raise Blocked(f"--dump {dump_choice} no es uno de los respaldos de {legacy_dir}: {', '.join(d.name for d in dumps)}")
+        dump = matching[0]
+        human_choices.append(f"respaldo '{dump.name}' elegido por la persona (--dump); en legacy/ había: {', '.join(d.name for d in dumps)}")
+    elif len(dumps) > 1:
+        # Tomar el más grande levantaba el sistema contra la base equivocada y producía un documento
+        # coherente pero falso (auditoría 2026-09-21, P1-06). Con más de un candidato, la persona decide.
+        lista = "\n".join(f"      · {d.name}  ({d.stat().st_size // (1024 * 1024)} MB)" for d in dumps)
+        raise Blocked(f"el legacy trae {len(dumps)} respaldos y no se sabe cuál es la base del sistema:\n{lista}\n"
+                      "    Di cuál con --dump legacy/<archivo>, o deja uno solo en legacy/")
+    else:
+        dump = dumps[0]
+    if notes_path is None:
+        notes_path = legacy_dir / "NOTAS.md"   # el canal de la persona: versiones, servidor, lo que el artefacto no dice
+    notes_text = notes_path.read_text(encoding="utf-8", errors="replace") if notes_path.is_file() else ""
     recipe = profile.data.get("rehydrate", {})
     # Un sistema de varios desplegables (microservicios, o un backend y un panel aparte) no se
     # levanta escogiendo el archivo más grande: sin sus compañeros el ambiente arranca a medias
@@ -569,7 +606,7 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
     if not database.get("engine"):
         raise Blocked(f"el perfil {profile.id} no declara `rehydrate.database` (motor, respaldo, imagen, sonda): "
                       "sin eso el núcleo no sabe qué base fabricar")
-    spring_profile, cfg, profile_deviations, creds = discover_datasource(artifact, recipe)
+    spring_profile, cfg, profile_deviations, creds = discover_datasource(artifact, recipe, config_profile)
     url = creds["url"]
     m = _JDBC_RE.search(url)
     if not m:
@@ -581,7 +618,7 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
     db_user = creds["username"]
     db_password = creds["password"]
     deviations: List[str] = list(profile_deviations)
-    notes: List[str] = []
+    notes: List[str] = list(human_choices)
     if "${" in db_password:
         raise Blocked(f"la contraseña del datasource es una referencia sin resolver ({db_password!r}): "
                       "el artefacto espera una variable de entorno que no trae; consíguela")

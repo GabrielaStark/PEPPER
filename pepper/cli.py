@@ -250,7 +250,8 @@ def _cmd_rehydrate(args: argparse.Namespace) -> int:
     profile = load_profile(args.profile)
     notes = args.notes or (args.legacy / "NOTAS.md")
     try:
-        plan = make_plan(args.legacy, profile, host_port=args.port, notes_path=notes)
+        plan = make_plan(args.legacy, profile, host_port=args.port, notes_path=notes,
+                         config_profile=args.config_profile, dump_choice=args.dump)
         written = render(plan, profile, args.out)
     except Blocked as error:
         print(f"rehydrate · BLOCKED · {error}")
@@ -487,7 +488,8 @@ def _cmd_map(args: argparse.Namespace) -> int:
         if http.is_file():
             for line in http.read_text(encoding="utf-8").splitlines():
                 try:
-                    observed.append(_json.loads(line).get("path", ""))
+                    record = _json.loads(line)
+                    observed.append({"method": record.get("method", ""), "path": record.get("path", "")})
                 except ValueError:
                     pass
         cov = coverage(system_map, observed, evidence_dir=args.evidence)
@@ -610,6 +612,10 @@ def build_parser() -> argparse.ArgumentParser:
     rehydrate.add_argument("--port", type=int, default=18080, help="puerto en loopback donde el ingress publica el app")
     rehydrate.add_argument("--up", action="store_true", help="además de planear: levantar, restaurar, esperar, verificar y validar")
     rehydrate.add_argument("--wait", type=int, default=300, help="segundos máximos de espera al arranque del app")
+    rehydrate.add_argument("--config-profile", default=None,
+                      help="perfil/entorno de configuración a usar cuando el artefacto trae varios completos y ninguno activo (queda registrado como elección humana)")
+    rehydrate.add_argument("--dump", type=Path, default=None,
+                      help="qué respaldo restaurar cuando legacy/ trae más de uno (queda registrado como elección humana)")
 
     explore = commands.add_parser("explore", help="recorre el sistema solo: entra con cada rol, abre cada pantalla, provoca rechazos, llena y guarda; o ejecuta un plan del agente")
     explore.add_argument("compose", type=Path, help="docker-compose.yml del entorno rehidratado (se verifica el aislamiento en vivo antes)")

@@ -429,9 +429,14 @@ class SystemMapTest(unittest.TestCase):
 
     def test_cobertura_observado_vs_total(self):
         m = self._map()
-        cov = coverage(m, observed_paths=["/api/rest/guardar", "/otra?x=1"])
+        cov = coverage(m, observed_paths=[{"method": "POST", "path": "/api/rest/guardar"}, "/otra?x=1"])
         self.assertEqual(cov["routes_observed"], 1)
         self.assertGreater(cov["routes_total"], 1)
+        # P1-03 (auditoría 2026-09-21): la ruta vista con OTRO método, o sin método, es parcial, no observada
+        cov = coverage(m, observed_paths=[{"method": "GET", "path": "/api/rest/guardar"}, "/api/rest/obtenerGeneros"])
+        self.assertEqual(cov["routes_observed"], 0)
+        self.assertEqual(cov["routes_partial"], 2)
+        self.assertIn("POST /api/rest/guardar", cov["partially_observed"])
         self.assertFalse(cov["jobs_measurable"])
         self.assertIsNone(cov["jobs_observed"], "sin firma se declara no medible, nunca 0 observados")
 

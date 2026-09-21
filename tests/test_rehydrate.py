@@ -146,9 +146,10 @@ class PlanTest(unittest.TestCase):
 
     def test_sin_descriptor_ni_nota_es_blocked(self):
         (self.legacy / "nominas-2.3.war").unlink()
+        (self.legacy / "NOTAS.md").unlink()
         _make_war(self.legacy / "nominas-2.3.war", with_descriptor=False)
         with self.assertRaises(Blocked):
-            make_plan(self.legacy, PROFILE, notes_path=None)
+            make_plan(self.legacy, PROFILE)
 
 
 if __name__ == "__main__":
@@ -328,7 +329,7 @@ class AuditoriaRehydrateTest(unittest.TestCase):
         self.assertEqual(plan.stack_name.split("-")[1], plan.dump_sha[:8])
 
     def test_una_nota_sobre_la_base_no_convierte_al_app_en_postgres(self):
-        plan = make_plan(self._legacy(notes="La base es postgres 12 en producción.\n"), PROFILE, notes_path=self.root / "legacy" / "NOTAS.md")
+        plan = make_plan(self._legacy(notes="La base es postgres 12 en producción. El app corre en wildfly 21.\n"), PROFILE, notes_path=self.root / "legacy" / "NOTAS.md")
         self.assertEqual(plan.server, "wildfly")
         self.assertTrue(plan.server_image.startswith("jboss/wildfly") or "wildfly" in plan.server_image)
 
@@ -371,12 +372,44 @@ class AuditoriaRehydrateTest(unittest.TestCase):
         plan = make_plan(self._legacy(prod_config=None, base_config=base), PROFILE)
         self.assertEqual((plan.spring_profile, plan.db_name), ("nomina", "nomina"))
 
-    def test_varios_perfiles_completos_sin_active_se_declara(self):
+    def test_varios_perfiles_completos_sin_active_es_blocked(self):
+        # P1-02 (auditoría 2026-09-21): elegir `prod` por costumbre era adivinar el ambiente
         base = "spring:\n  application:\n    name: x\n"
         extra = {"WEB-INF/classes/application-qa.yml": CONFIG_PROD.replace("nominas_prod", "qa_db")}
-        plan = make_plan(self._legacy(base_config=base, extra=extra), PROFILE)
-        self.assertEqual(plan.spring_profile, "prod")
-        self.assertTrue(any("varios perfiles" in d for d in plan.deviations), plan.deviations)
+        with self.assertRaisesRegex(Blocked, "varios perfiles.*--config-profile"):
+            make_plan(self._legacy(base_config=base, extra=extra), PROFILE)
+
+    def test_la_persona_elige_el_perfil_y_queda_registrado(self):
+        base = "spring:\n  application:\n    name: x\n"
+        extra = {"WEB-INF/classes/application-qa.yml": CONFIG_PROD.replace("nominas_prod", "qa_db")}
+        plan = make_plan(self._legacy(base_config=base, extra=extra), PROFILE, config_profile="qa")
+        self.assertEqual((plan.spring_profile, plan.db_name), ("qa", "qa_db"))
+        self.assertTrue(any("elegido por la persona" in d for d in plan.deviations), plan.deviations)
+        with self.assertRaisesRegex(Blocked, "no es un perfil completo"):
+            make_plan(self._legacy(base_config=base, extra=extra), PROFILE, config_profile="inventado")
+
+    def test_version_del_servidor_que_el_perfil_no_representa_es_blocked(self):
+        # antes se usaba "la mayor de la tabla" (26) y se levantaba otro servidor
+        with self.assertRaisesRegex(Blocked, "wildfly 999"):
+            make_plan(self._legacy(notes="aplicaciones es un wildfly 999\n"), PROFILE, notes_path=self.root / "legacy" / "NOTAS.md")
+
+    def test_servidor_sin_version_en_notas_es_blocked(self):
+        with self.assertRaisesRegex(Blocked, "no dice la versión de wildfly"):
+            make_plan(self._legacy(notes="corre en wildfly, no sé cuál\n"), PROFILE, notes_path=self.root / "legacy" / "NOTAS.md")
+
+    def test_varios_respaldos_es_blocked_salvo_eleccion_humana(self):
+        # P1-06: tomar el más grande levantaba el sistema contra la base equivocada
+        legacy = self._legacy()
+        write_custom_dump(legacy / "otro.dump", TABLES)
+        with self.assertRaises(Blocked) as caught:
+            make_plan(legacy, PROFILE)
+        self.assertIn("2 respaldos", str(caught.exception))
+        self.assertIn("--dump", str(caught.exception))
+        plan = make_plan(legacy, PROFILE, dump_choice=legacy / "otro.dump")
+        self.assertEqual(plan.dump.name, "otro.dump")
+        self.assertTrue(any("elegido por la persona (--dump)" in n for n in plan.notes), plan.notes)
+        with self.assertRaisesRegex(Blocked, "no es uno de los respaldos"):
+            make_plan(legacy, PROFILE, dump_choice=legacy / "inexistente.dump")
 
     def test_dependencia_por_ip_dentro_de_la_subred_no_desaparece(self):
         cfg = CONFIG_PROD.replace("http://10.250.40.142:8080/", "http://10.42.7.50:8080/")

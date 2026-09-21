@@ -69,6 +69,9 @@ class ExportTest(unittest.TestCase):
                                        "constants": {}, "strings": [], "evidence": "x"}],
                           "screens": [], "labels": 0, "notes": []}
             (docs / "system-map.json").write_text(json.dumps(system_map), encoding="utf-8")
+            # P1-05 (auditoría 2026-09-21): un map/code.md viejo o editado NO viaja; se rinde del JSON
+            (docs / "map").mkdir()
+            (docs / "map" / "code.md").write_text("# Código viejo\n\n### `app.Fantasma`\n", encoding="utf-8")
             shutil.copy2(GOLDEN, docs / "funcional.json")
             out = Path(tmp) / "package"
             summary = assemble(Path(self.tmp.name) / "correlated", out, None, system_map=docs / "system-map.json",
@@ -77,6 +80,9 @@ class ExportTest(unittest.TestCase):
             for name in ("map/system-map.json", "map/surface.md", "map/code.md", "map/screens.md",
                          "map/db.md", "map/catalogs.md", "previous/funcional.json"):
                 self.assertTrue((out / name).is_file(), name)
+            code_md = (out / "map" / "code.md").read_text(encoding="utf-8")
+            self.assertIn("app.Ctl", code_md)
+            self.assertNotIn("Fantasma", code_md, "el mapa legible se rinde del JSON que viaja, nunca se copia un render previo")
             manifest = json.loads((out / "evidence-manifest.json").read_text(encoding="utf-8"))
             self.assertIn("map/system-map.json", manifest["files"], "el mapa queda amarrado por hash")
             self.assertIn("previous/funcional.json", manifest["files"])
@@ -140,6 +146,15 @@ class ExportTest(unittest.TestCase):
             self.assertTrue((out / name).is_file(), name)
         self.assertEqual((system / "funcional.md").read_bytes(), GOLDEN_MD.read_bytes())
         self.assertTrue((system / "funcional.json").is_file())
+
+    def test_external_document_source_is_rejected(self):
+        # P1-04 (auditoría 2026-09-21): "Manual Fantasma 2099" con description pasaba como cita externa
+        self._rewrite(lambda d: d["sources"].append({"id": "S-950", "kind": "en_doc", "ref": "Manual Fantasma 2099",
+                                                       "description": "manual del sistema, en la oficina"}))
+        self._rewrite(lambda d: d["rules"][0]["sources"].append("S-950"))
+        _, report = validate(self.package, self.manifest)
+        self.assertTrue(any("S-950" in e and "no está en el paquete" in e for e in report.errors), report.errors)
+        self.assertFalse(any("S-950" in w for w in report.warnings))
 
     def test_unresolved_source_reference_is_rejected(self):
         self._rewrite(lambda d: d["rules"][0]["sources"].append("S-999"))

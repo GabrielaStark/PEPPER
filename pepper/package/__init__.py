@@ -215,7 +215,12 @@ def _redact_notes(package_legacy: Path) -> List[str]:
 
 
 def _copy_map(system_map: Path, out_dir: Path) -> str:
-    """system-map.json + la carpeta map/ legible (se regenera si falta)."""
+    """system-map.json + la carpeta map/ legible, rendida SIEMPRE desde el JSON que viaja.
+
+    Copiar un `map/*.md` preexistente entregaba al agente un mapa viejo, editado o
+    contradictorio con el JSON canónico, con ambos amarrados por el manifest como si
+    correspondieran (auditoría 2026-09-21, P1-05). El render es determinístico: mismo JSON,
+    mismos bytes."""
     if not system_map.is_file():
         raise FileNotFoundError(f"mapa inexistente: {system_map} (córrelo con `pepper map`)")
     from pepper.inspect import render_map
@@ -223,14 +228,9 @@ def _copy_map(system_map: Path, out_dir: Path) -> str:
     target = out_dir / "map"
     target.mkdir()
     shutil.copy2(system_map, target / "system-map.json")
-    rendered_dir = system_map.parent / "map"
-    data = json.loads(system_map.read_text(encoding="utf-8"))
+    data = json.loads((target / "system-map.json").read_text(encoding="utf-8"))
     for name, text in render_map(data).items():
-        source = rendered_dir / name
-        if source.is_file():
-            shutil.copy2(source, target / name)
-        else:
-            (target / name).write_text(text, encoding="utf-8")
+        (target / name).write_text(text, encoding="utf-8")
     return (f"map/ ({len(data.get('screens', []))} pantallas, {len(data.get('classes', []))} clases, "
             f"{len(data.get('catalogs', []))} catálogos)")
 

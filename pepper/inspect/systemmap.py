@@ -948,29 +948,52 @@ def route_pattern(path: str) -> "re.Pattern[str]":
     return re.compile(out + "/?$")
 
 
-def coverage(system_map: Dict[str, Any], observed_paths: List[str],
+def coverage(system_map: Dict[str, Any], observed_paths: List[Any],
              evidence_dir: Optional[Path] = None) -> Dict[str, Any]:
     """Qué del mapa se ha confirmado en la evidencia: rutas, dependencias y jobs.
 
-    - Rutas: comparación directa contra los `path` del http.jsonl.
+    - Rutas: por (método, ruta). Una visita GET no confirma un DELETE: comparar solo la
+      ruta inflaba la cobertura y daba por observada una acción destructiva que nunca
+      corrió (auditoría 2026-09-21, P1-03). `observed_paths` trae `{"method", "path"}`
+      (o `"GET /x"`); una observación sin método, o una ruta del mapa sin método, solo
+      puede dar **parcial**, nunca observada.
     - Dependencias: el stub registra CADA llamada externa interceptada; un host que
       aparece ahí está confirmado en ejecución.
     - Jobs: un job sin log propio no es detectable por nombre. Si el mapa no trae
       una firma para buscarlo, se declara **no medible automáticamente** — nunca
       "0 observados", que sería mentir por omisión.
     """
-    observed = {p.split("?")[0].rstrip("/") or "/" for p in observed_paths}
+    observed: List[Tuple[str, str]] = []
+    for item in observed_paths:
+        if isinstance(item, dict):
+            method, path = str(item.get("method") or "").upper(), str(item.get("path") or "")
+        elif isinstance(item, (tuple, list)) and len(item) == 2:
+            method, path = str(item[0] or "").upper(), str(item[1] or "")
+        else:
+            text = str(item)
+            method, _, path = text.partition(" ") if re.match(r"^[A-Z]+ /", text) else ("", "", text)
+        observed.append((method, path.split("?")[0].rstrip("/") or "/"))
     routes = [e for e in system_map.get("entrypoints", []) if e["kind"] in ("http_route", "rest_endpoint")]
-    hit, miss = [], []
+    hit, partial, miss = [], [], []
     for e in routes:
         path = e["path"].rstrip("/") or "/"
-        if "{" in path or "*" in path:
-            # ruta con plantilla (`/{controller}/{action}?/{id}?`, `/api/products/{id}`): casa por patrón
-            pattern = route_pattern(path)
-            seen = any(pattern.match(p) for p in observed)
+        method = str(e.get("method") or "").upper()
+        templated = "{" in path or "*" in path
+        pattern = route_pattern(path) if templated else None
+
+        def same_path(seen: str) -> bool:
+            return bool(pattern.match(seen)) if pattern else seen == path
+
+        # una ruta del mapa sin método (Grails: cualquier verbo) se confirma con cualquier método conocido
+        exact = any(m and (m == method or not method) and same_path(sp) for m, sp in observed)
+        by_path = any(same_path(sp) for m, sp in observed)
+        label = f"{method} {e['path']}".strip()
+        if exact:
+            hit.append(label)
+        elif by_path:
+            partial.append(label)   # la ruta se vio, pero no con ese método (o sin método conocido)
         else:
-            seen = path in observed
-        (hit if seen else miss).append(f"{e.get('method','')} {e['path']}".strip())
+            miss.append(label)
 
     evidence_text = ""
     stub_text = ""
@@ -993,11 +1016,11 @@ def coverage(system_map: Dict[str, Any], observed_paths: List[str],
     jobs_measurable = bool(jobs_with_signature)
 
     return {
-        "routes_total": len(routes), "routes_observed": len(hit),
+        "routes_total": len(routes), "routes_observed": len(hit), "routes_partial": len(partial),
         "jobs_total": len(jobs),
         "jobs_measurable": jobs_measurable,
         "jobs_observed": len(jobs_hit) if jobs_measurable else None,
         "dependencies_total": len(deps), "dependencies_observed": len(deps_hit),
         "dependencies_confirmed": deps_hit,
-        "observed": sorted(hit), "not_observed": sorted(miss),
+        "observed": sorted(hit), "partially_observed": sorted(partial), "not_observed": sorted(miss),
     }

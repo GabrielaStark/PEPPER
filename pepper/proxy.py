@@ -282,6 +282,10 @@ class Recorder:
             self._file.close()
 
 
+_READ_BLOCK = 64 * 1024
+_MAX_LINE = 65536
+
+
 class PepperProxyHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "pepper-proxy"
@@ -290,28 +294,55 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         pass
 
+    # Tiempo máximo esperando bytes del cliente: un cuerpo que no llega no bloquea el proxy.
+    timeout = 60
+
+    def _read_exact(self, size: int) -> bytes:
+        """Exactamente `size` bytes, en bloques acotados; un cuerpo corto es una petición mala, no vacía."""
+        data = bytearray()
+        while len(data) < size:
+            block = self.rfile.read(min(_READ_BLOCK, size - len(data)))
+            if not block:
+                raise _BadRequest(f"cuerpo truncado: llegaron {len(data)} de {size} bytes")
+            data += block
+        return bytes(data)
+
     def _read_request_body(self) -> bytes:
+        """El límite se aplica ANTES de leer: un chunk declarado de 64 MiB pedía 64 MiB de una vez y
+        un cuerpo truncado pasaba como vacío (auditoría 2026-09-21, P2-01)."""
         try:
             if (self.headers.get("Transfer-Encoding") or "").lower() == "chunked":
                 data = bytearray()
                 while True:
-                    size_line = self.rfile.readline()
+                    size_line = self.rfile.readline(_MAX_LINE)
+                    if not size_line.endswith(b"\n"):
+                        raise _BadRequest("tamaño de chunk ilegible")
                     size = int(size_line.split(b";")[0].strip() or b"0", 16)
+                    if size < 0:
+                        raise _BadRequest("chunk negativo")
                     if size == 0:
-                        self.rfile.readline()
+                        while True:   # trailers hasta la línea vacía
+                            trailer = self.rfile.readline(_MAX_LINE)
+                            if trailer in (b"\r\n", b"\n", b""):
+                                break
+                            if not trailer.endswith(b"\n"):
+                                raise _BadRequest("trailer ilegible")
                         return bytes(data)
-                    data += self.rfile.read(size)
-                    self.rfile.readline()
-                    if len(data) > _MAX_REQUEST_BYTES:
-                        raise _TooLarge(len(data))
+                    if len(data) + size > _MAX_REQUEST_BYTES:
+                        raise _TooLarge(len(data) + size)
+                    data += self._read_exact(size)
+                    if self.rfile.readline(_MAX_LINE) not in (b"\r\n", b"\n"):
+                        raise _BadRequest("terminador de chunk inválido")
             length = int(self.headers.get("Content-Length") or 0)
+        except (_BadRequest, _TooLarge):
+            raise
         except ValueError as error:
             raise _BadRequest(f"cuerpo ilegible: {error}") from None
         if length < 0:
             raise _BadRequest("Content-Length negativo")
         if length > _MAX_REQUEST_BYTES:
             raise _TooLarge(length)
-        return self.rfile.read(length) if length else b""
+        return self._read_exact(length) if length else b""
 
     def _forward(self, correlation_id: str, body: bytes) -> Tuple[int, str, List[Tuple[str, str]], bytes]:
         host, port = self.server.upstream  # type: ignore[attr-defined]

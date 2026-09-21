@@ -8,7 +8,7 @@
 |---|---|---|---|
 | insumos | `pepper detect legacy/` | el perfil que aplica y con qué señales | no hay perfil → `inspector-legacy` redacta un borrador y para (lo revisa una persona) |
 | mapa | `pepper map` | `docs/pepper/system-map.json` + `map/`: `surface.md` (rutas, jobs, hosts), `db.md` (tablas, triggers y funciones con cuerpo), `catalogs.md` (roles, menús por rol, estados, parámetros, distribuciones), `screens.md` (pantallas: controles, botones, mensajes), `code.md` (clases: métodos, constantes, cadenas) | nunca; si falta `javap` o el respaldo no es custom, sale `INCOMPLETO` y sigue |
-| levantar | `pepper rehydrate --up` | red con las IPs del artefacto, base restaurada con el nombre que espera, externos al stub, `isolate` antes y en vivo, `docs/pepper/environment.json` + `validation.md` | `BLOCKED` (falta desplegable, respaldo o configuración con datasource) · `FAILED` (no arrancó, o aislamiento en rojo) |
+| levantar | `pepper rehydrate --up` | red con las IPs del artefacto, base restaurada con el nombre que espera, externos al stub, `isolate` antes y en vivo, `docs/pepper/environment.json` + `validation.md` | `BLOCKED` (falta desplegable, respaldo o configuración con datasource; o hay ambigüedad —varios perfiles completos, varios respaldos, versión del servidor sin declarar— que la persona resuelve con NOTAS.md, `--config-profile` o `--dump`) · `FAILED` (no arrancó, o aislamiento en rojo) |
 | explorar | `pepper explore` | `docs/pepper/explore.json` lo escribe el agente desde el mapa; el núcleo entra con cada rol, abre cada pantalla, provoca rechazos, llena y guarda, fotografía; después planes para flujos encadenados; `evidence/explore-*/` | aislamiento en vivo en rojo |
 | descubrir | `correlate` → `package` → `descubridor-funcional` → `export` | **`docs/pepper/funcional.md`** (y `discovery/<sid>/`) | Export rechaza (el subagente corrige sobre la evidencia) |
 
@@ -27,6 +27,7 @@
 python3 -m pepper detect legacy/                                                  # qué perfil aplica, con qué señales
 python3 -m pepper map <artefacto> --profile <id> --dump <respaldo> --out docs/pepper/system-map.json
 python3 -m pepper rehydrate legacy/ --profile <id> [--up] [--port 18080]           # plan (compose, restore.sh, .env) y, con --up, el entorno corriendo
+#   [--config-profile <nombre>] [--dump legacy/<archivo>]                           # elecciones humanas cuando hay varios perfiles completos o varios respaldos (quedan registradas)
 python3 -m pepper isolate <compose> [--hosts a,b] [--live]                         # AISLADO / NO AISLADO / NO VERIFICADO (los dos últimos bloquean)
 python3 -m pepper explore <compose> --config docs/pepper/explore.json --map <mapa> --session <sid> --profile <id> [--plan plan.json] [--no-submit] [--headed]
 python3 -m pepper collect <compose> <sid> --start <ISO> --end <ISO>                # la ventana de una persona

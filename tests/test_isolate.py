@@ -253,6 +253,28 @@ class CapacidadesTest(Base):
         report = self.leak(lambda c: c["services"]["db"].__setitem__("cap_add", ["NET_ADMIN"]))
         self.assertTrue(any("capacidades" in f.check for f in report.errors))
 
+    def test_volumen_nombrado_respaldado_por_el_host_es_fuga(self):
+        # P1-01 (auditoría 2026-09-21): `escape:/escape` con driver_opts de bind pasaba como volumen normal
+        def mutate(c):
+            c["volumes"] = {"escape": {"driver": "local", "driver_opts": {"type": "none", "o": "bind", "device": "/tmp"}}}
+            c["services"]["app"]["volumes"].append("escape:/escape")
+        report = self.leak(mutate)
+        self.assertTrue(any("respaldado por `/tmp`" in f.check for f in report.errors), [f.check for f in report.errors])
+
+    def test_volumen_nombrado_normal_es_valido(self):
+        def mutate(c):
+            c["volumes"] = {"datos": {}}
+            c["services"]["app"]["volumes"].append("datos:/datos")
+        report = self.leak(mutate)
+        self.assertEqual(report.verdict, "VERIFIED", [f.check for f in report.errors + report.unknowns])
+
+    def test_volumen_external_no_da_verde(self):
+        def mutate(c):
+            c["volumes"] = {"ajeno": {"external": True}}
+            c["services"]["app"]["volumes"].append("ajeno:/ajeno")
+        report = self.leak(mutate)
+        self.assertNotEqual(report.verdict, "VERIFIED")
+
     def test_montaje_del_host_con_escritura_es_fuga(self):
         report = self.leak(lambda c: c["services"]["app"]["volumes"].append("../../legacy:/datos"))
         self.assertTrue(any("con escritura" in f.check for f in report.errors))

@@ -157,6 +157,25 @@ class ProxyTest(unittest.TestCase):
         self.assertIn("ilegible", response["note"])
         self.assertEqual(request["correlation_id"], response["correlation_id"])
 
+    def test_chunk_declarado_enorme_se_rechaza_antes_de_leerlo(self):
+        # P2-01 (auditoría 2026-09-21): un chunk de 64 MiB pedía 64 MiB de una vez
+        import socket
+        with socket.create_connection(self.proxy.server_address, timeout=5) as sock:
+            sock.sendall(b"POST /login HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+                         b"4000000\r\nhola")
+            raw = sock.recv(4096)
+        self.assertTrue(raw.startswith(b"HTTP/1.1 413"), raw[:40])
+
+    def test_cuerpo_truncado_es_400_no_vacio(self):
+        import socket
+        with socket.create_connection(self.proxy.server_address, timeout=5) as sock:
+            sock.sendall(b"POST /login HTTP/1.1\r\nHost: x\r\nContent-Length: 20\r\n\r\nhola")
+            sock.shutdown(socket.SHUT_WR)
+            raw = sock.recv(4096)
+        self.assertTrue(raw.startswith(b"HTTP/1.1 400"), raw[:40])
+        _, response = self._pair()
+        self.assertIn("truncado", response["note"])
+
     def test_preserva_host_del_cliente(self):
         _, _, payload = self._request("GET", "/echo-headers", headers={"Host": "legado.local:18080"})
         self.assertEqual(json.loads(payload)["host"], "legado.local:18080")

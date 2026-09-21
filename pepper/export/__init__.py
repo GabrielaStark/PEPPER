@@ -245,13 +245,13 @@ def _check_source(entry: Dict[str, Any], package_dir: Path, event_ids: Set[str],
             return
         path, line, error = _legacy_ref(package_dir, ref)
         if error:
-            external = kind in ("en_config", "en_doc") and not ref.startswith(("legacy/", "output/", "evidence/", ".", "/"))
-            if external:
-                # un manual o una configuración que no viene en el paquete: se acepta SOLO descrita
-                if str(entry.get("description") or "").strip():
-                    report.warnings.append(f"fuente {sid}: {ref!r} no está en el paquete; se acepta como cita externa descrita")
-                else:
-                    report.errors.append(f"fuente {sid}: {ref!r} no está en el paquete; una cita externa necesita `description` (qué documento es y dónde está)")
+            if kind in ("en_config", "en_doc") and not ref.startswith(("legacy/", "output/", "evidence/", ".", "/")):
+                # Un manual que Export no vio no es evidencia: con solo una `description` se aceptaba
+                # "Manual Fantasma 2099" (auditoría 2026-09-21, P1-04). O entra al paquete (legacy/…,
+                # amarrado por el manifest) o la afirmación es `humano`/desconocido.
+                report.errors.append(f"fuente {sid}: {ref!r} no está en el paquete: un documento que Export no puede abrir no "
+                                     "respalda nada. Ponlo en legacy/ y cítalo como legacy/<ruta>[:línea], o declara la fuente como "
+                                     "`humano` (quién lo dijo) o la afirmación como desconocida")
                 return
             report.errors.append(f"fuente {sid}: {error}")
             return

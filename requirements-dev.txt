@@ -2,6 +2,6 @@
 # El núcleo (python3 -m pepper) corre sin ellas. jsonschema habilita la validación
 # de contratos (validate, export, verificar.py); pyyaml es opcional para
 # verificar.py (sin él usa un parser mínimo de frontmatter).
-jsonschema>=4.17
+jsonschema==4.25.1
 pyyaml==6.0.2
-playwright>=1.50   # pepper explore: el navegador headless local (python3 -m playwright install chromium)
+playwright==1.60.0   # pepper explore: el navegador headless local (python3 -m playwright install chromium)

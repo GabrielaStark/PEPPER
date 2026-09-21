@@ -282,8 +282,28 @@ def _check_upstream(name: str, service: Dict[str, Any], upstream: Optional[Tuple
         report.add("ok", f"el upstream {host}:{port} corresponde a `{allowed[host]}` en una red interna")
 
 
-def _check_service_hardening(name: str, service: Dict[str, Any], is_ingress: bool, report: Report) -> None:
-    """Capacidades y montajes que reabren la salida aunque la red sea interna."""
+def _named_volume_bind(spec: Any) -> Optional[str]:
+    """Un volumen nombrado del compose respaldado por una ruta del host (`driver_opts: type: none,
+    o: bind, device: /ruta`) ES un bind mount con otro nombre. → la ruta, o None si es un volumen normal."""
+    if not isinstance(spec, dict):
+        return None
+    opts = spec.get("driver_opts") or {}
+    if not isinstance(opts, dict):
+        return None
+    options = str(opts.get("o") or "")
+    device = str(opts.get("device") or "")
+    if "bind" in options.split(",") or str(opts.get("type") or "") == "none" or device.startswith("/"):
+        return device or "(ruta no declarada)"
+    return None
+
+
+def _check_service_hardening(name: str, service: Dict[str, Any], is_ingress: bool, report: Report,
+                             volumes: Optional[Dict[str, Any]] = None) -> None:
+    """Capacidades y montajes que reabren la salida aunque la red sea interna.
+
+    Un volumen nombrado con `driver_opts` de bind pasaba como volumen normal: el legado escribía
+    en `/tmp` del host con verde (auditoría 2026-09-21, P1-01). Se resuelven los volúmenes de
+    nivel superior; los `external` no se pueden comprobar y no dan verde."""
     if service.get("privileged"):
         report.add("error", f"`{name}` corre privileged",
                    "un contenedor privilegiado puede reconfigurar la red del host: no hay aislamiento posible")
@@ -300,7 +320,20 @@ def _check_service_hardening(name: str, service: Dict[str, Any], is_ingress: boo
         if _DOCKER_SOCKET in source or _DOCKER_SOCKET in target:
             report.add("error", f"`{name}` monta el socket de Docker",
                        "con el socket, el contenedor controla Docker: puede crear un contenedor CON salida")
-        elif _is_bind(source) and not readonly and not is_ingress:
+            continue
+        named = (volumes or {}).get(source) if source and not _is_bind(source) else None
+        if source and not _is_bind(source) and volumes is not None and source in volumes:
+            spec = volumes.get(source) or {}
+            if isinstance(spec, dict) and spec.get("external"):
+                report.add("unknown", f"`{name}` monta el volumen preexistente `{source}` (external)",
+                           "no se puede comprobar qué hay detrás; con --live se inspecciona el volumen")
+                continue
+            device = _named_volume_bind(named)
+            if device and not readonly and not is_ingress:
+                report.add("error", f"`{name}` monta `{source}`, un volumen nombrado respaldado por `{device}` del host, con escritura",
+                           "un bind con otro nombre sigue siendo un bind: el legado escribe fuera del entorno desechable")
+                continue
+        if _is_bind(source) and not readonly and not is_ingress:
             report.add("error", f"`{name}` monta `{source}` del host con escritura",
                        "los montajes del host van :ro; con escritura, el legado escribe fuera del entorno desechable")
 
@@ -440,7 +473,7 @@ def check_static(compose: Dict[str, Any], external_hosts: Optional[List[str]] = 
     for name, service in services.items():
         service = service or {}
         is_ingress = name == ingress
-        _check_service_hardening(name, service, is_ingress, report)
+        _check_service_hardening(name, service, is_ingress, report, volumes=compose.get("volumes") or {})
 
         mode = str(service.get("network_mode") or "")
         if mode:
@@ -525,6 +558,23 @@ def _inspect_json(name: str) -> Optional[Dict[str, Any]]:
         return data[0] if isinstance(data, list) and data else None
     except ValueError:
         return None
+
+
+def _live_volume_bind(name: str) -> Optional[str]:
+    """`docker volume inspect`: "" si es un volumen normal, la ruta si está respaldado por el host,
+    None si no se pudo inspeccionar."""
+    if not name:
+        return None
+    out = subprocess.run(["docker", "volume", "inspect", name, "--format", "{{json .Options}}"],
+                         capture_output=True, text=True)
+    if out.returncode != 0:
+        return None
+    try:
+        options = json.loads(out.stdout.strip() or "null") or {}
+    except ValueError:
+        return None
+    device = _named_volume_bind({"driver_opts": options})
+    return device or ""
 
 
 def _network_members(network: str) -> Optional[List[str]]:
@@ -767,6 +817,22 @@ def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
             if _DOCKER_SOCKET in source or _DOCKER_SOCKET in str(mount.get("Destination", "")):
                 report.add("error", f"`{service}` tiene montado el socket de Docker",
                            "el contenedor controla Docker: puede crear otro contenedor con salida")
+                continue
+            if service == ingress:
+                continue   # sus montajes se verifican aparte (exactamente el proxy, :ro)
+            writable = bool(mount.get("RW", True))
+            mount_type = str(mount.get("Type") or "")
+            if mount_type == "bind" and writable:
+                report.add("error", f"`{service}` monta `{source}` del host con escritura (según Docker)",
+                           "el legado escribe fuera del entorno desechable")
+            elif mount_type == "volume" and writable:
+                device = _live_volume_bind(str(mount.get("Name") or ""))
+                if device is None:
+                    report.add("error", f"`{service}`: no pude inspeccionar el volumen `{mount.get('Name')}`",
+                               "un volumen que no se deja inspeccionar no cuenta como desechable")
+                elif device:
+                    report.add("error", f"`{service}` monta el volumen `{mount.get('Name')}`, respaldado por `{device}` del host, con escritura",
+                               "un bind con otro nombre sigue siendo un bind")
 
         if shared_peer is not None:
             peer_name = str(shared_peer.get("Name") or "?").lstrip("/")

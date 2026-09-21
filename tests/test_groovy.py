@@ -244,8 +244,13 @@ class MecanismosTest(unittest.TestCase):
 
     def test_la_cobertura_casa_rutas_con_plantilla(self):
         m = self._map([{"mechanism": "groovy_url_mappings", "package_prefixes": ["UrlMappings"]}])
-        cov = coverage(m, ["/producto/list", "/api/productos/7?x=1"])
+        cov = coverage(m, [{"method": "GET", "path": "/producto/list"}, {"method": "GET", "path": "/api/productos/7?x=1"}])
         self.assertEqual(cov["routes_observed"], 2, cov)
+        cov = coverage(m, ["/producto/list", {"method": "POST", "path": "/api/productos/7"}])
+        # "/producto/list" sin método → parcial; POST /api/productos/7 no confirma el GET declarado (parcial)
+        # pero sí casa la ruta comodín /{controller}/{action}?/{id}?, que no declara método (observada)
+        self.assertEqual((cov["routes_observed"], cov["routes_partial"]), (1, 1), cov)
+        self.assertIn("GET /api/productos/{id}", cov["partially_observed"])
 
     def test_route_pattern(self):
         self.assertTrue(route_pattern("/{controller}/{action}?/{id}?").match("/producto"))
