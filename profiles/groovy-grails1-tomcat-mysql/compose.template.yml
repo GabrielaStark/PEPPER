@@ -1,0 +1,119 @@
+# Plantilla de orquestación — perfil groovy-grails1-tomcat-mysql (BORRADOR).
+# Rehydrate sustituye {{...}} con lo que el artefacto trae hardcodeado (D17) y con NOTAS.md (D18).
+#
+# Lo que esta plantilla hace cumplir por construcción:
+#   - Red INTERNA (D19): sin salida. Solo el ingress toca la red `edge` para publicar en 127.0.0.1.
+#   - El datasource de production del WAR apunta a localhost:3306 (DataSource.groovy:96):
+#     en el servidor original MySQL vivía en la misma máquina que Tomcat. Se reproduce
+#     poniendo al app en el namespace de red de `db` (network_mode: service:db): dentro del
+#     app, localhost:3306 ES la base. No se inventa un host.
+#     Consecuencia: el app no tiene IP propia; su puerto 8080 vive en {{db_ip}}.
+#   - Todo host externo del artefacto resuelve por alias al `stub` (responde error y registra).
+#   - `dns:` a un sumidero de la subred interna en cada servicio (D22).
+#   - Observabilidad de antemano: general log de MySQL a stdout (sentencias con valores).
+#   - Al terminar: `docker compose down -v --remove-orphans`.
+
+name: {{stack_name}}-rehydrate
+
+networks:
+  legacy:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: {{subnet}}
+          gateway: {{gateway_ip}}
+  edge:
+    driver: bridge                     # SOLO el ingress (Docker no publica puertos desde una red internal)
+volumes:
+  db-data:
+  app-uploads:
+
+services:
+  db:
+    image: {{db_image}}                # la versión del respaldo ("Server version" en su cabecera), vía rehydrate.database.images
+    dns: [{{dns_sink}}]
+    environment:
+      MYSQL_DATABASE: {{db_name}}              # el nombre de la URL de production del WAR (no el del respaldo)
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}      # en .env (pepper-out/, no se versiona); el WAR entra como {{db_user}}
+    command:
+      - --general-log=1
+      - --general-log-file=/proc/self/fd/1     # stdout del contenedor → `pepper collect` → db.log
+      - --log-output=FILE
+      - --log-timestamps=UTC
+      # charset/collation y sql_mode de producción: DESCONOCIDOS (pregunta abierta). Se deja el
+      # default de la imagen y se declara como desviación; no se "corrige" nada por adelantado.
+    networks:
+      legacy:
+        ipv4_address: {{db_ip}}
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+
+  # Restaura un respaldo SQL DE LA BASE DE LA APLICACIÓN dentro de {{db_name}}. Si el respaldo
+  # es el esquema de sistema `mysql` (usuarios, grants, plugins), restore.sh se niega: cargarlo
+  # reescribiría las cuentas del contenedor. Una vez: docker compose --profile restore run --rm restore
+  restore:
+    image: {{db_tool_image}}
+    dns: [{{dns_sink}}]
+    profiles: ["restore"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      MYSQL_PWD: ${DB_PASSWORD}
+      DB_HOST: {{db_ip}}
+      DB_NAME: {{db_name}}
+    networks: [legacy]
+    volumes:
+      - {{dump_path}}:/dump/backup.sql:ro
+      - ./restore.sh:/restore.sh:ro
+    entrypoint: ["/bin/sh", "/restore.sh"]
+
+  stub:
+    image: python:3-alpine
+    dns: [{{dns_sink}}]
+    command: ["python3", "-u", "/stub/stub.py", "--ports", "{{stub_ports}}"]
+    networks:
+      legacy:
+        ipv4_address: {{stub_ip}}
+        aliases: {{external_hosts}}    # p. ej. api.labelary.com, www.googleapis.com, www.google.com, api.exchangeratesapi.io…
+    volumes:
+      - ./stub:/stub:ro
+
+  app:
+    image: {{server_image}}            # Tomcat 7 sobre JDK 7 (MANIFEST Created-By 24.272-b10 = HotSpot de JDK 7)
+    network_mode: "service:db"         # localhost:3306 del datasource embebido = la base (ver cabecera)
+    depends_on:
+      db:
+        condition: service_healthy
+      stub:
+        condition: service_started
+    environment:
+      # Grails 1.3 en JDK 7 necesita PermGen; los valores de producción son DESCONOCIDOS → desviación declarada.
+      JAVA_OPTS: "-Xms512m -Xmx2g -XX:MaxPermSize=512m -Dgrails.env={{config_profile}}"
+    volumes:
+      - {{war_path}}:/usr/local/tomcat/webapps/{{war_name}}:ro   # el WAR ORIGINAL; su nombre fija el contexto /{{app_name}}
+      - app-uploads:/usr/local/tomcat/uploads                    # Config.groovy:799 (ruta relativa 'uploads')
+      # Solo si el datasource embebido no conecta (p. ej. "Unknown system variable 'storage_engine'"
+      # con MySQL >= 5.7.5) o si aparece la configuración externa real del servidor:
+      # - ./openboxes-config.properties:/root/.grails/{{app_name}}-config.properties:ro   # Config.groovy:22
+
+  # El ingress ES el proxy HTTP de PEPPER (pepper/proxy.py copiado a ./proxy/). El app no tiene IP
+  # propia: su 8080 vive en el namespace de db, así que el upstream es {{db_ip}}:8080.
+  ingress:
+    image: python:3-alpine
+    dns: [{{dns_sink}}]
+    command: ["python3", "-u", "/pepper-proxy.py", "--listen", "0.0.0.0:8080", "--upstream", "{{db_ip}}:8080"]
+    depends_on:
+      app:
+        condition: service_started
+    networks: [legacy, edge]
+    ports:
+      - "127.0.0.1:{{host_port}}:8080"   # SOLO localhost (H-04)
+    volumes:
+      - ./proxy/proxy.py:/pepper-proxy.py:ro

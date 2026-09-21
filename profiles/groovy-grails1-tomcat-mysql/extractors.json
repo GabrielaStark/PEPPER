@@ -1,0 +1,167 @@
+{
+  "extractor_version": "0.2.0",
+  "description": "Cómo `pepper map` saca lo que un WAR de Grails 1.3 ES. Las acciones de los controladores son closures asignadas en el constructor (groovy_controller_actions), las rutas declaradas viven en UrlMappings (groovy_url_mappings), los cron de los jobs en Config.groovy y en los bloques `triggers` de cada job (groovy_config_values), y el respaldo es SQL en texto de mysqldump/mariadb-dump (sql_dump). No declara jvm_route_annotations (Grails no usa @RequestMapping: daría 0 rutas) ni pg_dump_custom.",
+  "extractors": [
+    {
+      "mechanism": "jvm_class_inventory",
+      "description": "Clases propias bajo org/pih/warehouse más SecurityFilters/RoleFilters/InitializationFilters (reglas de acceso, en el paquete por defecto). Las acciones de un controlador Grails 1.x son closures con getter (getSave, getList…): el inventario filtra accesores y salta clases internas ($_closureN), así que ni las acciones ni el contenido de UrlMappings/BootStrap aparecen; las cadenas de las clases de primer nivel sí (mensajes, HQL, estados).",
+      "class_root": "WEB-INF/classes",
+      "include_own_libs": false,
+      "package_prefixes": [
+        "org/pih/warehouse/",
+        "SecurityFilters",
+        "RoleFilters",
+        "InitializationFilters"
+      ],
+      "class_kinds": {
+        "controlador": "Controller$",
+        "servicio": "Service$",
+        "job": "\\.jobs\\.",
+        "taglib": "TagLib$",
+        "api": "\\.api\\.",
+        "filtro": "Filters$",
+        "comando": "Command$",
+        "dominio": "\\.(core|product|inventory|shipping|receiving|requisition|order|invoice|picklist|fulfillment|putaway|reporting|donation|auth|user)\\.[A-Z]\\w*$",
+        "filtro de seguridad/rol": "^(SecurityFilters|RoleFilters|InitializationFilters)$"
+      },
+      "max_strings_per_class": 80
+    },
+    {
+      "mechanism": "view_templates",
+      "description": "Pantallas GSP (WEB-INF/grails-app/views, incluidos los parciales _*.gsp donde Grails pone los campos de alta/edición): título, encabezados, campos, botones y condiciones por rol. Las etiquetas <warehouse:message>/<g:message code=…> se resuelven con messages.properties + messages_es.properties (el locale por defecto del legacy es es, Config.groovy:1023). Las pantallas React del bundle js/bundle.*.js NO se enumeran.",
+      "member_patterns": [
+        "^WEB-INF/grails-app/views/.*\\.gsp$"
+      ],
+      "exclude_patterns": [
+        "/layouts/",
+        "/taglib/",
+        "/email/"
+      ],
+      "bundle_patterns": [
+        "^WEB-INF/grails-app/i18n/messages(_es)?\\.properties$"
+      ],
+      "bundle_ref_pattern": "<(?:warehouse|g):message\\s+code=\"(?P<key>[^\"$]+)\"[^>]*/?>",
+      "title_pattern": "<title>(.*?)</title>",
+      "heading_pattern": "<h[1-4][^>]*>(.*?)</h[1-4]>",
+      "label_pattern": "<label[^>]*>(.*?)</label>",
+      "button_pattern": "<(?:g:actionSubmit|g:submitButton|button)\\b(.*?)>",
+      "message_pattern": "<(?:warehouse|g):message\\s+code=\"([^\"$]*(?:error|invalid|required|confirm|warning)[^\"$]*)\"",
+      "condition_pattern": "<g:((?:isUserAdmin|isUserManager|isUserInRole|isSuperuser|hasRoleFinance|hasRoleInvoice|supports|isUserNotInRole)\\b[^>]*)>",
+      "include_pattern": "<g:render\\s+template=\"([^\"]+)\"",
+      "input_pattern": "<g:(textField|textArea|select|datePicker|jqueryDatePicker|checkBox|passwordField|radio|field)\\b[^>]*\\bname=\"([^\"]+)\"",
+      "form_pattern": "<g:(?:form|uploadForm)\\b([^>]*)>"
+    },
+    {
+      "mechanism": "archive_url_scan",
+      "description": "URLs externas incrustadas en configuración compilada, vistas y bytecode (Config.class, servicios, GSP compiladas).",
+      "member_patterns": [
+        "\\.(properties|xml|gsp|class)$"
+      ],
+      "exclude_host_patterns": [
+        "w3\\.org",
+        "xmlns",
+        "springframework",
+        "apache\\.org",
+        "sun\\.com",
+        "java\\.com",
+        "jcp\\.org",
+        "slf4j",
+        "grails\\.org",
+        "codehaus\\.org",
+        "liquibase\\.org",
+        "hibernate\\.org",
+        "github\\.com/agorapulse",
+        "github\\.com/grails",
+        "jquery",
+        "localhost",
+        "127\\.0\\.0\\.1",
+        "example\\.com",
+        "cdn\\.",
+        "cdnjs\\.",
+        "jsdelivr",
+        "cloudflare",
+        "gstatic",
+        "fontawesome",
+        "bootstrapcdn",
+        "yahooapis",
+        "yui"
+      ],
+      "kind_hints": {
+        "rest": [
+          "\\d+\\.\\d+\\.\\d+\\.\\d+",
+          "api\\.",
+          "googleapis",
+          "hipaaspace",
+          "exchangerates",
+          "yandex",
+          "labelary"
+        ],
+        "smtp": [
+          "smtp"
+        ],
+        "ldap": [
+          "ldap"
+        ],
+        "web": [
+          "atlassian",
+          "dropbox",
+          "groups\\.google",
+          "openboxes\\.com",
+          "sentry",
+          "fullstory",
+          "zopim"
+        ]
+      }
+    },
+    {
+      "mechanism": "groovy_controller_actions",
+      "description": "Acciones de cada *Controller bajo org/pih/warehouse (closures `def list = {…}` asignadas en <init>; allowedMethods del <clinit> da el verbo). Ruta por convención de Grails /{controller}/{action}. Los controladores bajo .api. son REST.",
+      "class_root": "WEB-INF/classes",
+      "package_prefixes": [
+        "org/pih/warehouse/"
+      ],
+      "class_pattern": "Controller$",
+      "strip_suffix": "Controller",
+      "route_template": "/{controller}/{action}",
+      "rest_class_pattern": "\\.api\\.",
+      "methods_as_actions": false
+    },
+    {
+      "mechanism": "groovy_url_mappings",
+      "description": "UrlMappings.groovy compilado (paquete por defecto): rutas declaradas con controller/action o con bloque; las plantillas ({controller}, {id}, **?) se conservan.",
+      "class_root": "WEB-INF/classes",
+      "package_prefixes": [
+        "UrlMappings"
+      ],
+      "class_pattern": "^UrlMappings$"
+    },
+    {
+      "mechanism": "groovy_config_values",
+      "description": "Config.groovy y DataSource.groovy compilados (paquete por defecto) más los jobs de Quartz bajo org/pih/warehouse/jobs: cron (openboxes.jobs.*.cronExpression, resuelto también desde el bloque `triggers` de cada job), enabled, y notas de configuración (hosts, correo, ldap, ubicaciones de configuración externa). Las claves que parecen credenciales se redactan.",
+      "class_root": "WEB-INF/classes",
+      "package_prefixes": [
+        "Config",
+        "DataSource",
+        "org/pih/warehouse/jobs/"
+      ],
+      "scripts": [
+        "Config",
+        "DataSource"
+      ],
+      "job_key_pattern": "\\.cronExpression$",
+      "job_class_pattern": "\\.jobs\\.\\w+Job$",
+      "note_key_pattern": "(?i)url$|host$|server$|smtp|ldap|config\\.locations|mail\\.enabled|\\.enabled$|active$|jobs\\.\\w+\\.enabled$"
+    },
+    {
+      "mechanism": "sql_dump",
+      "description": "Respaldo SQL en texto (mysqldump / mariadb-dump). Tablas con conteo y columnas, catálogos (tablas chicas completas, redactadas), distribuciones de columnas de estado y fecha, vistas, rutinas y triggers. Si el respaldo es el esquema `mysql` del motor (user, db, tables_priv…), lo declara como hueco: no es la base de la aplicación.",
+      "catalog_max_rows": 300,
+      "catalog_exclude_patterns": [
+        "(?i)^user$|person|^address$|^contact|phone|email|password"
+      ],
+      "state_column_pattern": "(?i)status|estatus|estado$|^type$|_type$|^tipo|_tipo|role|active$|enabled$|^class$",
+      "date_column_pattern": "(?i)date|fecha|_created$|_updated$|^created$|^updated$",
+      "distribution_top": 15
+    }
+  ]
+}

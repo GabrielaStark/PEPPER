@@ -1,0 +1,59 @@
+{
+  "parser_version": "0.1.0",
+  "source": "mysql",
+  "description": "General query log de MySQL 5.7 (--general-log=1 --log-output=FILE --general-log-file=/proc/self/fd/1 --log-timestamps=UTC) capturado del stdout del contenedor db con `pepper collect` (docker logs --timestamps). Formato por línea: '<ts ISO-8601 UTC con microsegundos>\\t<id de conexión alineado> <Comando>\\t<argumento>'. Connector/J 5.1.47 (WEB-INF/lib/mysql-connector-java-5.1.47.jar) sin useServerPrepStmts interpola los parámetros en el cliente, así que cada Query trae la sentencia completa con sus valores. El id de conexión agrupa lo que hizo una misma conexión del pool c3p0 (no una misma petición: el pool reutiliza conexiones). Las sentencias multilínea continúan en líneas sin el timestamp del motor y se anexan al evento anterior; las tres líneas de cabecera que mysqld escribe al abrir el log no son eventos y quedan sin parsear.",
+  "line_pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z) (?P<my_ts>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z)\\s+(?P<conn>\\d+) (?P<command>Connect|Query|Quit|Init DB|Prepare|Execute|Close stmt|Reset stmt|Field List|Statistics|Ping|Change user|Set option|Fetch|Refresh|Processlist|Kill|Shutdown|Debug)\\t?(?P<message>.*)$",
+  "timestamp": {
+    "group": "timestamp"
+  },
+  "fields": {
+    "component": {
+      "value": "database"
+    },
+    "message": {
+      "from": "message"
+    },
+    "severity": {
+      "value": "info"
+    },
+    "metadata.connection_id": {
+      "from": "conn"
+    },
+    "metadata.command": {
+      "from": "command"
+    },
+    "metadata.mysql_ts": {
+      "from": "my_ts"
+    }
+  },
+  "event_type": {
+    "default": "log",
+    "rules": [
+      {
+        "when": {
+          "field": "command",
+          "matches": "^(Query|Execute|Prepare)$"
+        },
+        "value": "sql"
+      }
+    ]
+  },
+  "continuation": {
+    "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z (?!\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z\\s+\\d+ )(?!\\S*mysqld, Version:)(?!Tcp port:)(?!Time\\s+Id\\s+Command)"
+  },
+  "affinity": [
+    "connection_id"
+  ],
+  "noise": [
+    {
+      "id": "connectorj-handshake",
+      "description": "consulta de variables de sesión que Connector/J manda al abrir cada conexión del pool (comentario /* mysql-connector-java-… */)",
+      "matches": "^/\\* mysql-connector-java-"
+    },
+    {
+      "id": "connectorj-session-setup",
+      "description": "ajustes de sesión sin contenido de negocio que Connector/J manda al abrir o validar una conexión",
+      "matches": "(?i)^(SET NAMES \\w+|SET character_set_results = NULL|SHOW WARNINGS|select @@session\\.tx_read_only|SELECT @@session\\.tx_isolation|SHOW FULL COLLATION|SHOW COLLATION)\\s*$"
+    }
+  ]
+}

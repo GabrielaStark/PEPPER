@@ -1,0 +1,233 @@
+{
+  "schema_version": "0.1.0",
+  "id": "groovy-grails1-tomcat-mysql",
+  "name": "Grails 1.3 (Groovy 1.7, Spring 3.0, Hibernate 3.3) en Tomcat con JDK 7 y MySQL 5.7",
+  "version": "0.1.0",
+  "status": "draft",
+  "stack": {
+    "languages": [
+      "groovy",
+      "java"
+    ],
+    "frameworks": [
+      "grails-1.3",
+      "gorm-hibernate3",
+      "spring-3.0",
+      "spring-webflow-2.0",
+      "gsp-sitemesh",
+      "liquibase-1.9",
+      "quartz-2.1",
+      "react-spa-embebido"
+    ],
+    "servers": [
+      "tomcat"
+    ],
+    "databases": [
+      "mysql"
+    ]
+  },
+  "detection": {
+    "signals": [
+      {
+        "type": "extension",
+        "pattern": "*.war",
+        "weight": 2,
+        "required": true
+      },
+      {
+        "type": "file_content",
+        "file": "application.properties",
+        "pattern": "app\\.grails\\.version=1\\.",
+        "weight": 3,
+        "required": true
+      },
+      {
+        "type": "file_exists",
+        "pattern": "grails-core-1.*.jar",
+        "weight": 2
+      },
+      {
+        "type": "file_exists",
+        "pattern": "grails.xml",
+        "weight": 1
+      },
+      {
+        "type": "file_content",
+        "file": "DataSource*.class",
+        "pattern": "jdbc:mysql://",
+        "weight": 2
+      },
+      {
+        "type": "file_exists",
+        "pattern": "mysql-connector-java-*.jar",
+        "weight": 1
+      },
+      {
+        "type": "file_content",
+        "file": "*.dump",
+        "pattern": "(MySQL|MariaDB) dump",
+        "weight": 1
+      }
+    ],
+    "min_score": 8
+  },
+  "rehydrate": {
+    "required_inputs": [
+      "artefacto desplegable: WAR de Grails 1.x (WEB-INF/classes/application.properties con app.grails.version=1.x y DataSource*.class compilado)"
+    ],
+    "optional_inputs": [
+      "respaldo SQL (mysqldump/mariadb-dump) de la BASE DE LA APLICACIÓN — no del esquema de sistema `mysql` — con --routines --triggers; sin él el WAR crea su esquema vacío con Liquibase al arrancar (BootStrap.groovy:441-476) y solo hay datos semilla",
+      "configuración externa del servidor original: ~/.grails/openboxes-config.properties|groovy del usuario de Tomcat, o la ruta de -Dopenboxes.config.location / OPENBOXES_CONFIG_LOCATION (Config.groovy:22-38); suele sobreescribir dataSource.url/username/password",
+      "legacy/NOTAS.md con versión de Tomcat, JDK de producción, charset/collation y sql_mode del MySQL de producción",
+      "versión exacta del JDK y de Tomcat de producción (el MANIFEST solo da el JDK con el que se compiló)"
+    ],
+    "compose_template": "compose.template.yml",
+    "restore_template": "restore.template.sh",
+    "steps": [
+      "leer legacy/NOTAS.md (servidor, versiones, base) y contrastar con el artefacto; registrar discrepancias sin resolverlas",
+      "datasource (rehydrate.datasource = groovy_config): el núcleo reconstruye DataSource.groovy del bytecode con javap y toma environments.production.dataSource.{url,username,password}; Config.groovy aporta los hosts externos (correo, ldap, APIs)",
+      "respaldo (rehydrate.database.dump = sql_text): mysqldump/mariadb-dump de la BASE DE LA APLICACIÓN; si es el esquema de sistema `mysql` (user, db, tables_priv…) el núcleo responde BLOCKED: no es la base del sistema",
+      "versiones: MySQL de la cabecera del respaldo (Server version) → imagen mysql:<versión>; Tomcat/JDK de NOTAS.md (sin nota: tomcat:7-jre7, declarado como desviación); JDK ≤ 8 obligatorio (sun.misc.BASE64Encoder en PasswordCodec)",
+      "si la URL de production apunta a localhost (rehydrate.database.localhost = shared_network_namespace): el app corre con network_mode service:db, así localhost:3306 dentro del app ES la base; no se inventa otro host",
+      "si la URL lleva sessionVariables=storage_engine=InnoDB y el MySQL es >= 5.7.5 (la variable ya no existe), el pool no conecta: probar primero tal cual; si falla con \"Unknown system variable 'storage_engine'\", montar un openboxes-config.properties generado por PEPPER en /root/.grails/ que solo reemplace dataSource.url sin esa variable, y declararlo como desviación",
+      "generar docker-compose.yml desde compose.template.yml: red interna, db MySQL con general_log a stdout, stub con alias para cada host externo del artefacto, app Tomcat+JDK 7 en la pila de red de db, ingress (proxy de PEPPER) delante del puerto 8080",
+      "verificar el aislamiento con `python3 -m pepper isolate <compose> --hosts <hosts>` ANTES de levantar (network_mode service:db se acepta: hereda las redes y el DNS de db)",
+      "levantar db y stub; restaurar el respaldo con restore.sh DENTRO de la base que el artefacto espera (CREATE DATABASE/USE del respaldo se ignoran; DEFINER → CURRENT_USER); la marca queda en pepper_meta.restored",
+      "levantar app e ingress; el WAR ORIGINAL se monta como webapps/<nombre>.war (contexto /<nombre>); esperar 'Server startup in' de Tomcat — el primer arranque corre Liquibase y puede tardar minutos (startup_timeout_s)",
+      "fijar credenciales de prueba SOLO en la base del contenedor (pepper explore, credentials.sql): UPDATE user SET password = TO_BASE64(UNHEX(SHA1('<clave>'))) (PasswordCodec: SHA-1 + Base64); nunca en el legacy",
+      "escribir environment.json (PARTIAL si hubo stubs) y validation.md con desviaciones"
+    ],
+    "server_images": {
+      "tomcat": {
+        "7": "tomcat:7-jre7",
+        "*": "tomcat:{major}-jre7"
+      }
+    },
+    "descriptors": {
+      "tomcat": [
+        "META-INF/context.xml"
+      ]
+    },
+    "config_patterns": [
+      "^WEB-INF/classes/application\\.properties$"
+    ],
+    "datasource": {
+      "mechanism": "groovy_config",
+      "class_root": "WEB-INF/classes",
+      "script": "DataSource",
+      "extra_scripts": [
+        "Config"
+      ],
+      "environment_key": "environments",
+      "prefer": [
+        "production",
+        "prod"
+      ],
+      "keys": {
+        "url": "dataSource.url",
+        "username": "dataSource.username",
+        "password": "dataSource.password"
+      }
+    },
+    "database": {
+      "engine": "mysql",
+      "engine_aliases": [
+        "mariadb"
+      ],
+      "default_port": 3306,
+      "images": {
+        "5.7.36": "mysql:5.7.36",
+        "5": "mysql:5.7",
+        "8": "mysql:8.0",
+        "*": "mysql:{version}"
+      },
+      "dump": {
+        "format": "sql_text",
+        "suffixes": [
+          ".sql",
+          ".dump"
+        ]
+      },
+      "localhost": "shared_network_namespace",
+      "subnet_hint": "10.100.0",
+      "probe": {
+        "service": "db",
+        "client": [
+          "mysql",
+          "-uroot",
+          "-N",
+          "-B",
+          "-e",
+          "{sql}"
+        ],
+        "env": {
+          "MYSQL_PWD": "{db_password}"
+        },
+        "quiet_prefix": "SET SESSION sql_log_off = 1; ",
+        "ready_sql": "select 1",
+        "tables_sql": "select count(*) from information_schema.tables where table_schema = '{db_name}' and table_type = 'BASE TABLE'",
+        "marker_sql": "select concat('pepper:restored:', dump_sha) from pepper_meta.restored order by restored_at desc limit 1",
+        "restore_ok_status": [
+          0
+        ]
+      }
+    },
+    "ready_log_pattern": "Server startup in \\d+ ms|Finished running liquibase changelog",
+    "failed_log_pattern": "SEVERE: (Error listenerStart|Context \\[[^\\]]*\\] startup failed)|Connection could not be created|Unknown system variable|UnsupportedClassVersionError",
+    "stub_ports": "80,443,25,389,9100",
+    "startup_timeout_s": 900
+  },
+  "collectors": [
+    {
+      "source": "tomcat-grails",
+      "method": "container_stdout",
+      "location": "evidence/<session_id>/containers/app.log (via `pepper collect`; por el stdout del contenedor de Tomcat salen tanto log4j de Grails como JULI de Tomcat)",
+      "enable": "sin cambios en el artefacto: los niveles vienen del Config.groovy compilado (Config.groovy:176-240: org.pih.warehouse, grails.app.*, liquibase, quartz). Subir a DEBUG o activar org.hibernate.SQL exige un openboxes-config.groovy externo con bloque log4j (Config.groovy:22); solo si la primera sesión muestra que falta detalle, y se declara como desviación",
+      "parser": "parsers/tomcat-grails-stdout.json"
+    },
+    {
+      "source": "mysql",
+      "method": "container_stdout",
+      "location": "evidence/<session_id>/containers/db.log (via `pepper collect`; el general log va a stdout, el error log de mysqld a stderr → db.err.log)",
+      "enable": "--general-log=1 --general-log-file=/proc/self/fd/1 --log-output=FILE --log-timestamps=UTC en el command del contenedor db, antes del arranque",
+      "parser": "parsers/mysql-general-log.json"
+    }
+  ],
+  "validation": [
+    {
+      "check": "aislamiento verificado por el núcleo antes y después de levantar",
+      "command": "python3 -m pepper isolate <compose> --hosts <hosts externos del artefacto> --live"
+    },
+    {
+      "check": "Tomcat desplegó el WAR en el contexto esperado (log 'Deploying web application archive' + 'Server startup in') y sin 'SEVERE: Error listenerStart'"
+    },
+    {
+      "check": "el pool c3p0 conectó: no aparece 'Connection could not be created' ni 'Unknown system variable' en el log del app"
+    },
+    {
+      "check": "Liquibase terminó: 'Finished running liquibase changelog(s)!' y la tabla DATABASECHANGELOG trae el último changeset del WAR (0.8.x/changelog-2021-07-27-2153-alter-table-invoice-add-column-date-posted.xml en este legacy)",
+      "command": "docker compose exec db mysql -uroot -p\"$DB_PASSWORD\" -e \"select id, filename from <db>.DATABASECHANGELOG order by dateexecuted desc limit 3\""
+    },
+    {
+      "check": "GET /<contexto>/ responde por el ingress (302 a /<contexto>/auth/login) y la pantalla de login renderiza (campos username/password)"
+    },
+    {
+      "check": "el general log de MySQL muestra conexiones del app y sentencias de Hibernate sobre la base esperada"
+    },
+    {
+      "check": "el stub no registró peticiones durante el arranque; los hosts externos del WAR resuelven al stub dentro del contenedor db (getent hosts)"
+    }
+  ],
+  "notes": "Borrador redactado durante Inspect de un legacy real: WAR de Grails 1.3.9 (OpenBoxes 0.8.x, localizado) con respaldo mysqldump. Señales tomadas de ese WAR: application.properties (app.grails.version=1.3.9), WEB-INF/lib/grails-core-1.3.9.jar, WEB-INF/grails.xml, DataSource$_run_closure*.class (jdbc:mysql://), WEB-INF/lib/mysql-connector-java-5.1.47.jar, cabecera del respaldo (MariaDB dump). Es el primer perfil cuya base no es PostgreSQL: rehydrate.database y rehydrate.datasource son los que enseñan al núcleo a fabricarla (2026-09-21). Falta: correr la receta de punta a punta con un respaldo de la base de la aplicación (el primero entregado era el esquema de sistema `mysql`) para pasar a validated.",
+  "http": {
+    "action_fields": [
+      "_action_save",
+      "_action_update",
+      "_action_delete",
+      "_eventId",
+      "_action"
+    ],
+    "noise_field_pattern": "^(_eventId_\\w*|execution|org\\.codehaus\\.groovy\\.grails\\.SYNCHRONIZER_(TOKEN|URI)|browserTimezone|targetUri|_[A-Za-z]\\w*)$",
+    "field_name_pattern": "([A-Za-z][\\w]*)(?:\\.id)?$"
+  }
+}
