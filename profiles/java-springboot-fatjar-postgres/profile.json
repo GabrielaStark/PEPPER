@@ -1,0 +1,194 @@
+{
+  "schema_version": "0.1.0",
+  "id": "java-springboot-fatjar-postgres",
+  "name": "Sistema de varios fat jars de Spring Boot (con front estático opcional) y PostgreSQL",
+  "version": "0.1.0",
+  "status": "draft",
+  "stack": {
+    "languages": ["java"],
+    "frameworks": ["spring-boot", "spring-cloud"],
+    "servers": ["embedded-tomcat"],
+    "databases": ["postgresql"]
+  },
+  "detection": {
+    "signals": [
+      {
+        "type": "extension",
+        "pattern": "*.jar",
+        "weight": 2,
+        "required": true
+      },
+      {
+        "type": "file_exists",
+        "pattern": "BOOT-INF/lib/*.jar",
+        "weight": 3,
+        "required": true
+      },
+      {
+        "type": "file_content",
+        "file": "BOOT-INF/classes/application*.yml",
+        "pattern": "jdbc:postgresql://",
+        "weight": 2
+      },
+      {
+        "type": "file_exists",
+        "pattern": "BOOT-INF/classes/application*.properties",
+        "weight": 1
+      },
+      {
+        "type": "file_content",
+        "file": "*.dump",
+        "pattern": "PGDMP",
+        "weight": 1
+      }
+    ],
+    "min_score": 7
+  },
+  "rehydrate": {
+    "required_inputs": [
+      "los desplegables del sistema: uno o varios fat jars de Spring Boot (BOOT-INF/lib con sus dependencias y BOOT-INF/classes con la configuración embebida). Si el sistema son varias piezas, TODAS: levantar una sola produce un ambiente a medias",
+      "respaldo de la base en formato custom de pg_dump (pg_dump -Fc)"
+    ],
+    "optional_inputs": [
+      "el dist del front (una carpeta o un zip con index.html), si el sistema tiene uno",
+      "legacy/NOTAS.md diciendo qué es cada artefacto y cómo se hablan entre sí: sin eso, las reglas de `classify` son lo único que reparte los papeles",
+      "la configuración externa del ambiente (variables de entorno, config server) si la configuración embebida no trae el datasource"
+    ],
+    "compose_template": "compose.template.yml",
+    "restore_template": "restore.template.sh",
+    "steps": [
+      "leer legacy/NOTAS.md (qué es cada artefacto, cómo se hablan, versiones) y contrastar con lo que dicen los artefactos",
+      "repartir los desplegables en piezas con `rehydrate.components.classify`: lo que ninguna regla reconozca se dice y se detiene, no se le inventa un papel",
+      "leer el datasource de la pieza `backend` (rehydrate.components.datasource_role): de ahí salen la base, el usuario y la red que el sistema espera",
+      "fabricar un servicio por pieza repitiendo `service_template` (por motor: java o static), cada una con su IP, su puerto y su alias dentro de la red interna",
+      "verificar el aislamiento con `python3 -m pepper isolate <compose> --hosts <hosts>` ANTES de levantar",
+      "levantar db y stub; restaurar el respaldo dentro de la base que el artefacto espera; re-apuntar al stub todo servidor foráneo",
+      "levantar todas las piezas y el ingress; esperar el arranque de CADA pieza con su patrón (un front estático no dice 'Started')",
+      "el ingress entra por la pieza que declare `ingress_role` (la puerta de enlace si la hay, si no el front, si no el único backend)",
+      "escribir environment.json con una entrada por pieza (PARTIAL si hubo stubs) y validation.md con desviaciones"
+    ],
+    "artifact_suffixes": [".jar", ".zip"],
+    "server_images": {
+      "java": {
+        "8": "eclipse-temurin:8-jre",
+        "11": "eclipse-temurin:11-jre",
+        "17": "eclipse-temurin:17-jre",
+        "*": "eclipse-temurin:{major}-jre"
+      },
+      "static": {
+        "*": "httpd:2.4-alpine"
+      }
+    },
+    "config_patterns": [
+      "^BOOT-INF/classes/application.*\\.(yml|yaml|properties)$"
+    ],
+    "datasource": {
+      "mechanism": "spring_config"
+    },
+    "components": {
+      "classify": [
+        {
+          "role": "discovery",
+          "engine": "java",
+          "ready_log_pattern": "Started \\w+ in |Tomcat started on port",
+          "when": {
+            "config_contains": "eureka"
+          }
+        },
+        {
+          "role": "gateway",
+          "engine": "java",
+          "ready_log_pattern": "Started \\w+ in |Netty started on port",
+          "when": {
+            "config_contains": "cloud.gateway"
+          }
+        },
+        {
+          "role": "frontend",
+          "engine": "static",
+          "port": 80,
+          "ready_log_pattern": "resuming normal operations|Command line: ",
+          "when": {
+            "member_glob": "*index.html"
+          }
+        },
+        {
+          "role": "backend",
+          "engine": "java",
+          "ready_log_pattern": "Started \\w+ in |Tomcat started on port",
+          "when": {
+            "member_glob": "BOOT-INF/lib/*.jar"
+          }
+        }
+      ],
+      "service_template": {
+        "java": "service.template.yml",
+        "static": "service-static.template.yml"
+      },
+      "datasource_role": "backend",
+      "ingress_role": "gateway"
+    },
+    "database": {
+      "engine": "postgresql",
+      "default_port": 5432,
+      "images": {
+        "*": "postgres:{major}"
+      },
+      "dump": {
+        "format": "pg_dump_custom",
+        "suffixes": [".dump", ".backup"]
+      },
+      "localhost": "blocked",
+      "subnet_hint": "10.100.0",
+      "probe": {
+        "service": "db",
+        "client": ["psql", "-v", "ON_ERROR_STOP=1", "-U", "{db_user}", "-d", "{db_name}", "-Atc", "{sql}"],
+        "env": {
+          "PGPASSWORD": "{db_password}"
+        },
+        "quiet_prefix": "SET log_statement = 'none'; ",
+        "ready_sql": "select 1",
+        "tables_sql": "select count(*) from information_schema.tables where table_schema not in ('pg_catalog','information_schema')",
+        "marker_sql": "select coalesce(shobj_description(oid, 'pg_database'), '') from pg_database where datname = current_database()",
+        "foreign_servers_sql": "select string_agg(srvname || '=' || coalesce(array_to_string(srvoptions, ','), ''), ', ') from pg_foreign_server",
+        "restore_ok_status": [0, 1]
+      }
+    },
+    "ready_log_pattern": "Started \\w+ in \\d",
+    "failed_log_pattern": "APPLICATION FAILED TO START|BeanCreationException",
+    "startup_timeout_s": 300,
+    "stub_ports": "25,80,443,8080,8443"
+  },
+  "collectors": [
+    {
+      "source": "springboot",
+      "method": "container_stdout",
+      "location": "evidence/<session_id>/containers/<pieza>.log (via `pepper collect`; una por pieza)",
+      "enable": "sin cambios en el artefacto: LOGGING_LEVEL_ORG_HIBERNATE_SQL=DEBUG y el perfil de configuración que el artefacto ya trae",
+      "parser": "parsers/springboot-app.json"
+    },
+    {
+      "source": "postgresql",
+      "method": "container_stdout",
+      "location": "evidence/<session_id>/containers/db.log (via `pepper collect`)",
+      "enable": "-c log_statement=all -c log_min_duration_statement=0 en el command del contenedor db, antes del arranque",
+      "parser": "parsers/postgresql-log.json"
+    }
+  ],
+  "validation": [
+    {
+      "check": "aislamiento verificado por el núcleo antes y después de levantar",
+      "command": "python3 -m pepper isolate <compose> --hosts <hosts externos del artefacto> --live"
+    },
+    {
+      "check": "cada pieza arrancó con su propio patrón: una validación por pieza en environment.json; si una no arranca, el entorno es FAILED"
+    },
+    {
+      "check": "el ingress responde por la pieza de entrada: GET / por 127.0.0.1:<puerto del ingress>"
+    },
+    {
+      "check": "las piezas se alcanzan entre sí por su alias de red y ninguna sale al stub durante el arranque"
+    }
+  ],
+  "notes": "Borrador redactado el 2026-09-22 a partir de la prueba con tres fat jars de Spring Boot y un dist de front (2026-09-15) y del levantamiento multi-componente del núcleo (D32). El reparto de papeles y el arranque por pieza se probaron con artefactos sintéticos; NO se ha levantado un sistema real de varias piezas. Para `validated` falta correr el ciclo completo contra uno."
+}

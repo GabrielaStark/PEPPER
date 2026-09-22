@@ -244,6 +244,8 @@ class Plan:
     dump_sha: str = ""
     shared_namespace: bool = False   # el app corre en la pila de red de la base (datasource a localhost)
     db_url: str = ""                 # la URL del datasource con que se levanta (la del artefacto, menos lo que el perfil quita)
+    components: List[Component] = field(default_factory=list)   # vacío = un solo desplegable (el camino de siempre)
+    entry_component: str = ""        # a qué pieza le habla el ingress; vacío = `app`
     deviations: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
 
@@ -274,7 +276,24 @@ class Plan:
             "files_root": self.files_root, "host_port": str(self.host_port),
             "db_alias": "[" + (self.db_alias or "") + "]", "gateway_ip": self.gateway_ip, "dump_sha": self.dump_sha,
             "db_owners": " ".join(self.create_roles), "db_url": self.db_url,
+            # A dónde apunta el ingress: con varias piezas, la puerta de entrada; con una, el app de siempre.
+            "entry_ip": self.entry_ip, "entry_port": str(self.entry_port),
+            "entry_component": self.entry_component or "app",
         }
+
+    @property
+    def _entry(self) -> Optional[Component]:
+        return next((c for c in self.components if c.name == self.entry_component), None)
+
+    @property
+    def entry_ip(self) -> str:
+        entry = self._entry
+        return entry.ip if entry else self.app_ip
+
+    @property
+    def entry_port(self) -> int:
+        entry = self._entry
+        return entry.port if entry else 8080
 
 
 def _under(path: Path, root: Path) -> bool:
@@ -301,7 +320,17 @@ class Component:
     ip: str
     port: int
     config_profile: str = ""
+    ready_log_pattern: str = ""   # el arranque de ESTA pieza; sin él, el de la receta
     notes: List[str] = field(default_factory=list)
+
+    def variables(self, artifact_path: str) -> Dict[str, str]:
+        """Las variables de esta pieza para el fragmento de compose del perfil."""
+        return {
+            "component_name": self.name, "component_role": self.role, "component_engine": self.engine,
+            "component_image": self.image, "component_ip": self.ip, "component_port": str(self.port),
+            "component_artifact_path": artifact_path, "component_artifact_name": self.artifact.name,
+            "component_config_profile": self.config_profile,
+        }
 
 
 def _member_names(artifact: Path) -> List[str]:
@@ -370,8 +399,33 @@ def classify_components(artifacts: List[Path], profile: Profile, subnet_base: st
         components.append(Component(
             name=re.sub(r"[^a-z0-9]+", "-", artifact.stem.split("-")[0].lower()).strip("-") or f"pieza{index}",
             artifact=artifact, role=rule.get("role", "backend"), engine=engine, image=image,
-            ip=f"{subnet_base}.{first_ip + index}", port=port, config_profile=profile_name))
+            ip=f"{subnet_base}.{first_ip + index}", port=port, config_profile=profile_name,
+            ready_log_pattern=rule.get("ready_log_pattern", "")))
     return components, sin_clasificar
+
+
+def ingress_component(components: List[Component], spec: Dict[str, Any]) -> Component:
+    """A qué pieza le habla el ingress: la que el perfil diga (`ingress_role`), o la puerta de
+    entrada natural — gateway, luego frontend, luego el único backend. Con varias candidatas y
+    sin `ingress_role`, BLOCKED: elegir la puerta sería adivinar por dónde entra la gente."""
+    wanted = spec.get("ingress_role")
+    if wanted:
+        matching = [c for c in components if c.role == wanted]
+        if not matching:
+            raise Blocked(f"el perfil declara ingress_role '{wanted}' y ninguna pieza tiene ese papel: "
+                          f"{', '.join(f'{c.name}={c.role}' for c in components)}")
+        if len(matching) > 1:
+            raise Blocked(f"varias piezas con el papel '{wanted}' ({', '.join(c.name for c in matching)}): "
+                          "el ingress solo puede apuntar a una")
+        return matching[0]
+    for role in ("gateway", "frontend", "backend"):
+        matching = [c for c in components if c.role == role]
+        if len(matching) == 1:
+            return matching[0]
+        if len(matching) > 1:
+            raise Blocked(f"varias piezas con el papel '{role}' ({', '.join(c.name for c in matching)}) y el perfil no "
+                          "declara `rehydrate.components.ingress_role`: por dónde entra la gente no se adivina")
+    raise Blocked("ninguna pieza puede ser la puerta de entrada del ingress (no hay gateway, frontend ni backend)")
 
 
 def find_all_inputs(legacy_dir: Path, artifact_suffixes: Optional[Tuple[str, ...]] = None,
@@ -641,27 +695,47 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
             "    Para seguir, una de dos: deja en legacy/ únicamente el desplegable a levantar "
             "(los demás no se mapean ni se levantan), o usa un perfil que declare `rehydrate.components` "
             "y sepa repartirlos en servicios.")
+    components: List[Component] = []
+    component_notes: List[str] = []
     if recipe.get("components"):
-        # El perfil sabe repartir los desplegables en piezas (classify_components), pero el
-        # resto del camino — compose por componente, arranque, validación, environment.json —
-        # todavía levanta UNA aplicación. Seguir con `artifacts[0]` sería observar un sistema
-        # incompleto sin decirlo (revisión 2026-09-21). Se clasifica, se dice qué hay, y se
-        # para: un `components` en el perfil termina en BLOCKED hasta que el levantamiento
-        # multi-componente exista de verdad. La única excepción honesta es un legacy de un
-        # solo desplegable que la clasificación reconoce como backend: ese sí es una app.
-        subnet_hint = "10.100.0"
+        # El perfil reparte los desplegables en piezas y, si declara `service_template`, el núcleo
+        # fabrica un servicio por pieza y espera a cada una. Sin esa plantilla solo sabe clasificar:
+        # seguir con `artifacts[0]` sería observar un sistema incompleto sin decirlo (D27) → BLOCKED.
+        spec: Dict[str, Any] = recipe["components"]
+        subnet_hint = (recipe.get("database") or {}).get("subnet_hint") or "10.100.0"
         components, sin_clasificar = classify_components(artifacts, profile, subnet_hint)
         lista = "\n".join(
             f"      · {c.artifact.name}  → {c.role} ({c.engine}, puerto {c.port})" for c in components)
         if sin_clasificar:
             lista += ("\n" if lista else "") + "\n".join(f"      · {name}  → sin clasificar" for name in sin_clasificar)
         solo_backend = len(artifacts) == 1 and len(components) == 1 and components[0].role == "backend"
-        if not solo_backend:
+        if sin_clasificar:
+            raise Blocked(
+                f"el perfil {profile.id} no reconoce {len(sin_clasificar)} de los {len(artifacts)} desplegables:\n{lista}\n"
+                "    Una pieza sin papel no se levanta ni se declara: agrega su regla a "
+                "`rehydrate.components.classify` o sácala de legacy/ si no es parte del sistema.")
+        if not spec.get("service_template") and not solo_backend:
             raise Blocked(
                 f"el perfil {profile.id} declara `rehydrate.components` y reparte así los {len(artifacts)} desplegable(s):\n{lista}\n"
-                "    PEPPER todavía levanta una sola aplicación: no hay compose, arranque ni validación por "
-                "componente, y seguir con uno solo sería observar un sistema incompleto sin decirlo. "
-                "Para seguir hoy: deja en legacy/ únicamente el backend a levantar con un perfil sin `components`.")
+                "    Pero no declara `rehydrate.components.service_template`: sabe clasificar, no levantar. "
+                "Agrega esa plantilla al perfil, o deja en legacy/ únicamente el backend a levantar.")
+        if solo_backend:
+            components = []   # un solo desplegable que es la app: el camino de siempre
+        else:
+            datasource_role = spec.get("datasource_role", "backend")
+            carriers = [c for c in components if c.role == datasource_role]
+            if not carriers:
+                raise Blocked(f"ninguna pieza tiene el papel '{datasource_role}' del que leer el datasource:\n{lista}\n"
+                              "    Declara `rehydrate.components.datasource_role` con el papel que habla con la base.")
+            if len(carriers) > 1:
+                raise Blocked(f"varias piezas con el papel '{datasource_role}' ({', '.join(c.name for c in carriers)}): "
+                              "no se sabe de cuál leer el datasource ni cuál base es la del sistema. "
+                              "Hoy PEPPER fabrica una sola base por entorno.")
+            artifact = carriers[0].artifact   # de esta pieza sale el datasource, y con él la base
+            entry = ingress_component(components, spec)
+            component_notes.append(
+                f"sistema de {len(components)} piezas: " + ", ".join(f"{c.name} ({c.role})" for c in components)
+                + f"; el ingress entra por `{entry.name}` y el datasource sale de `{carriers[0].name}`")
     if not database.get("engine"):
         raise Blocked(f"el perfil {profile.id} no declara `rehydrate.database` (motor, respaldo, imagen, sonda): "
                       "sin eso el núcleo no sabe qué base fabricar")
@@ -682,7 +756,7 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
     # el ambiente original tuvo que resolverlo con configuración externa que no está en legacy/.
     url, stripped = strip_url_params(url, (recipe.get("datasource") or {}).get("url_strip_params") or [])
     deviations += stripped
-    notes: List[str] = list(human_choices)
+    notes: List[str] = list(human_choices) + component_notes
     if "${" in db_password:
         raise Blocked(f"la contraseña del datasource es una referencia sin resolver ({db_password!r}): "
                       "el artefacto espera una variable de entorno que no trae; consíguela")
@@ -750,8 +824,18 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
         deviations.append(f"el respaldo lo generó {facts.tool} {facts.tool_version}; se restaura con {db_tool_image} "
                           f"contra el motor {db_image}")
 
-    server, server_image, server_deviations = _choose_server(artifact, profile, notes_text)
-    deviations += server_deviations
+    if components:
+        # Con varias piezas no hay UN servidor de aplicaciones: cada pieza trae el suyo (un fat jar
+        # lleva su Tomcat adentro, un dist lo sirve httpd) y su imagen sale de `classify`/`server_images`.
+        # Pedir un descriptor o una línea de NOTAS.md aquí bloquearía un sistema que no tiene ese problema.
+        carrier = next(c for c in components if c.artifact == artifact)
+        server, server_image = carrier.engine, carrier.image
+        if not server_image:
+            raise Blocked(f"la pieza `{carrier.name}` no tiene imagen: el perfil {profile.id} no declara "
+                          f"`image` en su regla ni `server_images.{carrier.engine}`")
+    else:
+        server, server_image, server_deviations = _choose_server(artifact, profile, notes_text)
+        deviations += server_deviations
 
     external: List[str] = []
     by_ip: List[str] = []
@@ -807,7 +891,9 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
                 stub_ports=stub_ports, app_package_env=app_package_env, files_root=files_root,
                 create_roles=[o for o in facts.owners if o != db_user], host_port=host_port,
                 db_alias=db_alias, gateway_ip=gateway_ip, dump_sha=dump_sha, shared_namespace=shared_namespace,
-                db_url=url, deviations=deviations, notes=notes)
+                db_url=url, components=components,
+                entry_component=(ingress_component(components, recipe["components"]).name if components else ""),
+                deviations=deviations, notes=notes)
 
 
 def _sha256(path: Path) -> str:
@@ -933,10 +1019,51 @@ def env_line(name: str, value: str) -> str:
 
 # --------------------------------------------------------------- render
 
+def render_components(plan: Plan, profile: Profile, out_dir: Path, variables: Dict[str, str]) -> str:
+    """El fragmento de compose del perfil, renderizado una vez por pieza y concatenado.
+
+    Así un sistema de varios desplegables se levanta sin que el núcleo sepa qué es un gateway:
+    el perfil escribe el servicio una vez y el núcleo lo repite con las variables de cada pieza."""
+    spec: Dict[str, Any] = (profile.data.get("rehydrate", {}).get("components") or {})
+    declared = spec.get("service_template")
+    if not declared or not plan.components:
+        return ""
+    rendered: List[str] = []
+    for component in plan.components:
+        # Una plantilla para todas, o una por motor: un front estático y un fat jar no se levantan igual.
+        if isinstance(declared, str):
+            template_name = declared
+        else:
+            template_name = declared.get(component.engine) or declared.get("*", "")
+            if not template_name:
+                raise Blocked(f"el perfil {profile.id} no declara plantilla de servicio para el motor "
+                              f"'{component.engine}' de la pieza `{component.name}` "
+                              f"(rehydrate.components.service_template: {', '.join(sorted(declared))})")
+        text = (profile.dir / template_name).read_text(encoding="utf-8")
+        values = dict(variables)
+        values.update(component.variables(str(_relative_to(component.artifact, out_dir))))
+        missing = sorted(set(re.findall(r"\{\{(\w+)\}\}", text)) - set(values))
+        if missing:
+            raise Blocked(f"la plantilla {template_name} pide variables que el plan no tiene: {', '.join(missing)}")
+        piece = text
+        for name, value in values.items():
+            piece = piece.replace("{{" + name + "}}", value)
+        rendered.append(piece.rstrip() + "\n")
+    return "\n".join(rendered)
+
+
+def _relative_to(path: Path, out_dir: Path) -> Path:
+    """La ruta del artefacto tal como la ve el compose (relativa si ambos viven bajo el repo)."""
+    if _under(path, REPO_ROOT) and _under(out_dir, REPO_ROOT):
+        return Path(*([".."] * len(out_dir.resolve().relative_to(REPO_ROOT).parts))) / path.resolve().relative_to(REPO_ROOT)
+    return path.resolve()
+
+
 def render(plan: Plan, profile: Profile, out_dir: Path) -> List[Path]:
     recipe = profile.data.get("rehydrate", {})
     out_dir.mkdir(parents=True, exist_ok=True)
     variables = plan.variables(out_dir)
+    variables["components"] = render_components(plan, profile, out_dir, variables)
     written: List[Path] = []
     for key, target in (("compose_template", "docker-compose.yml"), ("restore_template", "restore.sh")):
         template_name = recipe.get(key)
@@ -1134,38 +1261,53 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
         if foreign:
             validations.append({"check": "servidores foráneos re-apuntados al stub", "result": "pass" if all(plan.stub_ip in f for f in foreign.split(", ")) else "fail", "detail": foreign})
 
-    log("  levantando app e ingress…")
+    # Con varias piezas, los servicios son las piezas; con una, el `app` de siempre.
+    services = [c.name for c in plan.components] or ["app"]
+    log(f"  levantando {', '.join(services)} e ingress…")
     since = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-    up = _compose(out_dir, "up", "-d", "--pull", "never", "--force-recreate", "app", "ingress")
+    up = _compose(out_dir, "up", "-d", "--pull", "never", "--force-recreate", *services, "ingress")
     if up.returncode != 0:
-        return "FAILED", validations + [{"check": "docker compose up app ingress", "result": "fail", "detail": up.stderr[-400:]}], missing
+        return "FAILED", validations + [{"check": f"docker compose up {' '.join(services)} ingress", "result": "fail",
+                                         "detail": up.stderr[-400:]}], missing
     # Lo demás que el compose declare sin `profiles:` (sidecars como el que saca el general log de
     # MySQL por stdout): el núcleo no sabe qué son, pero sin ellos `pepper collect` no ve su evidencia.
     rest = _compose(out_dir, "up", "-d", "--pull", "never")
     if rest.returncode != 0:
         return "FAILED", validations + [{"check": "docker compose up (servicios auxiliares)", "result": "fail", "detail": rest.stderr[-400:]}], missing
     recipe = profile.data.get("rehydrate", {})
-    ready_re = re.compile(recipe.get("ready_log_pattern") or "Started|started")
+    default_ready = recipe.get("ready_log_pattern") or "Started|started"
     failed_re = re.compile(recipe["failed_log_pattern"]) if recipe.get("failed_log_pattern") else None
     wait_s = max(wait_s, int(recipe.get("startup_timeout_s") or 0))   # un Grails con Liquibase tarda minutos
+    # Cada pieza arranca con su propio patrón (un front estático no dice "Started"): una validación
+    # por pieza, y basta que una no arranque para que el entorno no esté bueno. Las piezas se esperan
+    # en paralelo —ya están todas levantadas— así que el tope de tiempo es el del entorno, no por pieza.
+    waiting = [(c.name, re.compile(c.ready_log_pattern or default_ready)) for c in plan.components] \
+        or [("app", re.compile(default_ready))]
     started = time.time()
-    ready, failed_hit = False, None
-    while time.time() - started < wait_s:
-        logs = subprocess.run(["docker", "compose", "-f", str(compose_path), "logs", "--no-log-prefix", "--since", since, "app"],
-                              capture_output=True, text=True).stdout
-        if failed_re and failed_re.search(logs):
-            failed_hit = failed_re.search(logs).group(0)
-            break
-        if ready_re.search(logs):
-            ready = True
-            break
-        time.sleep(5)
-    validations.append({"check": "el servidor de aplicaciones arrancó", "result": "pass" if ready else "fail",
-                        "detail": f"patrón {ready_re.pattern!r} en {int(time.time() - started)} s" if ready
-                        else f"el despliegue falló ({failed_hit}) en {int(time.time() - started)} s" if failed_hit
-                        else f"sin señal de arranque en {wait_s} s"})
-    if not ready:
+    pending = dict(waiting)
+    results: Dict[str, str] = {}
+    logs_by_service: Dict[str, str] = {}
+    while pending and time.time() - started < wait_s:
+        for service, pattern in list(pending.items()):
+            logs = subprocess.run(["docker", "compose", "-f", str(compose_path), "logs", "--no-log-prefix",
+                                   "--since", since, service], capture_output=True, text=True).stdout
+            logs_by_service[service] = logs
+            if failed_re and failed_re.search(logs):
+                results[service] = f"el despliegue falló ({failed_re.search(logs).group(0)})"
+                pending.pop(service)
+            elif pattern.search(logs):
+                results[service] = f"patrón {pattern.pattern!r} en {int(time.time() - started)} s"
+                pending.pop(service)
+        if pending:
+            time.sleep(5)
+    for service, pattern in waiting:
+        ok = service in results and results[service].startswith("patrón")
+        label = "el servidor de aplicaciones arrancó" if len(waiting) == 1 else f"la pieza `{service}` arrancó"
+        validations.append({"check": label, "result": "pass" if ok else "fail",
+                            "detail": results.get(service) or f"sin señal de arranque en {wait_s} s"})
+    if any(v["result"] == "fail" for v in validations[-len(waiting):]):
         return "FAILED", validations, missing
+    logs = "\n".join(logs_by_service.values())
     errors = len(re.findall(r"\bERROR\b", logs))
     validations.append({"check": "sin líneas ERROR en el arranque", "result": "pass" if errors == 0 else "fail", "detail": f"{errors} líneas ERROR"})
 
@@ -1203,6 +1345,12 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
     return ("FAILED" if failed else "PARTIAL" if missing else "READY"), validations, missing
 
 
+# Los papeles que el perfil da a las piezas (gateway, discovery, worker…) se dicen en el vocabulario
+# del contrato de environment.json; el papel original se conserva junto al motor para no perderlo.
+_ENV_ROLES = {"backend": "backend", "frontend": "frontend", "gateway": "proxy",
+              "discovery": "other", "worker": "other"}
+
+
 def write_environment(plan: Plan, profile: Profile, status: str, validations: List[Dict[str, str]],
                       missing: List[Dict[str, str]], docs_dir: Path, out_dir: Path) -> Tuple[Path, Path]:
     docs_dir.mkdir(parents=True, exist_ok=True)
@@ -1215,10 +1363,17 @@ def write_environment(plan: Plan, profile: Profile, status: str, validations: Li
             {"name": "db", "role": "database", "engine": plan.db_engine, "version": plan.db_version,
              "container_image": plan.db_image, "endpoint": f"{plan.db_ip}:{plan.db_port}/{plan.db_name}",
              "status": "running" if status in ("READY", "PARTIAL") else "unknown", "data_restored": status in ("READY", "PARTIAL")},
-            {"name": "app", "role": "backend", "engine": plan.server, "artifact": plan.artifact.name,
-             "container_image": plan.server_image,
-             "endpoint": f"{plan.app_ip}:8080" + (" (en la pila de red de db)" if plan.shared_namespace else ""),
-             "status": "running" if status in ("READY", "PARTIAL") else "unknown"},
+            *([{"name": "app", "role": "backend", "engine": plan.server, "artifact": plan.artifact.name,
+                "container_image": plan.server_image,
+                "endpoint": f"{plan.app_ip}:8080" + (" (en la pila de red de db)" if plan.shared_namespace else ""),
+                "status": "running" if status in ("READY", "PARTIAL") else "unknown"}]
+              if not plan.components else
+              # Un sistema de varias piezas se declara pieza por pieza: un environment.json que dijera
+              # "app" escondería que el legado son cuatro servicios.
+              [{"name": c.name, "role": _ENV_ROLES.get(c.role, "other"), "engine": f"{c.engine} ({c.role})",
+                "artifact": c.artifact.name, "container_image": c.image,
+                "endpoint": f"{c.ip}:{c.port}" + (" ← ingress" if c.name == plan.entry_component else ""),
+                "status": "running" if status in ("READY", "PARTIAL") else "unknown"} for c in plan.components]),
             {"name": "ingress", "role": "proxy", "engine": "pepper-proxy", "container_image": "python:3-alpine",
              "endpoint": f"http://127.0.0.1:{plan.host_port}", "status": "running" if status in ("READY", "PARTIAL") else "unknown"},
             {"name": "stub", "role": "external", "engine": "pepper-stub", "container_image": "python:3-alpine",

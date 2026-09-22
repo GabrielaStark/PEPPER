@@ -1,0 +1,17 @@
+  # Una pieza ESTÁTICA: un dist de front (Angular, React, Vue) servido tal cual por httpd.
+  # No se compila ni se toca: el dist original se monta en solo lectura.
+  {{component_name}}:
+    image: {{component_image}}
+    platform: ${PEPPER_PLATFORM}
+    dns: [{{dns_sink}}]                     # sumidero: lo que no sea alias muere dentro de la red
+    depends_on:
+      stub:
+        condition: service_started
+    networks:
+      legacy:
+        ipv4_address: {{component_ip}}
+        aliases: [{{component_name}}]
+    volumes:
+      # El dist ORIGINAL. httpd sirve el contenido del archivo montado; el front pega a sus
+      # compañeras por el alias de red de cada pieza, no por un host de producción.
+      - {{component_artifact_path}}:/usr/local/apache2/htdocs/{{component_artifact_name}}:ro

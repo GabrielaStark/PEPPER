@@ -539,12 +539,13 @@ class AuditoriaRehydrateTest(unittest.TestCase):
 
 
 class ComponentsTerminanEnBlockedTest(unittest.TestCase):
-    """`classify_components` existe, pero el resto del camino levanta UNA aplicación.
+    """Clasificar no es levantar: sin `service_template`, `components` termina en BLOCKED.
 
     Un perfil con `rehydrate.components` dejaba de bloquear y `make_plan` seguía con
     `artifacts[0]`: PEPPER observaba un sistema incompleto sin decirlo (revisión 2026-09-21).
-    Hasta que exista compose, arranque y validación por componente, `components` termina en
-    BLOCKED diciendo qué hay — salvo un solo desplegable que la clasificación reconoce como backend.
+    Desde 2026-09-22 el núcleo sí levanta varias piezas, pero solo si el perfil declara el
+    fragmento de compose por pieza; un perfil que solo sabe clasificar sigue bloqueando, y
+    la excepción sigue siendo un solo desplegable reconocido como backend.
     """
 
     RECETA = dict(ComponentesTest.RECETA, artifact_suffixes=[".jar", ".zip"])
@@ -573,7 +574,7 @@ class ComponentsTerminanEnBlockedTest(unittest.TestCase):
         with self.assertRaises(Blocked) as caught:
             make_plan(self.legacy, _profile(self.RECETA))
         mensaje = str(caught.exception)
-        self.assertIn("una sola aplicación", mensaje)
+        self.assertIn("service_template", mensaje)
         for pieza in ("puerta-1.0.jar", "gateway", "recursos-1.0.jar", "backend", "front.zip", "frontend"):
             self.assertIn(pieza, mensaje, "el bloqueo nombra cada componente y su papel")
 
@@ -593,7 +594,7 @@ class ComponentsTerminanEnBlockedTest(unittest.TestCase):
         with self.assertRaises(Blocked) as caught:
             make_plan(self.legacy, _profile(self.RECETA))
         self.assertIn("frontend", str(caught.exception))
-        self.assertIn("una sola aplicación", str(caught.exception))
+        self.assertIn("service_template", str(caught.exception))
 
     def test_un_solo_backend_sigue_su_camino(self):
         from pepper.rehydrate import Blocked, make_plan
@@ -680,3 +681,141 @@ class ConfiguracionExternaTest(unittest.TestCase):
         data["rehydrate"]["extra_templates"][0]["target"] = "../fuera.properties"
         with self.assertRaisesRegex(Blocked, "junto al compose"):
             render(plan, Profile(id=PROFILE.id, dir=pdir, data=data), self.root / "out2")
+
+
+class LevantarVariasPiezasTest(unittest.TestCase):
+    """Un sistema de varios desplegables se levanta como varios servicios (D32).
+
+    Hermético: fat jars y un dist sintéticos, un respaldo escrito por el test, y el perfil real
+    `java-springboot-fatjar-postgres` con sus plantillas. Sin Docker.
+    """
+
+    PROFILE = load_profile("java-springboot-fatjar-postgres")
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.legacy = self.root / "legacy"; self.legacy.mkdir()
+        write_custom_dump(self.legacy / "respaldo.dump", TABLES)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _jar(self, name, config):
+        with zipfile.ZipFile(self.legacy / name, "w") as z:
+            z.writestr("BOOT-INF/lib/spring-core.jar", "x")
+            z.writestr("BOOT-INF/classes/application.yml", config)
+
+    def _front(self, name):
+        with zipfile.ZipFile(self.legacy / name, "w") as z:
+            z.writestr("dist/index.html", "<html></html>")
+
+    DATASOURCE = ("server:\n  port: 8099\nspring:\n  datasource:\n"
+                  "    url: jdbc:postgresql://10.100.0.2:5432/nominas_prod\n    username: nominas\n    password: s3cr3t\n")
+
+    def _sistema(self):
+        self._jar("descubrimiento-1.0.jar", "server:\n  port: 8097\neureka:\n  server:\n    enabled: true\n")
+        self._jar("puerta-1.0.jar", "server:\n  port: 8098\nspring:\n  cloud.gateway:\n    enabled: true\n")
+        self._jar("recursos-1.0.jar", self.DATASOURCE)
+        self._front("front.zip")
+
+    def test_el_plan_reparte_las_piezas_y_el_datasource_sale_del_backend(self):
+        self._sistema()
+        plan = make_plan(self.legacy, self.PROFILE)
+        papeles = {c.name: (c.role, c.engine, c.port) for c in plan.components}
+        self.assertEqual(papeles["descubrimiento"], ("discovery", "java", 8097))
+        self.assertEqual(papeles["puerta"], ("gateway", "java", 8098))
+        self.assertEqual(papeles["recursos"], ("backend", "java", 8099))
+        self.assertEqual(papeles["front"], ("frontend", "static", 80))
+        # la base sale de la pieza backend, no del primer artefacto por orden alfabético
+        self.assertEqual((plan.db_name, plan.db_user, plan.db_ip), ("nominas_prod", "nominas", "10.100.0.2"))
+        self.assertEqual(plan.artifact.name, "recursos-1.0.jar")
+        # el ingress entra por la puerta de enlace (ingress_role del perfil)
+        self.assertEqual((plan.entry_component, plan.entry_ip, plan.entry_port), ("puerta", papeles_ip(plan, "puerta"), 8098))
+        self.assertTrue(any("4 piezas" in n and "entra por `puerta`" in n for n in plan.notes), plan.notes)
+        # cada pieza tiene su IP, distinta de la de la base y de las demás
+        ips = [c.ip for c in plan.components]
+        self.assertEqual(len(set(ips)), 4)
+        self.assertNotIn(plan.db_ip, ips)
+
+    def test_el_compose_trae_un_servicio_por_pieza_y_el_ingress_apunta_a_la_puerta(self):
+        import re
+        self._sistema()
+        plan = make_plan(self.legacy, self.PROFILE)
+        out = self.root / "rehydrate"
+        render(plan, self.PROFILE, out)
+        compose = (out / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertEqual(re.findall(r"\{\{\w+\}\}", compose), [], "toda variable sustituida, también en las piezas")
+        for name in ("descubrimiento", "puerta", "recursos", "front"):
+            self.assertIn(f"\n  {name}:\n", compose, f"falta el servicio de `{name}`")
+            self.assertIn(f"aliases: [{name}]", compose, f"`{name}` debe ser alcanzable por su nombre")
+        # cada motor usa su plantilla: el front va con httpd y sin SPRING_PROFILES_ACTIVE
+        self.assertIn("image: httpd:2.4-alpine", compose)
+        self.assertEqual(compose.count("SPRING_PROFILES_ACTIVE"), 3, "solo las piezas java")
+        self.assertIn("htdocs/front.zip:ro", compose)
+        # el ingress entra por la puerta, no por el backend
+        self.assertRegex(compose, r'--upstream", "10\.100\.0\.\d+:8098"')
+        self.assertNotIn(":8099\"]", compose)
+
+    def test_el_compose_de_varias_piezas_sigue_aislado(self):
+        self._sistema()
+        plan = make_plan(self.legacy, self.PROFILE)
+        out = self.root / "rehydrate"
+        render(plan, self.PROFILE, out)
+        try:
+            from pepper.isolate import check_static, resolve_compose
+            compose_dict, resolved = resolve_compose(out / "docker-compose.yml")
+        except RuntimeError:
+            self.skipTest("sin docker compose ni pyyaml para resolver el compose")
+        report = check_static(compose_dict, plan.external_hosts, "ingress", resolved=resolved, compose_dir=out)
+        self.assertNotEqual(report.verdict, "FAILED", [f.check for f in report.errors])
+
+    def test_environment_json_declara_cada_pieza_y_valida(self):
+        self._sistema()
+        plan = make_plan(self.legacy, self.PROFILE)
+        out = self.root / "rehydrate"; render(plan, self.PROFILE, out)
+        env_path, _ = write_environment(plan, self.PROFILE, "READY", [], [], self.root / "docs", out)
+        env = json.loads(env_path.read_text(encoding="utf-8"))
+        nombres = [c["name"] for c in env["components"]]
+        for name in ("descubrimiento", "puerta", "recursos", "front", "db", "ingress", "stub"):
+            self.assertIn(name, nombres)
+        self.assertNotIn("app", nombres, "con varias piezas no hay un servicio llamado `app`")
+        puerta = next(c for c in env["components"] if c["name"] == "puerta")
+        self.assertEqual(puerta["role"], "proxy", "el papel se dice en el vocabulario del contrato")
+        self.assertIn("gateway", puerta["engine"], "y el papel original no se pierde")
+        self.assertIn("← ingress", puerta["endpoint"])
+        problemas = validate_file(env_path, "environment")
+        self.assertEqual(problemas, [], problemas)
+
+    def test_una_pieza_sin_papel_detiene_el_plan(self):
+        self._sistema()
+        (self.legacy / "misterio.zip").write_bytes(b"PK\x05\x06" + b"\x00" * 18)
+        with self.assertRaisesRegex(Blocked, "no reconoce 1 de los 5"):
+            make_plan(self.legacy, self.PROFILE)
+
+    def test_dos_backends_no_se_adivinan(self):
+        self._sistema()
+        self._jar("otro-1.0.jar", self.DATASOURCE.replace("nominas_prod", "otra_base"))
+        with self.assertRaisesRegex(Blocked, "varias piezas con el papel 'backend'"):
+            make_plan(self.legacy, self.PROFILE)
+
+    def test_sin_la_pieza_que_habla_con_la_base_se_detiene(self):
+        self._jar("puerta-1.0.jar", "server:\n  port: 8098\nspring:\n  cloud.gateway:\n    enabled: true\n")
+        self._front("front.zip")
+        with self.assertRaisesRegex(Blocked, "ninguna pieza tiene el papel 'backend'"):
+            make_plan(self.legacy, self.PROFILE)
+
+    def test_la_puerta_de_entrada_no_se_adivina_cuando_hay_varias(self):
+        from pepper.rehydrate import Component, ingress_component
+        piezas = [Component(name=n, artifact=Path(f"{n}.jar"), role=r, engine="java", image="i",
+                            ip=f"10.100.0.1{i}", port=8080 + i)
+                  for i, (n, r) in enumerate([("a", "frontend"), ("b", "frontend"), ("c", "backend")])]
+        with self.assertRaisesRegex(Blocked, "varias piezas con el papel 'frontend'"):
+            ingress_component(piezas, {})
+        self.assertEqual(ingress_component(piezas, {"ingress_role": "backend"}).name, "c")
+        with self.assertRaisesRegex(Blocked, "ingress_role 'gateway'"):
+            ingress_component(piezas, {"ingress_role": "gateway"})
+
+
+def papeles_ip(plan, name):
+    return next(c.ip for c in plan.components if c.name == name)

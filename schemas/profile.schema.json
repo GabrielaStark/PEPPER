@@ -224,7 +224,7 @@
         "components": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Cómo repartir varios desplegables en servicios (classify_components). Sin esto, un legacy con más de un desplegable es BLOCKED: levantar uno y callar los otros produciría un ambiente a medias. Con esto, hoy también termina en BLOCKED —listando cada pieza con su papel— porque el levantamiento por componente (compose, arranque, validación, environment.json) aún no existe; la única excepción es un solo desplegable clasificado como backend (D27, corrección 2026-09-21).",
+          "description": "Cómo repartir varios desplegables en servicios y levantarlos. Sin esto, un legacy con más de un desplegable es BLOCKED: levantar uno y callar los otros produciría un ambiente a medias (D27). Con `classify` el perfil dice qué papel juega cada pieza; con `service_template` el núcleo además fabrica un servicio por pieza y espera a cada una. Sin `service_template` sigue siendo BLOCKED: clasificar no es levantar.",
           "required": [
             "classify"
           ],
@@ -283,13 +283,37 @@
                         "description": "Regex contra el nombre del archivo."
                       }
                     }
+                  },
+                  "ready_log_pattern": {
+                    "type": "string",
+                    "description": "Patrón de arranque de ESTA pieza en su log; si se omite, el `ready_log_pattern` global de la receta."
                   }
                 }
               }
             },
             "ingress_role": {
               "type": "string",
-              "description": "Papel al que apunta el ingress (p. ej. 'gateway'); si se omite, el único backend."
+              "description": "Papel al que apunta el ingress (p. ej. 'gateway'); si se omite, se prefiere gateway, luego frontend, luego el único backend."
+            },
+            "service_template": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "minProperties": 1,
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Una plantilla por motor (java, static, node…); la clave '*' sirve de comodín."
+                }
+              ],
+              "description": "Fragmento de compose que se renderiza UNA VEZ POR COMPONENTE y se inserta donde el compose principal diga {{components}}. Un string lo usa para todas las piezas; un objeto elige por `engine` (un front estático y un fat jar no se levantan igual). Recibe las variables del plan más las de la pieza: component_name, component_role, component_engine, component_image, component_ip, component_port, component_artifact_path, component_artifact_name, component_config_profile."
+            },
+            "datasource_role": {
+              "type": "string",
+              "description": "Papel de la pieza que habla con la base y de la que se lee el datasource (default: backend). Si hay varias, BLOCKED."
             }
           }
         },

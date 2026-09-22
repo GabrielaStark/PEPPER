@@ -263,7 +263,14 @@ def _cmd_rehydrate(args: argparse.Namespace) -> int:
         return 1
     print(f"rehydrate · plan · {plan.artifact.name} + {plan.dump.name} · perfil de configuración '{plan.spring_profile}'")
     print(f"  base: {plan.db_engine} {plan.db_version} ({plan.db_image}) en {plan.db_ip}:{plan.db_port}/{plan.db_name} (usuario {plan.db_user}); restaura con {plan.db_tool_image}")
-    print(f"  app: {plan.server} → {plan.server_image} en {plan.app_ip}; ingress en http://127.0.0.1:{plan.host_port}")
+    if plan.components:
+        print(f"  {len(plan.components)} piezas; el ingress entra por `{plan.entry_component}` en http://127.0.0.1:{plan.host_port}")
+        for c in plan.components:
+            entrada = "  ← ingress" if c.name == plan.entry_component else ""
+            fuente = "  ← datasource" if c.artifact == plan.artifact else ""
+            print(f"      · {c.name}: {c.role} ({c.engine} → {c.image}) en {c.ip}:{c.port}{entrada}{fuente}")
+    else:
+        print(f"  app: {plan.server} → {plan.server_image} en {plan.app_ip}; ingress en http://127.0.0.1:{plan.host_port}")
     print(f"  externos al stub ({plan.stub_ip}): {', '.join(plan.external_hosts) or 'ninguno'}; puertos {plan.stub_ports}")
     if plan.external_by_ip:
         print(f"  por IP directa (sin registro): {', '.join(plan.external_by_ip)}")

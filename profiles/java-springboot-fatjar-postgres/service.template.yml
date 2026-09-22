@@ -1,0 +1,29 @@
+  # Una pieza del sistema. Rehydrate renderiza este fragmento UNA VEZ POR COMPONENTE
+  # (rehydrate.components.service_template) con las variables de la pieza, y lo inserta
+  # donde el compose principal declara el bloque de piezas. El núcleo no sabe qué es un gateway:
+  # reparte los papeles con `classify` y repite este bloque.
+  {{component_name}}:
+    image: {{component_image}}
+    platform: ${PEPPER_PLATFORM}
+    dns: [{{dns_sink}}]                     # sumidero: lo que no sea alias muere dentro de la red
+    depends_on:
+      db:
+        condition: service_healthy
+      stub:
+        condition: service_started
+    environment:
+      # El fat jar lee su configuración embebida; el perfil de configuración lo dicta el artefacto.
+      SPRING_PROFILES_ACTIVE: {{component_config_profile}}
+      SERVER_PORT: "{{component_port}}"
+      LOGGING_LEVEL_ORG_HIBERNATE_SQL: DEBUG
+      # Cada pieza encuentra a sus compañeras por el alias de su servicio en la red interna.
+      JAVA_TOOL_OPTIONS: "-Dserver.address=0.0.0.0"
+    # El fat jar se ejecuta TAL CUAL, sin desempacarlo ni recompilarlo.
+    command: ["java", "-jar", "/opt/app/{{component_artifact_name}}"]
+    networks:
+      legacy:
+        ipv4_address: {{component_ip}}
+        aliases: [{{component_name}}]
+    volumes:
+      - {{component_artifact_path}}:/opt/app/{{component_artifact_name}}:ro   # el artefacto ORIGINAL, sin modificar
+      - app-files:{{files_root}}

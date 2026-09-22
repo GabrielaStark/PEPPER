@@ -91,7 +91,8 @@ El juguete esconde tres cosas: una regla no documentada, una mentira en el manua
 | Perfil `java-springboot-jsf-postgres` | `draft`; corrió el pipeline entero contra un legacy real (mapa, levantar, explorar, descubrir). Un perfil `draft` corre igual: `environment.json` y `funcional.md` lo declaran; lo promueve a `validated` una persona tras verlo correr |
 | Perfil `java-wildfly-postgres` | `draft`; parsers |
 | Perfil `groovy-grails1-tomcat-mysql` | **`validated`** (2026-09-22): el primer stack sin PostgreSQL y el primero promovido. Corrió el ciclo completo contra un legacy real con su respaldo de producción — mapa (1162 rutas, 431 pantallas, 127 tablas), levantado aislado, recorrido con dos roles, discovery y `funcional.md`— y la persona responsable confirmó que el documento describe su sistema |
-| Pendientes | multicomponente (varios desplegables terminan en `BLOCKED` con la lista de piezas); CI con un E2E de Docker (hoy corre la suite, la demo sintética y la prueba hermética del navegador contra el ingress); un perfil no-JVM; promover los otros dos perfiles |
+| Perfil `java-springboot-fatjar-postgres` | `draft`; el primero de **varias piezas**: un servicio por desplegable, cada uno con su patrón de arranque y su validación. Probado con artefactos sintéticos y Docker real, **nunca contra un sistema real de microservicios** |
+| Pendientes | CI con un E2E de Docker (hoy corre la suite, la demo sintética y la prueba hermética del navegador contra el ingress); `pepper map` toma un artefacto a la vez, así que un sistema de varias piezas mapea solo la que habla con la base; una base por servicio no tiene camino; un perfil no-JVM |
 
 ## Stack y requisitos
 
