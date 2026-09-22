@@ -36,7 +36,8 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 DEFAULT_TIMEOUT_MS = 15000
 SETTLE_MS = 1200          # PrimeFaces manda ajax tras cada cambio; se espera a que calme
@@ -162,17 +163,25 @@ class Explorer:
         # Aquí sí se puede cerrar del todo: toda petición que no vaya al ingress se aborta y
         # queda registrada; toda ventana nueva se cierra (auditoría 2026-09-11).
         base = self.base
+        # El ingress es el ORIGEN (esquema, host y puerto), no la ruta base: con un contexto
+        # (`…:18080/openboxes`) los reportes CSP del navegador a `/__pepper/csp-report` se abortaban
+        # aquí y la evidencia de lo que la página intentó cargar de fuera se perdía (prueba real 2026-09-22).
+        parts = urlsplit(base)
+        origin = f"{parts.scheme}://{parts.netloc}"
         def only_ingress(route):
             url = route.request.url
-            if url.startswith(base + "/") or url == base or url.startswith(("data:", "blob:", "about:")):
+            if url.startswith(origin + "/") or url == origin or url == base or url.startswith(("data:", "blob:", "about:")):
                 route.continue_()
             else:
                 self._write(Action(role="*", route="", kind="blocked", label=url[:160], started=_now(), result="rejected",
                                    detail={"blocked_uri": url[:300], "why": "fuera del ingress"}))
                 route.abort("blockedbyclient")
         context.route("**/*", only_ingress)
-        context.on("page", lambda popup: popup.close() if popup != self._page else None)
+        # La página principal se crea ANTES de registrar el cierre de popups: el evento "page" de la
+        # propia página llegaba con `_page` aún sin asignar y la cerraba ("Target page, context or
+        # browser has been closed" en el primer goto; prueba real 2026-09-22, máquina cargada).
         self._page = context.new_page()
+        context.on("page", lambda popup: popup.close() if popup != self._page else None)
         self._page.on("dialog", lambda d: d.accept())
         self.ready: Optional[List[str]] = None
         self.deadline: Optional[float] = None
@@ -294,7 +303,12 @@ class Explorer:
 
         def psql(sql: str) -> "subprocess.CompletedProcess[str]":
             values = {"db_user": creds.get("db_user", "postgres"), "db_name": creds["db_name"],
-                      "db_password": creds.get("db_password", ""), "sql": quiet + sql}
+                      "db_password": creds.get("db_password", "")}
+            # los marcadores también dentro del SQL (`UPDATE {db_name}.user …`): un cliente como
+            # `mysql -e` no selecciona base, y `.format` no entra en el valor de `{sql}`
+            for key, value in values.items():
+                sql = sql.replace("{" + key + "}", str(value))
+            values["sql"] = quiet + sql
             argv = [str(part).format(**values) for part in client]
             env_flags = [f for k, v in client_env.items() for f in ("-e", f"{k}={str(v).format(**values)}")]
             command = ["docker", "compose", "-f", str(docker_compose), "exec", "-T", *env_flags,
