@@ -793,11 +793,31 @@ class LevantarVariasPiezasTest(unittest.TestCase):
         with self.assertRaisesRegex(Blocked, "no reconoce 1 de los 5"):
             make_plan(self.legacy, self.PROFILE)
 
-    def test_dos_backends_no_se_adivinan(self):
+    def test_dos_bases_distintas_se_dicen_tal_cual(self):
+        # PEPPER fabrica UNA base por entorno; dos piezas que piden bases distintas se dicen, no se adivinan (D34)
         self._sistema()
         self._jar("otro-1.0.jar", self.DATASOURCE.replace("nominas_prod", "otra_base"))
-        with self.assertRaisesRegex(Blocked, "varias piezas con el papel 'backend'"):
+        with self.assertRaisesRegex(Blocked, "piden 2 bases distintas") as caught:
             make_plan(self.legacy, self.PROFILE)
+        mensaje = str(caught.exception)
+        self.assertIn("nominas_prod", mensaje)
+        self.assertIn("otra_base", mensaje)
+        self.assertIn("un entorno por base", mensaje)
+
+    def test_varias_piezas_contra_la_misma_base_es_normal(self):
+        # microservicios contra una base compartida: una base, varias piezas; nada que adivinar
+        self._sistema()
+        self._jar("otro-1.0.jar", self.DATASOURCE)          # mismo datasource que `recursos`
+        plan = make_plan(self.legacy, self.PROFILE)
+        self.assertEqual(plan.db_name, "nominas_prod")
+        self.assertEqual(len(plan.components), 5)
+        self.assertTrue(any("comparten la misma base" in n for n in plan.notes), plan.notes)
+        out = self.root / "rehydrate"
+        render(plan, self.PROFILE, out)
+        compose = (out / "docker-compose.yml").read_text(encoding="utf-8")
+        for name in ("recursos", "otro", "puerta", "descubrimiento", "front"):
+            self.assertIn(f"\n  {name}:\n", compose)
+        self.assertEqual(compose.count("POSTGRES_DB:"), 1, "una sola base para todas las piezas")
 
     def test_sin_la_pieza_que_habla_con_la_base_se_detiene(self):
         self._jar("puerta-1.0.jar", "server:\n  port: 8098\nspring:\n  cloud.gateway:\n    enabled: true\n")

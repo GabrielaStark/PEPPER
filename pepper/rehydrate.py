@@ -734,9 +734,30 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
                 raise Blocked(f"ninguna pieza tiene el papel '{datasource_role}' del que leer el datasource:\n{lista}\n"
                               "    Declara `rehydrate.components.datasource_role` con el papel que habla con la base.")
             if len(carriers) > 1:
-                raise Blocked(f"varias piezas con el papel '{datasource_role}' ({', '.join(c.name for c in carriers)}): "
-                              "no se sabe de cuál leer el datasource ni cuál base es la del sistema. "
-                              "Hoy PEPPER fabrica una sola base por entorno.")
+                # Varios servicios contra LA MISMA base es lo normal en un sistema de microservicios,
+                # y no tiene nada de ambiguo: una base, varias piezas. Lo que PEPPER no sabe hacer hoy
+                # es fabricar DOS bases distintas en un entorno, y eso sí se dice tal cual (D34).
+                datasources = {}
+                for carrier in carriers:
+                    try:
+                        _, _, _, creds_c = discover_datasource(carrier.artifact, recipe, config_profile)
+                    except Blocked as error:
+                        raise Blocked(f"la pieza `{carrier.name}` tiene el papel '{datasource_role}' y no se le pudo leer "
+                                      f"el datasource: {error}")
+                    datasources.setdefault((creds_c["url"], creds_c["username"]), []).append(carrier)
+                if len(datasources) > 1:
+                    detalle = "\n".join(
+                        f"      · {', '.join(c.name for c in piezas)} → {url}  (usuario {user})"
+                        for (url, user), piezas in datasources.items())
+                    raise Blocked(
+                        f"las piezas con el papel '{datasource_role}' piden {len(datasources)} bases distintas:\n{detalle}\n"
+                        "    PEPPER fabrica UNA base por entorno: levantar solo una dejaría a las demás piezas sin la suya, "
+                        "y el sistema observado no sería el original. Para seguir hoy: deja en legacy/ las piezas que "
+                        "comparten base, y corre un entorno por base.")
+                carriers = datasources[next(iter(datasources))]
+                component_notes.append(
+                    f"{len(carriers)} piezas ({', '.join(c.name for c in carriers)}) comparten la misma base: "
+                    "el entorno fabrica una y todas la usan, como en el original")
             artifact = carriers[0].artifact   # de esta pieza sale el datasource, y con él la base
             entry = ingress_component(components, spec, component_notes)
             component_notes.append(

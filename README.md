@@ -92,7 +92,7 @@ El juguete esconde tres cosas: una regla no documentada, una mentira en el manua
 | Perfil `java-wildfly-postgres` | `draft`; parsers |
 | Perfil `groovy-grails1-tomcat-mysql` | **`validated`** (2026-09-22): el primer stack sin PostgreSQL y el primero promovido. Corrió el ciclo completo contra un legacy real con su respaldo de producción — mapa (1162 rutas, 431 pantallas, 127 tablas), levantado aislado, recorrido con dos roles, discovery y `funcional.md`— y la persona responsable confirmó que el documento describe su sistema |
 | Perfil `java-springboot-fatjar-postgres` | `draft`; el primero de **varias piezas**: un servicio por desplegable, cada uno con su patrón de arranque y su validación. Probado con artefactos sintéticos y Docker real, **nunca contra un sistema real de microservicios** |
-| Pendientes | `pepper map` toma un artefacto a la vez, así que un sistema de varias piezas mapea solo la que habla con la base; una base por servicio no tiene camino; un perfil no-JVM; promover a `validated` los perfiles que siguen en borrador |
+| Pendientes | un perfil no-JVM (el examen de si un stack nuevo cuesta solo un perfil); un sistema con **una base por servicio** (hoy se dice y se sale con un entorno por base); promover a `validated` los perfiles que siguen en borrador |
 
 ## Stack y requisitos
 
