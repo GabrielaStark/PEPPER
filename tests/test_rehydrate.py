@@ -3,6 +3,7 @@
 Hermético: un WAR sintético con su configuración embebida y descriptores, un
 respaldo custom escrito por el test, y el perfil real (sus plantillas)."""
 
+import json
 import sys
 import tempfile
 import unittest
@@ -630,3 +631,52 @@ class SondaDeLaBaseTest(unittest.TestCase):
                 _db_query(Path("/tmp"), plan, {"client": ["mysql", "-e", "{sql}"]}, "select 1")
         self.assertIn("Access denied", str(caught.exception))
         self.assertNotIn("s3", str(caught.exception))
+
+
+class ConfiguracionExternaTest(unittest.TestCase):
+    """Lo que el ambiente original resolvía fuera del artefacto entra como datos del perfil y queda declarado."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_los_parametros_que_el_motor_rechaza_se_quitan_y_quedan_declarados(self):
+        from pepper.rehydrate import strip_url_params
+        rules = [{"param": "sessionVariables", "why": "MySQL 5.7.36 no conoce storage_engine"}]
+        url, dev = strip_url_params("jdbc:mysql://localhost:3306/app?autoReconnect=true&sessionVariables=storage_engine=InnoDB&zeroDateTimeBehavior=convertToNull", rules)
+        self.assertEqual(url, "jdbc:mysql://localhost:3306/app?autoReconnect=true&zeroDateTimeBehavior=convertToNull")
+        self.assertEqual(len(dev), 1); self.assertIn("storage_engine", dev[0]); self.assertIn("5.7.36", dev[0])
+        self.assertEqual(strip_url_params("jdbc:mysql://h/app?sessionVariables=x", rules)[0], "jdbc:mysql://h/app")
+        # sin el parámetro no hay desviación; sin reglas no se toca nada
+        self.assertEqual(strip_url_params("jdbc:mysql://h/app?a=1", rules), ("jdbc:mysql://h/app?a=1", []))
+        self.assertEqual(strip_url_params("jdbc:mysql://h/app?sessionVariables=x", []), ("jdbc:mysql://h/app?sessionVariables=x", []))
+
+    def test_los_archivos_extra_del_perfil_se_renderizan_y_quedan_como_desviacion(self):
+        import shutil
+        from pepper.profiles import Profile
+        legacy = self.root / "legacy"; legacy.mkdir()
+        _make_war_with(legacy / "nominas-2.3.war", CONFIG_PROD)
+        write_custom_dump(legacy / "respaldo.dump", TABLES)
+        (legacy / "NOTAS.md").write_text("aplicaciones es un wildfly 21\n", encoding="utf-8")
+        pdir = self.root / "perfil"; shutil.copytree(PROFILE.dir, pdir)
+        (pdir / "externo.template.properties").write_text("datasource.url={{db_url}}\nbase={{db_name}}\n", encoding="utf-8")
+        data = json.loads(json.dumps(PROFILE.data))
+        data["rehydrate"]["extra_templates"] = [{"template": "externo.template.properties", "target": "externo.properties",
+                                                 "deviation": "el servidor original lo tenía fuera del WAR"}]
+        profile = Profile(id=PROFILE.id, dir=pdir, data=data)
+        plan = make_plan(legacy, profile, notes_path=legacy / "NOTAS.md")
+        self.assertEqual(plan.db_url, "jdbc:postgresql://10.42.7.2:5432/nominas_prod")
+        out = self.root / "out"
+        written = render(plan, profile, out)
+        self.assertIn(out / "externo.properties", written)
+        text = (out / "externo.properties").read_text(encoding="utf-8")
+        self.assertEqual(text, "datasource.url=jdbc:postgresql://10.42.7.2:5432/nominas_prod\nbase=nominas_prod\n")
+        self.assertEqual(oct((out / "externo.properties").stat().st_mode & 0o777), "0o600")
+        self.assertTrue(any("externo.properties" in d and "fuera del WAR" in d for d in plan.deviations), plan.deviations)
+        # un destino con ruta no se acepta: los archivos van junto al compose
+        data["rehydrate"]["extra_templates"][0]["target"] = "../fuera.properties"
+        with self.assertRaisesRegex(Blocked, "junto al compose"):
+            render(plan, Profile(id=PROFILE.id, dir=pdir, data=data), self.root / "out2")

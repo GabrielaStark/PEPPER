@@ -39,7 +39,7 @@ services:
       MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}      # en .env (pepper-out/, no se versiona); el WAR entra como {{db_user}}
     command:
       - --general-log=1
-      - --general-log-file=/proc/self/fd/1     # stdout del contenedor → `pepper collect` → db.log
+      - --general-log-file=/var/lib/mysql/general.log   # MySQL 5.7 exige un archivo regular (rechaza /proc/self/fd/1 y /dev/stdout); `dblog` lo saca por stdout
       - --log-output=FILE
       - --log-timestamps=UTC
       # charset/collation y sql_mode de producción: DESCONOCIDOS (pregunta abierta). Se deja el
@@ -76,6 +76,19 @@ services:
       - ./restore.sh:/restore.sh:ro
     entrypoint: ["/bin/sh", "/restore.sh"]
 
+  # El general log de MySQL no puede ir a stdout (5.7 rechaza dispositivos como general_log_file):
+  # va a un archivo del volumen y este sidecar lo saca por SU stdout → `pepper collect` → dblog.log.
+  dblog:
+    image: python:3-alpine
+    dns: [{{dns_sink}}]
+    command: ["sh", "-c", "while [ ! -f /var/lib/mysql/general.log ]; do sleep 1; done; exec tail -n +1 -F /var/lib/mysql/general.log"]
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [legacy]
+    volumes:
+      - db-data:/var/lib/mysql:ro
+
   stub:
     image: python:3-alpine
     dns: [{{dns_sink}}]
@@ -102,9 +115,9 @@ services:
     volumes:
       - {{war_path}}:/usr/local/tomcat/webapps/{{war_name}}:ro   # el WAR ORIGINAL; su nombre fija el contexto /{{app_name}}
       - app-uploads:/usr/local/tomcat/uploads                    # Config.groovy:799 (ruta relativa 'uploads')
-      # Solo si el datasource embebido no conecta (p. ej. "Unknown system variable 'storage_engine'"
-      # con MySQL >= 5.7.5) o si aparece la configuración externa real del servidor:
-      # - ./openboxes-config.properties:/root/.grails/{{app_name}}-config.properties:ro   # Config.groovy:22
+      # Configuración externa generada por PEPPER (rehydrate.extra_templates): sobreescribe dataSource.url sin
+      # `sessionVariables=storage_engine` (MySQL >= 5.7.5 la rechaza). Declarada como desviación. Config.groovy:22.
+      - ./grails-config.properties:/root/.grails/{{app_name}}-config.properties:ro
 
   # El ingress ES el proxy HTTP de PEPPER (pepper/proxy.py copiado a ./proxy/). El app no tiene IP
   # propia: su 8080 vive en el namespace de db, así que el upstream es {{db_ip}}:8080.

@@ -308,6 +308,10 @@ def _resolve_host_path(source: str, compose_dir: Optional[Path]) -> Optional[Pat
         if compose_dir is None:
             return None
         path = compose_dir / path
+    # Docker Desktop (macOS/Windows) reporta los binds con el prefijo de su VM: `/host_mnt/Users/…`
+    # es `/Users/…` en esta máquina (prueba real, 2026-09-22).
+    if not path.exists() and source.startswith("/host_mnt/"):
+        path = Path(source[len("/host_mnt"):])
     try:
         return path.resolve()
     except OSError:

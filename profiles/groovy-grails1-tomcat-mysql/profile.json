@@ -127,7 +127,13 @@
         "url": "dataSource.url",
         "username": "dataSource.username",
         "password": "dataSource.password"
-      }
+      },
+      "url_strip_params": [
+        {
+          "param": "sessionVariables",
+          "why": "`sessionVariables=storage_engine=InnoDB` — la variable `storage_engine` se eliminó en MySQL 5.7.5 y el respaldo declara 5.7.36: con ella el pool c3p0 nunca conecta (\"Unknown system variable 'storage_engine'\", comprobado en la prueba real 2026-09-22). Producción tuvo que resolverlo con la configuración externa de Grails (~/.grails/<app>-config.properties), que no está en legacy/"
+        }
+      ]
     },
     "database": {
       "engine": "mysql",
@@ -179,7 +185,14 @@
     "ready_log_pattern": "Server startup in \\d+ ms|Finished running liquibase changelog",
     "failed_log_pattern": "SEVERE: (Error listenerStart|Context \\[[^\\]]*\\] startup failed)|Connection could not be created|Unknown system variable|UnsupportedClassVersionError",
     "stub_ports": "80,443,25,389,9100",
-    "startup_timeout_s": 900
+    "startup_timeout_s": 900,
+    "extra_templates": [
+      {
+        "template": "grails-config.template.properties",
+        "target": "grails-config.properties",
+        "deviation": "se monta como ~/.grails/<app>-config.properties (Config.groovy:22) para sobreescribir dataSource.url; la configuración externa real del servidor de producción no está en legacy/ y es una pregunta abierta"
+      }
+    ]
   },
   "collectors": [
     {
@@ -192,8 +205,8 @@
     {
       "source": "mysql",
       "method": "container_stdout",
-      "location": "evidence/<session_id>/containers/db.log (via `pepper collect`; el general log va a stdout, el error log de mysqld a stderr → db.err.log)",
-      "enable": "--general-log=1 --general-log-file=/proc/self/fd/1 --log-output=FILE --log-timestamps=UTC en el command del contenedor db, antes del arranque",
+      "location": "evidence/<session_id>/containers/dblog.log (via `pepper collect`; el servicio `dblog` hace tail del general log de MySQL, que va a un archivo del volumen: MySQL 5.7 rechaza /proc/self/fd/1 y /dev/stdout como general_log_file — comprobado en la prueba real 2026-09-22)",
+      "enable": "--general-log=1 --general-log-file=/var/lib/mysql/general.log --log-output=FILE --log-timestamps=UTC en el command del contenedor db, antes del arranque; el sidecar `dblog` (alpine, `tail -F` sobre el volumen db-data en solo lectura) lo saca por su stdout",
       "parser": "parsers/mysql-general-log.json"
     }
   ],

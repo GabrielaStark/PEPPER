@@ -243,6 +243,7 @@ class Plan:
     gateway_ip: str = ""
     dump_sha: str = ""
     shared_namespace: bool = False   # el app corre en la pila de red de la base (datasource a localhost)
+    db_url: str = ""                 # la URL del datasource con que se levanta (la del artefacto, menos lo que el perfil quita)
     deviations: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
 
@@ -272,7 +273,7 @@ class Plan:
             "war_path": str(rel(self.artifact)), "war_name": self.artifact.name, "app_name": self.artifact.stem,
             "files_root": self.files_root, "host_port": str(self.host_port),
             "db_alias": "[" + (self.db_alias or "") + "]", "gateway_ip": self.gateway_ip, "dump_sha": self.dump_sha,
-            "db_owners": " ".join(self.create_roles),
+            "db_owners": " ".join(self.create_roles), "db_url": self.db_url,
         }
 
 
@@ -486,6 +487,24 @@ def read_dump_facts(dump: Path, database: Dict[str, Any]) -> DumpFacts:
     raise Blocked(f"el perfil declara un formato de respaldo desconocido: {fmt!r} (pg_dump_custom | sql_text)")
 
 
+def strip_url_params(url: str, rules: List[Dict[str, str]]) -> Tuple[str, List[str]]:
+    """Quita de la query de una URL JDBC los parámetros que el perfil declara (`url_strip_params`:
+    [{param, why}]). → (url, desviaciones), una por parámetro que sí estaba."""
+    if not rules or "?" not in url:
+        return url, []
+    base, _, query = url.partition("?")
+    kept: List[str] = []
+    deviations: List[str] = []
+    for pair in query.split("&"):
+        name = pair.split("=", 1)[0]
+        rule = next((r for r in rules if r.get("param") == name), None)
+        if rule is None:
+            kept.append(pair)
+        else:
+            deviations.append(f"parámetro `{pair}` quitado de la URL del datasource: {rule.get('why') or 'lo declara el perfil'}")
+    return (base + ("?" + "&".join(kept) if kept else "")), deviations
+
+
 def _groovy_datasource(artifact: Path, spec: Dict[str, Any], override: Optional[str] = None) -> Tuple[str, Dict[str, str], List[str]]:
     """DataSource.groovy compilado → (entorno elegido, {clave: valor}, desviaciones).
 
@@ -658,6 +677,11 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
     db_user = creds["username"]
     db_password = creds["password"]
     deviations: List[str] = list(profile_deviations)
+    # El perfil puede declarar parámetros de la URL que el motor de esa versión rechaza (MySQL 5.7.36
+    # no conoce `storage_engine`; con él el pool nunca conecta). Se quitan y queda como desviación:
+    # el ambiente original tuvo que resolverlo con configuración externa que no está en legacy/.
+    url, stripped = strip_url_params(url, (recipe.get("datasource") or {}).get("url_strip_params") or [])
+    deviations += stripped
     notes: List[str] = list(human_choices)
     if "${" in db_password:
         raise Blocked(f"la contraseña del datasource es una referencia sin resolver ({db_password!r}): "
@@ -783,7 +807,7 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
                 stub_ports=stub_ports, app_package_env=app_package_env, files_root=files_root,
                 create_roles=[o for o in facts.owners if o != db_user], host_port=host_port,
                 db_alias=db_alias, gateway_ip=gateway_ip, dump_sha=dump_sha, shared_namespace=shared_namespace,
-                deviations=deviations, notes=notes)
+                db_url=url, deviations=deviations, notes=notes)
 
 
 def _sha256(path: Path) -> str:
@@ -811,6 +835,15 @@ def image_platforms(image: str) -> Optional[List[str]]:
     None si no se pudo saber (sin docker, sin red, o una imagen de un solo manifiesto sin plataforma)."""
     if not shutil.which("docker"):
         return None
+    # Primero lo local, sin tocar el registro: `docker image inspect --platform P` responde solo si
+    # la imagen existe para P en el almacén local (con containerd, un índice multi-arch guarda qué
+    # plataformas trae). Con el límite de peticiones de Docker Hub (429) el manifest fallaba, la duda
+    # se leía como "nativa" y compose se negaba a usar la imagen amd64 ya descargada (prueba real, 2026-09-22).
+    local = [p for p in dict.fromkeys([host_platform(), "linux/amd64"])
+             if subprocess.run(["docker", "image", "inspect", "--platform", p, image, "--format", "{{.Id}}"],
+                               capture_output=True, text=True).returncode == 0]
+    if local:
+        return local
     out = subprocess.run(["docker", "manifest", "inspect", image], capture_output=True, text=True)
     if out.returncode != 0:
         return None
@@ -827,12 +860,13 @@ def image_platforms(image: str) -> Optional[List[str]]:
 
 
 def choose_platform(images: List[str], host: Optional[str] = None,
-                    lookup=image_platforms) -> Tuple[str, List[str]]:
+                    lookup=None) -> Tuple[str, List[str]]:
     """Con qué plataforma se ejecutan los contenedores del legado. La versión la dicta el artefacto,
     no la máquina: si una imagen exigida no existe para la arquitectura de esta máquina pero sí para
     amd64, se emula amd64 y queda como desviación. `mysql:5.7.36` solo existe para amd64 y en una Mac
     arm64 el pull fallaba (prueba real, 2026-09-22). → (plataforma, desviaciones)."""
     host = host or host_platform()
+    lookup = lookup or image_platforms
     need_amd64: List[str] = []
     for image in dict.fromkeys(i for i in images if i):
         available = lookup(image)
@@ -850,6 +884,33 @@ def choose_platform(images: List[str], host: Optional[str] = None,
 
 
 _PLATFORM_VAR = "PEPPER_PLATFORM"
+
+
+def ensure_images(plan: Plan, out_dir: Path, log=print) -> Optional[Dict[str, str]]:
+    """Cada imagen del compose existe localmente para su plataforma (la del legado para las del
+    plan, la nativa para las demás); la que falte se trae con `docker pull --platform` explícito.
+    → validación (pass/fail) si hubo que traer alguna; None si todo estaba."""
+    compose_text = (out_dir / "docker-compose.yml").read_text(encoding="utf-8")
+    env = (out_dir / ".env").read_text(encoding="utf-8") if (out_dir / ".env").exists() else ""
+    chosen = next((l.split("=", 1)[1].strip() for l in env.splitlines() if l.startswith(f"{_PLATFORM_VAR}=")), host_platform())
+    legacy_images = {plan.db_image, plan.db_tool_image, plan.server_image}
+    images = list(dict.fromkeys(m.group(1) for m in re.finditer(r"(?m)^\s*image:\s*([^\s#]+)", compose_text)))
+    pulled: List[str] = []
+    for image in images:
+        wanted = chosen if image in legacy_images else host_platform()
+        present = subprocess.run(["docker", "image", "inspect", "--platform", wanted, image, "--format", "{{.Id}}"],
+                                 capture_output=True, text=True).returncode == 0
+        if present:
+            continue
+        log(f"  trayendo {image} ({wanted})…")
+        pull = subprocess.run(["docker", "pull", "--platform", wanted, image], capture_output=True, text=True, timeout=1800)
+        if pull.returncode != 0:
+            return {"check": f"imagen {image} disponible para {wanted}", "result": "fail",
+                    "detail": pull.stderr.strip()[-300:] or pull.stdout.strip()[-300:]}
+        pulled.append(f"{image} ({wanted})")
+    if pulled:
+        return {"check": "imágenes traídas del registro", "result": "pass", "detail": ", ".join(pulled)}
+    return None
 
 
 def apply_platform(plan: Plan, out_dir: Path) -> None:
@@ -890,6 +951,25 @@ def render(plan: Plan, profile: Profile, out_dir: Path) -> List[Path]:
         path = out_dir / target
         path.write_text(text, encoding="utf-8")
         written.append(path)
+    # Archivos extra del perfil (p. ej. la configuración externa que el servidor original tenía
+    # fuera del artefacto): se renderizan con las mismas variables y cada uno queda como desviación.
+    for extra in recipe.get("extra_templates") or []:
+        template_name, target = extra["template"], extra["target"]
+        if "/" in target or target.startswith("."):
+            raise Blocked(f"extra_templates: el destino {target!r} debe ser un nombre de archivo junto al compose")
+        text = (profile.dir / template_name).read_text(encoding="utf-8")
+        missing = sorted(set(re.findall(r"\{\{(\w+)\}\}", text)) - set(variables))
+        if missing:
+            raise Blocked(f"la plantilla {template_name} pide variables que el plan no tiene: {', '.join(missing)}")
+        for name, value in variables.items():
+            text = text.replace("{{" + name + "}}", value)
+        path = out_dir / target
+        path.write_text(text, encoding="utf-8")
+        path.chmod(0o600)   # puede llevar la credencial del datasource
+        written.append(path)
+        note = f"archivo `{target}` generado por PEPPER desde {template_name}: {extra.get('deviation') or 'lo declara el perfil'}"
+        if note not in plan.deviations:
+            plan.deviations.append(note)
     (out_dir / "proxy").mkdir(exist_ok=True)
     (out_dir / "stub").mkdir(exist_ok=True)
     shutil.copy2(REPO_ROOT / "pepper" / "proxy.py", out_dir / "proxy" / "proxy.py")
@@ -971,6 +1051,14 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
     except Blocked as error:
         return "BLOCKED", [{"check": "plataforma de las imágenes", "result": "fail", "detail": str(error)}], missing
     compose_path = out_dir / "docker-compose.yml"
+    # Las imágenes se traen UNA vez, explícitamente, y de ahí en adelante `up --pull never`: cada
+    # `docker compose up` consultaba el registro aunque la imagen ya estuviera local, y el límite
+    # de peticiones de Docker Hub (429) tiraba el levantamiento a mitad (prueba real, 2026-09-22).
+    pulled = ensure_images(plan, out_dir, log=log)
+    if pulled:
+        validations.append(pulled)
+        if pulled["result"] == "fail":
+            return "FAILED", validations, missing
     compose, resolved = resolve_compose(compose_path)
     report = check_static(compose, plan.external_hosts, "ingress", resolved=resolved, compose_dir=out_dir)
     if report.verdict != "VERIFIED":
@@ -982,7 +1070,7 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
                         "detail": f"{len([f for f in report.findings if f.level == 'ok'])} comprobaciones"})
 
     log("  levantando base y stub…")
-    up = _compose(out_dir, "up", "-d", "db", "stub")
+    up = _compose(out_dir, "up", "-d", "--pull", "never", "db", "stub")
     if up.returncode != 0:
         return "FAILED", validations + [{"check": "docker compose up db stub", "result": "fail", "detail": up.stderr[-400:]}], missing
     alive = False
@@ -1048,9 +1136,14 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
 
     log("  levantando app e ingress…")
     since = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-    up = _compose(out_dir, "up", "-d", "--force-recreate", "app", "ingress")
+    up = _compose(out_dir, "up", "-d", "--pull", "never", "--force-recreate", "app", "ingress")
     if up.returncode != 0:
         return "FAILED", validations + [{"check": "docker compose up app ingress", "result": "fail", "detail": up.stderr[-400:]}], missing
+    # Lo demás que el compose declare sin `profiles:` (sidecars como el que saca el general log de
+    # MySQL por stdout): el núcleo no sabe qué son, pero sin ellos `pepper collect` no ve su evidencia.
+    rest = _compose(out_dir, "up", "-d", "--pull", "never")
+    if rest.returncode != 0:
+        return "FAILED", validations + [{"check": "docker compose up (servicios auxiliares)", "result": "fail", "detail": rest.stderr[-400:]}], missing
     recipe = profile.data.get("rehydrate", {})
     ready_re = re.compile(recipe.get("ready_log_pattern") or "Started|started")
     failed_re = re.compile(recipe["failed_log_pattern"]) if recipe.get("failed_log_pattern") else None
@@ -1076,10 +1169,18 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
     errors = len(re.findall(r"\bERROR\b", logs))
     validations.append({"check": "sin líneas ERROR en el arranque", "result": "pass" if errors == 0 else "fail", "detail": f"{errors} líneas ERROR"})
 
-    time.sleep(3)
-    status, body = _http(f"http://127.0.0.1:{plan.host_port}/")
+    # El servidor dice "arrancó" antes de atender la primera petición (Tomcat termina de desplegar,
+    # el proxy abre su socket): se insiste hasta 60 s; "sin respuesta" a los 3 s era un falso rojo
+    # con el sistema ya arriba (prueba real, 2026-09-22).
+    status, body = None, ""
+    root_started = time.time()
+    while time.time() - root_started < 60:
+        status, body = _http(f"http://127.0.0.1:{plan.host_port}/")
+        if status:
+            break
+        time.sleep(3)
     validations.append({"check": "la raíz responde por el ingress (solo loopback)", "result": "pass" if status and status < 400 else "fail",
-                        "detail": f"HTTP {status}" if status else "sin respuesta"})
+                        "detail": f"HTTP {status} tras {int(time.time() - root_started)} s" if status else "sin respuesta en 60 s"})
     live = check_live(compose_path, plan.external_hosts, "ingress")
     ok = live.verdict == "VERIFIED"
     validations.append({"check": "aislamiento verificado en vivo (contenedores según Docker)", "result": "pass" if ok else "fail",

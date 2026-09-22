@@ -348,6 +348,26 @@
                 "type": "string"
               },
               "description": "groovy_config: claves de url/username/password dentro del entorno (dataSource.url…)."
+            },
+            "url_strip_params": {
+              "type": "array",
+              "description": "Parámetros de la query de la URL JDBC que se quitan antes de levantar, con el porqué; cada uno queda como desviación. Para lo que el motor de esa versión rechaza (MySQL >= 5.7.5 no conoce `storage_engine`).",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "param",
+                  "why"
+                ],
+                "properties": {
+                  "param": {
+                    "type": "string"
+                  },
+                  "why": {
+                    "type": "string"
+                  }
+                }
+              }
             }
           }
         },
@@ -484,6 +504,32 @@
         "startup_timeout_s": {
           "type": "integer",
           "description": "Segundos máximos de espera al arranque del app (un Grails con Liquibase tarda minutos)."
+        },
+        "extra_templates": {
+          "type": "array",
+          "description": "Archivos extra que Rehydrate renderiza junto al compose con las mismas variables (p. ej. la configuración externa que el servidor original tenía fuera del artefacto). Cada uno queda declarado como desviación en environment.json.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "template",
+              "target"
+            ],
+            "properties": {
+              "template": {
+                "type": "string",
+                "description": "Ruta relativa al perfil de la plantilla."
+              },
+              "target": {
+                "type": "string",
+                "description": "Nombre del archivo generado, junto al compose (sin rutas)."
+              },
+              "deviation": {
+                "type": "string",
+                "description": "Por qué el ambiente original necesitaba este archivo."
+              }
+            }
+          }
         }
       }
     },
