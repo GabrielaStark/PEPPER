@@ -914,19 +914,33 @@ def db_client_command(probe: Dict[str, Any], plan_vars: Dict[str, str], sql: str
 
     El perfil declara el cliente (`psql -U {db_user} -d {db_name} -Atc {sql}`, o `mysql -N -e {sql}`)
     y su entorno (`MYSQL_PWD: {db_password}`): el núcleo solo sustituye."""
+    # Los marcadores también van dentro del SQL (`table_schema = '{db_name}'`): se sustituyen antes de
+    # insertarlo, y solo ellos, porque `.format` no entra en el valor de `{sql}` y el SQL puede traer
+    # llaves propias. Sin esto la sonda contaba 0 tablas de una base con 157 (prueba real, 2026-09-22).
+    for key, value in plan_vars.items():
+        sql = sql.replace("{" + key + "}", str(value))
     values = dict(plan_vars); values["sql"] = sql
     argv = [str(part).format(**values) for part in (probe.get("client") or [])]
     env = [f"{k}={str(v).format(**values)}" for k, v in (probe.get("env") or {}).items()]
     return argv, env
 
 
+class ProbeFailed(RuntimeError):
+    """La sonda de la base no respondió: no se sabe si la base está vacía, llena o a medias."""
+
+
 def _db_query(out_dir: Path, plan: Plan, probe: Dict[str, Any], sql: str) -> str:
+    """Una consulta por la sonda del perfil. Si el cliente falla, ProbeFailed con el stderr: antes
+    devolvía "" y bring_up lo leía como "0 tablas", a punto de restaurar encima de una base llena."""
     if not probe.get("client"):
-        return ""
+        raise ProbeFailed("el perfil no declara rehydrate.database.probe.client")
     argv, env = db_client_command(probe, {"db_user": plan.db_user, "db_name": plan.db_name, "db_password": plan.db_password}, sql)
     flags = [f for pair in env for f in ("-e", pair)]
     result = _compose(out_dir, "exec", "-T", *flags, probe.get("service", "db"), *argv)
-    return result.stdout.strip() if result.returncode == 0 else ""
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip().replace(plan.db_password, "[REDACTADO]") if plan.db_password else (result.stderr or result.stdout).strip()
+        raise ProbeFailed(f"`{' '.join(argv[:1])}` en `{probe.get('service', 'db')}` salió con {result.returncode}: {detail[-300:]}")
+    return result.stdout.strip()
 
 
 def _http(url: str, timeout: int = 5) -> Tuple[Optional[int], str]:
@@ -973,9 +987,12 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
         return "FAILED", validations + [{"check": "docker compose up db stub", "result": "fail", "detail": up.stderr[-400:]}], missing
     alive = False
     for _ in range(int(probe.get("ready_attempts", 60))):
-        if _db_query(out_dir, plan, probe, probe.get("ready_sql", "select 1")) == "1":
-            alive = True
-            break
+        try:
+            if _db_query(out_dir, plan, probe, probe.get("ready_sql", "select 1")) == "1":
+                alive = True
+                break
+        except ProbeFailed:
+            pass   # la base todavía arranca: se reintenta
         time.sleep(2)
     if not alive:
         db_logs = subprocess.run(["docker", "compose", "-f", str(compose_path), "logs", "--no-log-prefix", "--tail", "15", "db"],
@@ -986,8 +1003,11 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
     # (un comentario de base en PostgreSQL, una tabla aparte en MySQL); el perfil dice cómo leerla.
     marker_sql = probe["marker_sql"]
     tables_sql = probe["tables_sql"]
-    tables = _db_query(out_dir, plan, probe, tables_sql)
-    marker = _db_query(out_dir, plan, probe, marker_sql)
+    try:
+        tables = _db_query(out_dir, plan, probe, tables_sql)
+        marker = _db_query(out_dir, plan, probe, marker_sql) if tables not in ("", "0") else ""
+    except ProbeFailed as error:
+        return "FAILED", validations + [{"check": "la sonda de la base responde", "result": "fail", "detail": str(error)}], missing
     expected_marker = f"pepper:restored:{plan.dump_sha}"
     if tables not in ("", "0") and marker != expected_marker:
         return "FAILED", validations + [{"check": "la base del volumen corresponde a este respaldo", "result": "fail",
@@ -1001,8 +1021,12 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
         status_line = re.search(r"PEPPER_RESTORE status=(\d+) errors=(\d+)", out)
         status = int(status_line.group(1)) if status_line else -1
         ignored = int(status_line.group(2)) if status_line else 0
-        tables = _db_query(out_dir, plan, probe, tables_sql)
-        marker = _db_query(out_dir, plan, probe, marker_sql)
+        try:
+            tables = _db_query(out_dir, plan, probe, tables_sql)
+            marker = _db_query(out_dir, plan, probe, marker_sql) if tables not in ("", "0") else ""
+        except ProbeFailed as error:
+            return "FAILED", validations + [{"check": "la base tiene los datos restaurados", "result": "fail",
+                                             "detail": f"la restauración terminó con código {status}; la sonda no responde: {error} · " + out.strip()[-300:]}], missing
         ok_status = set(int(x) for x in (probe.get("restore_ok_status") or [0, 1]))
         if status not in ok_status or marker != expected_marker or tables in ("", "0"):
             return "FAILED", validations + [{"check": "la base tiene los datos restaurados", "result": "fail",
@@ -1014,7 +1038,11 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
         validations.append({"check": "la base tiene los datos restaurados", "result": "pass",
                             "detail": f"{tables} tablas en {plan.db_name} (ya restaurada de este mismo respaldo)"})
     if probe.get("foreign_servers_sql"):
-        foreign = _db_query(out_dir, plan, probe, probe["foreign_servers_sql"])
+        try:
+            foreign = _db_query(out_dir, plan, probe, probe["foreign_servers_sql"])
+        except ProbeFailed as error:
+            foreign = ""
+            validations.append({"check": "servidores foráneos re-apuntados al stub", "result": "fail", "detail": str(error)})
         if foreign:
             validations.append({"check": "servidores foráneos re-apuntados al stub", "result": "pass" if all(plan.stub_ip in f for f in foreign.split(", ")) else "fail", "detail": foreign})
 

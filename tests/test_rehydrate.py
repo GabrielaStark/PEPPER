@@ -112,7 +112,7 @@ class PlanTest(unittest.TestCase):
         self.assertIn("aliases: [bus.institucion.example, editor.institucion.example, smtp.correo.example]", compose)
         self.assertIn("image: jboss/wildfly:21.0.2.Final", compose)
         # .env solo lleva la credencial, entrecomillada y con $ escapado; la imagen va en el compose
-        self.assertEqual((out / ".env").read_text(encoding="utf-8").strip(), 'DB_PASSWORD="s3cr3t"')
+        self.assertEqual((out / ".env").read_text(encoding="utf-8").splitlines()[0], 'DB_PASSWORD="s3cr3t"')
         self.assertIn("s3cr3t", (out / ".env").read_text(encoding="utf-8"))
         self.assertNotIn("s3cr3t", compose, "la credencial va en .env, no en el compose")
         restore = (out / "restore.sh").read_text(encoding="utf-8")
@@ -602,3 +602,31 @@ class ComponentsTerminanEnBlockedTest(unittest.TestCase):
             make_plan(self.legacy, _profile(self.RECETA))  # se detiene más adelante (sin datasource), no por components
         self.assertNotIn("rehydrate.components", str(caught.exception))
         self.assertNotIn("una sola aplicación", str(caught.exception))
+
+
+class SondaDeLaBaseTest(unittest.TestCase):
+    """La sonda del perfil (`rehydrate.database.probe`) sustituye los marcadores también dentro del SQL."""
+
+    def test_los_marcadores_dentro_del_sql_se_sustituyen(self):
+        # prueba real 2026-09-22: `table_schema = '{db_name}'` viajaba literal y la sonda contaba 0 tablas de 157
+        from pepper.rehydrate import db_client_command
+        probe = {"client": ["mysql", "-uroot", "-N", "-B", "-e", "{sql}"], "env": {"MYSQL_PWD": "{db_password}"}}
+        argv, env = db_client_command(probe, {"db_user": "root", "db_name": "openboxes", "db_password": "s3"},
+                                      "select count(*) from information_schema.tables where table_schema = '{db_name}'")
+        self.assertEqual(argv[-1], "select count(*) from information_schema.tables where table_schema = 'openboxes'")
+        self.assertEqual(env, ["MYSQL_PWD=s3"])
+        # llaves ajenas dentro del SQL no rompen la sustitución
+        argv, _ = db_client_command({"client": probe["client"]}, {"db_name": "x"}, "select '{\"a\": 1}' as j, '{db_name}'")
+        self.assertEqual(argv[-1], "select '{\"a\": 1}' as j, 'x'")
+
+    def test_una_sonda_que_falla_no_es_una_base_vacia(self):
+        from unittest import mock
+
+        from pepper.rehydrate import Plan, ProbeFailed, _db_query
+        plan = mock.Mock(spec=Plan); plan.db_user, plan.db_name, plan.db_password = "root", "openboxes", "s3"
+        fake = mock.Mock(returncode=1, stdout="", stderr="ERROR 1045 (28000): Access denied for user 'root' (using password: s3)")
+        with mock.patch("pepper.rehydrate._compose", return_value=fake):
+            with self.assertRaises(ProbeFailed) as caught:
+                _db_query(Path("/tmp"), plan, {"client": ["mysql", "-e", "{sql}"]}, "select 1")
+        self.assertIn("Access denied", str(caught.exception))
+        self.assertNotIn("s3", str(caught.exception))
