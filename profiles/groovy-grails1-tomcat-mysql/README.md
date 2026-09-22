@@ -2,7 +2,7 @@
 
 WAR de **Grails 1.3** (Groovy 1.7, Spring 3.0, Hibernate 3.3, GSP + SiteMesh, Liquibase 1.9, Quartz 2.1, con un SPA de React embebido en `js/bundle.*.js`) desplegado en **Tomcat** sobre **JDK 7**, con **MySQL 5.7**.
 
-**Estado: `draft`, corrido de punta a punta el 2026-09-22** contra el legacy real (un fork localizado de OpenBoxes 0.8.x) con el respaldo de producción: mapa → `rehydrate --up` (PARTIAL: externos al stub; aislamiento vivo VERIFIED) → explorador con dos roles (62/64 pantallas cada uno) → correlate → package → discovery → `funcional.md` publicado por Export. Lo promueve a `validated` una persona tras revisar el documento.
+**Estado: `validated` (2026-09-22).** Corrido de punta a punta contra el legacy real (un fork localizado de OpenBoxes 0.8.x) con el respaldo de producción: mapa → `rehydrate --up` (PARTIAL: externos al stub; aislamiento vivo VERIFIED) → explorador con dos roles (62/64 pantallas cada uno) → correlate → package → discovery → `funcional.md` publicado por Export. Lo promueve a `validated` una persona tras revisar el documento.
 
 ## Contenido
 
@@ -36,7 +36,7 @@ WAR de **Grails 1.3** (Groovy 1.7, Spring 3.0, Hibernate 3.3, GSP + SiteMesh, Li
 - **Parsers contra logs reales**: MySQL 63 502 eventos / 6 sin parsear (cabeceras); Tomcat 871 eventos / 67 sin parsear (`println` sin prefijo log4j) tras extender la continuación al SQL multilínea de DataService, líneas vacías y `Field error in object`. JULI usa OneLineFormatter (`INFO: Server startup in …`). El app no loguea el `X-Pepper-Correlation-Id`: la correlación con HTTP es por ventana y afinidad de hilo.
 - **Comportamiento del sistema al arrancar**: `RefreshProductAvailabilityJob` corre de inmediato y produjo deadlocks de MySQL (evidencia del arranque, no de la ventana explorada).
 
-## Pendiente para `validated`
+## Lo que sigue pendiente (no bloquea `validated`)
 
-- [ ] Que una persona revise `docs/pepper/funcional.md` de la corrida y confirme que describe el sistema.
-- [ ] Conseguir la configuración externa real de producción (`~/.grails/<app>-config.*`) y comparar con la generada.
+- [ ] Conseguir la configuración externa real de producción (`~/.grails/<app>-config.*`) y comparar con la que PEPPER genera: hoy la URL limpia del datasource es una desviación declarada, no una copia del original.
+- [ ] Un recorrido de negocio encadenado (solicitar → surtir → recibir) con un plan de `pepper explore`: la corrida de validación observó pantallas y rechazos, no el ciclo completo.

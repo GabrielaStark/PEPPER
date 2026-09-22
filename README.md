@@ -90,8 +90,8 @@ El juguete esconde tres cosas: una regla no documentada, una mentira en el manua
 | Núcleo: detect, map, rehydrate, isolate, proxy, explore, collect, correlate, package, export | implementados y probados (suite en `tests/`, `scripts/verificar.py`, CI). **El ciclo completo corrió en frío** desde un clon limpio de este repo, sin manos, hasta `funcional.md` (2026-09-11) |
 | Perfil `java-springboot-jsf-postgres` | `draft`; corrió el pipeline entero contra un legacy real (mapa, levantar, explorar, descubrir). Un perfil `draft` corre igual: `environment.json` y `funcional.md` lo declaran; lo promueve a `validated` una persona tras verlo correr |
 | Perfil `java-wildfly-postgres` | `draft`; parsers |
-| Perfil `groovy-grails1-tomcat-mysql` | `draft`; el primer stack sin PostgreSQL: el mapa corrió contra un legacy real (1162 rutas, 10 jobs); `rehydrate` genera plan y compose; **el levantamiento de punta a punta está pendiente** de un respaldo de la base de la aplicación |
-| Pendientes | promover un perfil a `validated`; levantar el perfil Grails/MySQL de punta a punta; multicomponente (varios desplegables terminan en `BLOCKED` con la lista de piezas); un perfil no-JVM; CI con un E2E de Docker (hoy CI corre la suite, la demo sintética y la prueba hermética del navegador contra el ingress) |
+| Perfil `groovy-grails1-tomcat-mysql` | **`validated`** (2026-09-22): el primer stack sin PostgreSQL y el primero promovido. Corrió el ciclo completo contra un legacy real con su respaldo de producción — mapa (1162 rutas, 431 pantallas, 127 tablas), levantado aislado, recorrido con dos roles, discovery y `funcional.md`— y la persona responsable confirmó que el documento describe su sistema |
+| Pendientes | multicomponente (varios desplegables terminan en `BLOCKED` con la lista de piezas); CI con un E2E de Docker (hoy corre la suite, la demo sintética y la prueba hermética del navegador contra el ingress); un perfil no-JVM; promover los otros dos perfiles |
 
 ## Stack y requisitos
 

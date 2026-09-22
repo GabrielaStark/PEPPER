@@ -3,7 +3,7 @@
   "id": "groovy-grails1-tomcat-mysql",
   "name": "Grails 1.3 (Groovy 1.7, Spring 3.0, Hibernate 3.3) en Tomcat con JDK 7 y MySQL 5.7",
   "version": "0.1.0",
-  "status": "draft",
+  "status": "validated",
   "stack": {
     "languages": [
       "groovy",
@@ -235,7 +235,7 @@
       "check": "el stub no registró peticiones durante el arranque; los hosts externos del WAR resuelven al stub dentro del contenedor db (getent hosts)"
     }
   ],
-  "notes": "Borrador redactado durante Inspect de un legacy real: WAR de Grails 1.3.9 (OpenBoxes 0.8.x, localizado) con respaldo mysqldump. Señales tomadas de ese WAR: application.properties (app.grails.version=1.3.9), WEB-INF/lib/grails-core-1.3.9.jar, WEB-INF/grails.xml, DataSource$_run_closure*.class (jdbc:mysql://), WEB-INF/lib/mysql-connector-java-5.1.47.jar, cabecera del respaldo (MariaDB dump). Es el primer perfil cuya base no es PostgreSQL: rehydrate.database y rehydrate.datasource son los que enseñan al núcleo a fabricarla (2026-09-21). Falta: correr la receta de punta a punta con un respaldo de la base de la aplicación (el primero entregado era el esquema de sistema `mysql`) para pasar a validated.",
+  "notes": "Borrador redactado durante Inspect de un legacy real: WAR de Grails 1.3.9 (OpenBoxes 0.8.x, localizado) con respaldo mysqldump. Señales tomadas de ese WAR: application.properties (app.grails.version=1.3.9), WEB-INF/lib/grails-core-1.3.9.jar, WEB-INF/grails.xml, DataSource$_run_closure*.class (jdbc:mysql://), WEB-INF/lib/mysql-connector-java-5.1.47.jar, cabecera del respaldo (MariaDB dump). Es el primer perfil cuya base no es PostgreSQL: rehydrate.database y rehydrate.datasource son los que enseñan al núcleo a fabricarla (2026-09-21). Falta: correr la receta de punta a punta con un respaldo de la base de la aplicación (el primero entregado era el esquema de sistema `mysql`) para pasar a validated. Promovido a `validated` el 2026-09-22: corrió el pipeline completo contra un legacy real (mapa → rehydrate --up PARTIAL con aislamiento vivo VERIFIED → explorador con dos roles, 62/64 pantallas cada uno → correlate → package → discovery → export), ambos parsers se probaron contra los logs reales de esa corrida, y la persona responsable leyó el documento funcional resultante y confirmó que describe su sistema.",
   "http": {
     "action_fields": [
       "_action_save",
