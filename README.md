@@ -4,7 +4,7 @@
 >
 > Por [@iamgabstark_](https://iamgabstark.com/) · complemento de [stark](https://github.com/GabrielaStark/stark) · [Principios](docs/documentacion/PRINCIPIOS.md)
 
-**Le das el desplegable de un sistema legacy y un respaldo de su base — hoy, un WAR de Java y un `pg_dump` de PostgreSQL, que es lo que tiene perfil — y PEPPER saca todo lo que el sistema ES (pantallas, roles, catálogos, reglas en la base), lo levanta en contenedores sin salida, lo recorre solo con cada rol, y escribe QUÉ HACE: quién lo usa y qué puede hacer cada quien, los recorridos, los estados, las reglas de negocio, lo que corre solo, con qué habla y qué pasa si falla, cuánto se usa, y qué no se sabe — cada afirmación con su origen.** Es el documento con el que alguien empieza una reingeniería sin haber visto el sistema.
+**Le das el desplegable de un sistema legacy y un respaldo de su base — hoy, un WAR de Java con un `pg_dump` de PostgreSQL o un WAR de Grails con un `mysqldump` de MySQL, que es lo que tiene perfil — y PEPPER saca todo lo que el sistema ES (pantallas, roles, catálogos, reglas en la base), lo levanta en contenedores sin salida, lo recorre solo con cada rol, y escribe QUÉ HACE: quién lo usa y qué puede hacer cada quien, los recorridos, los estados, las reglas de negocio, lo que corre solo, con qué habla y qué pasa si falla, cuánto se usa, y qué no se sabe — cada afirmación con su origen.** Es el documento con el que alguien empieza una reingeniería sin haber visto el sistema.
 
 **¿Por qué PEPPER?** **P**lataforma de **E**videncia y **P**rocesamiento para **P**atrones de **E**jecución y **R**eingeniería. Pepper organiza la realidad antes de que Stark actúe.
 
@@ -33,7 +33,7 @@ claude          # abre Claude Code EN esta carpeta; adentro: /pepper
 
 Se detiene en cinco casos, y en todos dice qué: el aislamiento no está en verde; falta un insumo (`BLOCKED`, con la lista de qué conseguir); el stack no tiene perfil (deja un borrador para que una persona lo revise); **una sola vez**, para preguntarte si el paquete con datos del legacy puede ir al modelo remoto (la respuesta queda guardada en `pepper-out/data-boundary.json` y no vuelve a preguntar); o Export rechaza el documento (el agente corrige, tú no). Si hay quien conozca un flujo, `/pepper-observe <flujo>`: la persona opera, PEPPER captura, el documento se extiende.
 
-**Nada del legacy sale de la máquina.** Los contenedores viven en una red sin salida; cada host externo del artefacto se resuelve a un stub; el navegador (del explorador o de una persona) solo habla con `127.0.0.1` y el ingress le bloquea todo lo demás; sin `pepper isolate --live` en verde no se levanta ni se explora nada. Si el artefacto trae credenciales de producción, se recrea *ese* ambiente adentro — jamás se toca el real.
+**Nada del entorno reconstruido sale de la máquina.** Los contenedores viven en una red sin salida; cada host externo del artefacto se resuelve a un stub; el navegador (del explorador o de una persona) solo habla con `127.0.0.1` y el ingress le bloquea todo lo demás, incluidas las redirecciones que solo un navegador leería como otro origen; sin `pepper isolate --live` en verde no se levanta ni se explora nada. Si el artefacto trae credenciales de producción, se recrea *ese* ambiente adentro — jamás se toca el real. **Lo único que puede salir es el paquete del discovery** hacia el modelo remoto, y solo con la decisión explícita de la persona, escrita en `pepper-out/data-boundary.json` ([D24](docs/documentacion/DECISIONES.md)): antes de eso, Package se detiene si el paquete trae credenciales, datos de personas o archivos que no pudo inspeccionar, y dice dónde.
 
 Camino completo: [`docs/documentacion/QUICKSTART.md`](docs/documentacion/QUICKSTART.md).
 
@@ -79,7 +79,7 @@ El juguete esconde tres cosas: una regla no documentada, una mentira en el manua
 
 **¿Qué sabe el explorador que una persona no, y al revés?** El explorador descubre lo que el sistema *permite y rechaza* con cada rol, sin cansarse; no sabe cómo lo usa la oficina. Los datos reales dicen qué se usa; la sección 12 dice a quién preguntarle el resto.
 
-**¿Y si me dieron un JAR, un dist de Node, un .NET?** Hoy `detect` reconoce **WAR de Java + respaldo PostgreSQL**; un JAR ejecutable todavía no. Con cualquier otro stack `/pepper` se detiene en el inventario de lo que vio y en un borrador de perfil (`profiles/<id>/`, `status: draft`) que una persona revisa; ese perfil — señales de detección, extractores del mapa, receta para levantarlo, parsers de sus logs — es la forma de extender la herramienta, y va como datos, nunca como código del núcleo. Ver [`PERFILES.md`](docs/documentacion/PERFILES.md).
+**¿Y si me dieron un JAR, un dist de Node, un .NET?** Hoy `detect` reconoce **WAR de Java + respaldo PostgreSQL** y **WAR de Grails 1.x + respaldo MySQL**; un JAR ejecutable todavía no. Con cualquier otro stack `/pepper` se detiene en el inventario de lo que vio y en un borrador de perfil (`profiles/<id>/`, `status: draft`) que una persona revisa; ese perfil — señales de detección, extractores del mapa, receta para levantarlo, parsers de sus logs — es la forma de extender la herramienta, y va como datos, nunca como código del núcleo. Ver [`PERFILES.md`](docs/documentacion/PERFILES.md).
 
 **¿Claude Code o Codex?** Claude Code. Los comandos son archivos de instrucciones y el paquete trae `AGENTS.md` para que otro agente pueda leerlo, pero **con Codex no se ha probado**.
 
@@ -90,7 +90,8 @@ El juguete esconde tres cosas: una regla no documentada, una mentira en el manua
 | Núcleo: detect, map, rehydrate, isolate, proxy, explore, collect, correlate, package, export | implementados y probados (suite en `tests/`, `scripts/verificar.py`, CI). **El ciclo completo corrió en frío** desde un clon limpio de este repo, sin manos, hasta `funcional.md` (2026-09-11) |
 | Perfil `java-springboot-jsf-postgres` | `draft`; corrió el pipeline entero contra un legacy real (mapa, levantar, explorar, descubrir). Un perfil `draft` corre igual: `environment.json` y `funcional.md` lo declaran; lo promueve a `validated` una persona tras verlo correr |
 | Perfil `java-wildfly-postgres` | `draft`; parsers |
-| Pendientes | promover un perfil a `validated`; un segundo perfil no-Java; CI con un E2E de Docker |
+| Perfil `groovy-grails1-tomcat-mysql` | `draft`; el primer stack sin PostgreSQL: el mapa corrió contra un legacy real (1162 rutas, 10 jobs); `rehydrate` genera plan y compose; **el levantamiento de punta a punta está pendiente** de un respaldo de la base de la aplicación |
+| Pendientes | promover un perfil a `validated`; levantar el perfil Grails/MySQL de punta a punta; multicomponente (varios desplegables terminan en `BLOCKED` con la lista de piezas); un perfil no-JVM; CI con un E2E de Docker (hoy CI corre la suite, la demo sintética y la prueba hermética del navegador contra el ingress) |
 
 ## Stack y requisitos
 

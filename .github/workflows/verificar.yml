@@ -12,6 +12,8 @@ jobs:
         with:
           python-version: "3.9"
       - run: pip install -r requirements-dev.txt
+      - name: Chromium para la prueba hermética del ingress (sin él, esa prueba se salta)
+        run: python3 -m playwright install --with-deps chromium
       - run: python3 scripts/verificar.py
       - run: python3 -m unittest discover -s tests
       - name: PEPPER no se instala (fail-closed, D28)

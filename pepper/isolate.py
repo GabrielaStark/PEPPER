@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import re
 import subprocess
 import urllib.error
@@ -297,13 +298,94 @@ def _named_volume_bind(spec: Any) -> Optional[str]:
     return None
 
 
+def _resolve_host_path(source: str, compose_dir: Optional[Path]) -> Optional[Path]:
+    """La ruta real del host detrás de un bind; None si no se puede resolver (relativa sin
+    compose_dir, `~`, error del sistema de archivos)."""
+    if not source or source.startswith("~"):
+        return None
+    path = Path(source)
+    if not path.is_absolute():
+        if compose_dir is None:
+            return None
+        path = compose_dir / path
+    try:
+        return path.resolve()
+    except OSError:
+        return None
+
+
+def _first_socket(directory: Path, budget: int = 5000) -> Optional[str]:
+    """La primera ruta que sea socket dentro del directorio; "" si no hay ninguno; None si el
+    directorio es demasiado grande para recorrerlo entero (no comprobable)."""
+    seen = 0
+    for root, dirs, files in os.walk(directory):
+        for entry in dirs + files:
+            seen += 1
+            if seen > budget:
+                return None
+            candidate = Path(root) / entry
+            try:
+                if candidate.is_socket():
+                    return str(candidate)
+            except OSError:
+                continue
+    return ""
+
+
+def _check_host_mount(name: str, label: str, source: str, readonly: bool, is_ingress: bool,
+                      compose_dir: Optional[Path], report: Report) -> None:
+    """Un montaje respaldado por el host: bind directo o volumen nombrado con `driver_opts` de bind.
+
+    Se admiten archivos concretos y, de directorios, solo los que PEPPER mismo escribió junto al
+    compose (`./stub`, `./proxy`) y no contienen sockets. `/var/run:/x:ro` daba verde: `docker.sock`
+    no aparecía en la ruta declarada pero el directorio lo contiene, y `:ro` no vuelve de solo
+    consulta la API del daemon (revisión 2026-09-22, P1). Lo que no existe en esta máquina no se
+    puede comprobar y no da verde."""
+    if _DOCKER_SOCKET in source:
+        report.add("error", f"`{name}` monta el socket de Docker ({label})",
+                   "con el socket, el contenedor controla Docker: puede crear un contenedor CON salida")
+        return
+    if not readonly and not is_ingress:
+        report.add("error", f"`{name}` monta `{source}` del host con escritura ({label})",
+                   "los montajes del host van :ro; con escritura, el legado escribe fuera del entorno desechable")
+    resolved = _resolve_host_path(source, compose_dir)
+    if resolved is None:
+        report.add("unknown", f"`{name}` monta `{source}` del host ({label}) y no pude resolver la ruta",
+                   "sin la ruta real no se sabe qué hay detrás")
+        return
+    if not resolved.exists():
+        report.add("unknown", f"`{name}` monta `{source}` del host ({label}), que no existe en esta máquina",
+                   "Docker crearía un directorio ahí; no se puede comprobar qué expone")
+        return
+    if resolved.is_socket():
+        report.add("error", f"`{name}` monta el socket `{resolved}` del host ({label})",
+                   "un socket es una API del host, no un archivo: :ro no la vuelve de solo consulta")
+        return
+    if resolved.is_dir():
+        inside = compose_dir is not None and resolved.is_relative_to(compose_dir.resolve())
+        if not inside:
+            report.add("error", f"`{name}` monta el directorio `{resolved}` del host ({label})",
+                       "un directorio expone todo lo que contenga —sockets de control incluidos, con otro prefijo—; "
+                       "se montan archivos concretos, o directorios escritos por PEPPER junto al compose")
+            return
+        socket_path = _first_socket(resolved)
+        if socket_path is None:
+            report.add("unknown", f"`{name}` monta el directorio `{resolved}` ({label}) y es demasiado grande para recorrerlo",
+                       "no se pudo comprobar que no contenga sockets")
+        elif socket_path:
+            report.add("error", f"`{name}` monta `{resolved}` ({label}), que contiene el socket `{socket_path}`",
+                       "un socket dentro de un directorio montado es una API del host dentro del contenedor")
+
+
 def _check_service_hardening(name: str, service: Dict[str, Any], is_ingress: bool, report: Report,
-                             volumes: Optional[Dict[str, Any]] = None) -> None:
+                             volumes: Optional[Dict[str, Any]] = None,
+                             compose_dir: Optional[Path] = None) -> None:
     """Capacidades y montajes que reabren la salida aunque la red sea interna.
 
     Un volumen nombrado con `driver_opts` de bind pasaba como volumen normal: el legado escribía
     en `/tmp` del host con verde (auditoría 2026-09-21, P1-01). Se resuelven los volúmenes de
-    nivel superior; los `external` no se pueden comprobar y no dan verde."""
+    nivel superior; los `external` no se pueden comprobar y no dan verde. Todo lo respaldado por
+    el host, con o sin escritura, pasa por `_check_host_mount`."""
     if service.get("privileged"):
         report.add("error", f"`{name}` corre privileged",
                    "un contenedor privilegiado puede reconfigurar la red del host: no hay aislamiento posible")
@@ -317,25 +399,33 @@ def _check_service_hardening(name: str, service: Dict[str, Any], is_ingress: boo
         report.add("error", f"`{name}` monta dispositivos del host: {service['devices']}")
     for volume in (service.get("volumes") or []):
         source, target, readonly = _volume_parts(volume)
-        if _DOCKER_SOCKET in source or _DOCKER_SOCKET in target:
+        if _DOCKER_SOCKET in target:
             report.add("error", f"`{name}` monta el socket de Docker",
                        "con el socket, el contenedor controla Docker: puede crear un contenedor CON salida")
             continue
-        named = (volumes or {}).get(source) if source and not _is_bind(source) else None
-        if source and not _is_bind(source) and volumes is not None and source in volumes:
-            spec = volumes.get(source) or {}
-            if isinstance(spec, dict) and spec.get("external"):
-                report.add("unknown", f"`{name}` monta el volumen preexistente `{source}` (external)",
-                           "no se puede comprobar qué hay detrás; con --live se inspecciona el volumen")
-                continue
-            device = _named_volume_bind(named)
-            if device and not readonly and not is_ingress:
-                report.add("error", f"`{name}` monta `{source}`, un volumen nombrado respaldado por `{device}` del host, con escritura",
-                           "un bind con otro nombre sigue siendo un bind: el legado escribe fuera del entorno desechable")
-                continue
-        if _is_bind(source) and not readonly and not is_ingress:
-            report.add("error", f"`{name}` monta `{source}` del host con escritura",
-                       "los montajes del host van :ro; con escritura, el legado escribe fuera del entorno desechable")
+        if not source:
+            continue   # volumen anónimo: nace y muere con el entorno
+        if _is_bind(source):
+            _check_host_mount(name, "bind", source, readonly, is_ingress, compose_dir, report)
+            continue
+        if volumes is None or source not in volumes:
+            report.add("unknown", f"`{name}` monta el volumen `{source}`, que el compose no declara",
+                       "no se puede comprobar qué hay detrás")
+            continue
+        spec = volumes.get(source) or {}
+        if isinstance(spec, dict) and spec.get("external"):
+            report.add("unknown", f"`{name}` monta el volumen preexistente `{source}` (external)",
+                       "no se puede comprobar qué hay detrás; con --live se inspecciona el volumen")
+            continue
+        device = _named_volume_bind(spec)
+        if device is None:
+            continue   # volumen normal de Docker: desechable
+        if not device.startswith("/"):
+            report.add("error", f"`{name}` monta `{source}`, un volumen nombrado con driver_opts de bind sin ruta absoluta",
+                       "un bind sin ruta comprobable no cuenta como desechable")
+            continue
+        _check_host_mount(name, f"volumen nombrado `{source}` respaldado por `{device}`", device, readonly,
+                          is_ingress, compose_dir, report)
 
 
 def _check_ingress(name: str, service: Dict[str, Any], compose_dir: Optional[Path],
@@ -473,7 +563,8 @@ def check_static(compose: Dict[str, Any], external_hosts: Optional[List[str]] = 
     for name, service in services.items():
         service = service or {}
         is_ingress = name == ingress
-        _check_service_hardening(name, service, is_ingress, report, volumes=compose.get("volumes") or {})
+        _check_service_hardening(name, service, is_ingress, report, volumes=compose.get("volumes") or {},
+                                 compose_dir=compose_dir)
 
         mode = str(service.get("network_mode") or "")
         if mode:
@@ -575,6 +666,34 @@ def _live_volume_bind(name: str) -> Optional[str]:
         return None
     device = _named_volume_bind({"driver_opts": options})
     return device or ""
+
+
+def _check_live_mounts(service: str, mounts: List[Dict[str, Any]], is_ingress: bool,
+                       compose_dir: Optional[Path], report: Report) -> None:
+    """Los `Mounts` de `docker inspect`, uno por uno. Cada montaje respaldado por el host se
+    resuelve con o sin escritura: un volumen nombrado sobre `/var/run` en :ro solo se inspeccionaba
+    si era RW y daba verde (revisión 2026-09-22, P1)."""
+    for mount in mounts:
+        source = str(mount.get("Source", ""))
+        if _DOCKER_SOCKET in source or _DOCKER_SOCKET in str(mount.get("Destination", "")):
+            report.add("error", f"`{service}` tiene montado el socket de Docker",
+                       "el contenedor controla Docker: puede crear otro contenedor con salida")
+            continue
+        if is_ingress:
+            continue   # sus montajes se verifican aparte (exactamente el proxy, :ro)
+        readonly = not bool(mount.get("RW", True))
+        mount_type = str(mount.get("Type") or "")
+        if mount_type == "bind":
+            _check_host_mount(service, "bind, según Docker", source, readonly, False, compose_dir, report)
+        elif mount_type == "volume":
+            volume_name = str(mount.get("Name") or "")
+            device = _live_volume_bind(volume_name)
+            if device is None:
+                report.add("error", f"`{service}`: no pude inspeccionar el volumen `{volume_name}`",
+                           "un volumen que no se deja inspeccionar no cuenta como desechable")
+            elif device:
+                _check_host_mount(service, f"volumen `{volume_name}` respaldado por `{device}`, según Docker",
+                                  device, readonly, False, compose_dir, report)
 
 
 def _network_members(network: str) -> Optional[List[str]]:
@@ -782,6 +901,7 @@ def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
 
     expected_proxy = bundled_proxy_hash()
     live_subnets: List[ipaddress.IPv4Network] = []
+    compose_dir = compose_path.resolve().parent
 
     for container in containers:
         name = container.get("Name") or container.get("name") or "?"
@@ -812,27 +932,7 @@ def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
         for key, label in (("PidMode", "pid"), ("IpcMode", "ipc"), ("UTSMode", "uts")):
             if str(host_config.get(key) or "") == "host":
                 report.add("error", f"`{service}` comparte el namespace {label} del host en ejecución")
-        for mount in info.get("Mounts") or []:
-            source = str(mount.get("Source", ""))
-            if _DOCKER_SOCKET in source or _DOCKER_SOCKET in str(mount.get("Destination", "")):
-                report.add("error", f"`{service}` tiene montado el socket de Docker",
-                           "el contenedor controla Docker: puede crear otro contenedor con salida")
-                continue
-            if service == ingress:
-                continue   # sus montajes se verifican aparte (exactamente el proxy, :ro)
-            writable = bool(mount.get("RW", True))
-            mount_type = str(mount.get("Type") or "")
-            if mount_type == "bind" and writable:
-                report.add("error", f"`{service}` monta `{source}` del host con escritura (según Docker)",
-                           "el legado escribe fuera del entorno desechable")
-            elif mount_type == "volume" and writable:
-                device = _live_volume_bind(str(mount.get("Name") or ""))
-                if device is None:
-                    report.add("error", f"`{service}`: no pude inspeccionar el volumen `{mount.get('Name')}`",
-                               "un volumen que no se deja inspeccionar no cuenta como desechable")
-                elif device:
-                    report.add("error", f"`{service}` monta el volumen `{mount.get('Name')}`, respaldado por `{device}` del host, con escritura",
-                               "un bind con otro nombre sigue siendo un bind")
+        _check_live_mounts(service, info.get("Mounts") or [], service == ingress, compose_dir, report)
 
         if shared_peer is not None:
             peer_name = str(shared_peer.get("Name") or "?").lstrip("/")

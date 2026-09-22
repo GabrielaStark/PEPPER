@@ -44,13 +44,18 @@ AISLADO = {
 
 
 class Base(unittest.TestCase):
-    """Un compose_dir real con el proxy de PEPPER copiado, para que el hash verifique."""
+    """Un compose_dir real (`<raíz>/pepper-out/rehydrate/`) con el proxy de PEPPER copiado, para que
+    el hash verifique, y `<raíz>/legacy/app.war` existente: un bind hacia algo que no existe no
+    da verde (Docker crearía un directorio ahí)."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self.compose_dir = Path(self._tmp.name)
-        (self.compose_dir / "proxy").mkdir()
+        root = Path(self._tmp.name)
+        self.compose_dir = root / "pepper-out" / "rehydrate"
+        (self.compose_dir / "proxy").mkdir(parents=True)
         shutil.copy2(ROOT / "pepper" / "proxy.py", self.compose_dir / "proxy" / "proxy.py")
+        (root / "legacy").mkdir()
+        (root / "legacy" / "app.war").write_bytes(b"PK\x05\x06" + b"\x00" * 18)
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -278,6 +283,67 @@ class CapacidadesTest(Base):
     def test_montaje_del_host_con_escritura_es_fuga(self):
         report = self.leak(lambda c: c["services"]["app"]["volumes"].append("../../legacy:/datos"))
         self.assertTrue(any("con escritura" in f.check for f in report.errors))
+
+    # --- P1 (revisión 2026-09-22): un directorio del host con sockets adentro daba verde en :ro ---
+
+    def test_un_directorio_del_host_en_solo_lectura_es_fuga(self):
+        report = self.leak(lambda c: c["services"]["app"]["volumes"].append("/var/run:/host-run:ro"))
+        self.assertTrue(any("monta el directorio" in f.check and "/var/run" in f.check for f in report.errors),
+                        [f.check for f in report.findings])
+
+    def test_un_volumen_nombrado_sobre_un_directorio_del_host_en_solo_lectura_es_fuga(self):
+        def mutate(c):
+            c["volumes"] = {"runtime": {"driver": "local", "driver_opts": {"type": "none", "o": "bind", "device": "/var/run"}}}
+            c["services"]["app"]["volumes"].append("runtime:/host-run:ro")
+        report = self.leak(mutate)
+        self.assertTrue(any("monta el directorio" in f.check and "respaldado por `/var/run`" in f.check for f in report.errors),
+                        [f.check for f in report.findings])
+
+    def test_un_bind_hacia_una_ruta_inexistente_no_da_verde(self):
+        report = self.leak(lambda c: c["services"]["app"]["volumes"].append("/ruta/que/no/existe:/x:ro"))
+        self.assertEqual(report.verdict, "UNKNOWN", [f.check for f in report.errors])
+        self.assertTrue(any("no existe en esta máquina" in f.check for f in report.unknowns))
+
+    def test_un_directorio_escrito_por_pepper_junto_al_compose_es_valido_si_no_trae_sockets(self):
+        (self.compose_dir / "stub").mkdir()
+        (self.compose_dir / "stub" / "stub.py").write_text("print('stub')\n", encoding="utf-8")
+        report = self.leak(lambda c: c["services"]["stub"].__setitem__("volumes", ["./stub:/stub:ro"]))
+        self.assertEqual(report.verdict, "VERIFIED", [f.check for f in report.errors + report.unknowns])
+        # el mismo directorio con un socket adentro deja de valer
+        import os
+        import socket
+        cwd = os.getcwd()
+        os.chdir(self.compose_dir / "stub")
+        try:
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            listener.bind("control.sock")
+        finally:
+            os.chdir(cwd)
+        try:
+            report = self.leak(lambda c: c["services"]["stub"].__setitem__("volumes", ["./stub:/stub:ro"]))
+            self.assertTrue(any("contiene el socket" in f.check for f in report.errors), [f.check for f in report.findings])
+        finally:
+            listener.close()
+
+    def test_en_vivo_cada_montaje_del_host_se_resuelve_aunque_sea_de_solo_lectura(self):
+        from unittest import mock
+
+        from pepper.isolate import Report, _check_live_mounts
+        mounts = [
+            {"Type": "bind", "Source": "/var/run", "Destination": "/host-run", "RW": False},
+            {"Type": "volume", "Name": "runtime", "Source": "/var/lib/docker/volumes/runtime/_data", "Destination": "/rt", "RW": False},
+            {"Type": "volume", "Name": "db-data", "Source": "/var/lib/docker/volumes/db-data/_data", "Destination": "/var/lib/mysql", "RW": True},
+            {"Type": "volume", "Name": "raro", "Source": "", "Destination": "/raro", "RW": False},
+        ]
+        backing = {"runtime": "/var/run", "db-data": "", "raro": None}
+        report = Report()
+        with mock.patch("pepper.isolate._live_volume_bind", side_effect=lambda name: backing[name]):
+            _check_live_mounts("app", mounts, False, self.compose_dir, report)
+        checks = [f.check for f in report.errors]
+        self.assertTrue(any("bind, según Docker" in c and "monta el directorio" in c for c in checks), checks)
+        self.assertTrue(any("volumen `runtime` respaldado por `/var/run`" in c for c in checks), checks)
+        self.assertTrue(any("no pude inspeccionar el volumen `raro`" in c for c in checks), checks)
+        self.assertFalse(any("db-data" in c for c in checks), checks)   # volumen normal con escritura: desechable
 
 
 class ServiciosBajoProfilesTest(unittest.TestCase):

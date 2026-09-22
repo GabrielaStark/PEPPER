@@ -137,49 +137,75 @@ def read_artifact_configs(artifact: Path, patterns: List[str]) -> Dict[str, Dict
     return configs
 
 
+def _datasource_complete(cfg: Dict[str, str]) -> bool:
+    url = next((v for k, v in cfg.items() if k.endswith("datasource.url")), "")
+    user = next((v for k, v in cfg.items() if k.endswith("datasource.username")), "")
+    pwd = next((v for k, v in cfg.items() if k.endswith("datasource.password")), None)
+    return bool(url and user and pwd is not None)
+
+
 def choose_spring_profile(configs: Dict[str, Dict[str, str]], override: Optional[str] = None) -> Tuple[str, Dict[str, str], List[str]]:
-    """El perfil completo (url, usuario y contraseña del datasource). Manda `spring.profiles.active`
-    del documento base si nombra uno completo; si hay varios completos y ninguno activo, BLOCKED:
-    elegir `prod` por costumbre levantaba un ambiente que quizá no era el original (auditoría
-    2026-09-21, P1-02). La persona decide con `--config-profile`, y queda registrado.
-    → (nombre, config fusionada con la base, desviaciones)."""
+    """El perfil (o la lista de perfiles) con que se levanta, con la semántica de Spring Boot: el
+    documento base más cada perfil activo en orden, y ante conflicto manda el último.
+
+    `spring.profiles.active` se respeta entero o se bloquea: si la combinación activa no deja url,
+    usuario y contraseña del datasource completos, NO se sustituye por otro candidato que sí los
+    tenga (`production` incompleto + `qa` completo levantaba qa y lo documentaba como el sistema;
+    revisión 2026-09-22, P1). Sin perfil activo y con varios completos, BLOCKED (auditoría
+    2026-09-21, P1-02). `--config-profile` (uno o varios, separados por coma) se valida antes de
+    cualquier otra salida y queda como desviación. → (nombre, config fusionada, desviaciones)."""
     base = configs.get("default", {})
+    documents = sorted(name for name in configs if name != "default")
     active = [a.strip() for a in (base.get("spring.profiles.active") or "").split(",") if a.strip()]
-    complete: Dict[str, Dict[str, str]] = {}
-    for name, cfg in configs.items():
-        if name == "default":
-            continue
-        merged = dict(base); merged.update(cfg)
-        url = next((v for k, v in merged.items() if k.endswith("datasource.url")), "")
-        user = next((v for k, v in merged.items() if k.endswith("datasource.username")), "")
-        pwd = next((v for k, v in merged.items() if k.endswith("datasource.password")), None)
-        if url and user and pwd is not None:
-            complete[name] = merged
+
+    def merged(names: List[str]) -> Dict[str, str]:
+        out = dict(base)
+        for name in names:
+            out.update(configs.get(name, {}))
+        return out
+
+    complete = [name for name in documents if _datasource_complete(merged([name]))]
+    if _datasource_complete(base):
+        complete.insert(0, "default")
+    options = ", ".join(complete) or "ninguno"
     deviations: List[str] = []
+
+    if override is not None:
+        names = [n.strip() for n in override.split(",") if n.strip()]
+        unknown = [n for n in names if n != "default" and n not in configs]
+        if not names or unknown:
+            raise Blocked(f"--config-profile {override!r} no es un perfil completo del artefacto; los completos son: {options}")
+        cfg = merged([n for n in names if n != "default"])
+        if not _datasource_complete(cfg):
+            raise Blocked(f"--config-profile {override!r} no es un perfil completo del artefacto (falta url, usuario o "
+                          f"contraseña del datasource); los completos son: {options}")
+        deviations.append(f"perfil de configuración '{override}' elegido por la persona (--config-profile); "
+                          f"completos en el artefacto: {options}")
+        return ",".join(names), cfg, deviations
+
+    if active:
+        cfg = merged(active)
+        absent = [a for a in active if a not in configs]
+        if not _datasource_complete(cfg):
+            raise Blocked(f"spring.profiles.active = {','.join(active)} y esa combinación no trae url, usuario y contraseña "
+                          f"del datasource completos{' (sin documento en el artefacto: ' + ', '.join(absent) + ')' if absent else ''}: "
+                          f"la configuración de ese ambiente vive fuera del artefacto. Consíguela; o, si el ambiente a reconstruir es "
+                          f"otro, dilo con --config-profile <nombre> (completos: {options}) y quedará escrito")
+        if absent:
+            deviations.append(f"spring.profiles.active = {','.join(active)}; el artefacto no trae documento para: "
+                              f"{', '.join(absent)} (esa parte queda con el documento base)")
+        return ",".join(active), cfg, deviations
+
     if not complete:
-        # solo el documento base: vale si él mismo está completo
-        url = next((v for k, v in base.items() if k.endswith("datasource.url")), "")
-        user = next((v for k, v in base.items() if k.endswith("datasource.username")), "")
-        pwd = next((v for k, v in base.items() if k.endswith("datasource.password")), None)
-        if url and user and pwd is not None:
-            return "default", dict(base), deviations
         raise Blocked("ningún perfil de configuración dentro del artefacto trae url, usuario y contraseña del datasource: "
                       "no dice a qué conectarse. Consigue la configuración externa del ambiente.")
-    if override:
-        if override not in complete:
-            raise Blocked(f"--config-profile {override!r} no es un perfil completo del artefacto; los completos son: {', '.join(sorted(complete))}")
-        deviations.append(f"perfil de configuración '{override}' elegido por la persona (--config-profile); "
-                          f"completos en el artefacto: {', '.join(sorted(complete))}")
-        return override, complete[override], deviations
-    chosen = next((a for a in active if a in complete), None)
-    if chosen is None:
-        if len(complete) > 1:
-            raise Blocked(f"varios perfiles de configuración completos ({', '.join(sorted(complete))}) y spring.profiles.active "
-                          "no señala ninguno: elegir uno sería adivinar el ambiente. Di cuál con --config-profile <nombre>")
-        chosen = next(iter(complete))
-    elif active and chosen != active[0]:
-        deviations.append(f"spring.profiles.active = {','.join(active)}; el primero completo es '{chosen}'")
-    return chosen, complete[chosen], deviations
+    if len(complete) > 1:
+        raise Blocked(f"varios perfiles de configuración completos ({options}) y spring.profiles.active "
+                      "no señala ninguno: elegir uno sería adivinar el ambiente. Di cuál con --config-profile <nombre>")
+    chosen = complete[0]
+    if chosen != "default":
+        deviations.append(f"spring.profiles.active no está declarado en el artefacto; '{chosen}' es el único perfil completo")
+    return chosen, merged([chosen] if chosen != "default" else []), deviations
 
 
 # --------------------------------------------------------------- el plan

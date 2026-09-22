@@ -45,7 +45,7 @@ import uuid
 from datetime import datetime
 from http.client import HTTPConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import parse_qs, urlsplit
 
 # Headers hop-by-hop (RFC 7230 §6.1): son del tramo, no del mensaje; no se reenvían.
@@ -79,6 +79,24 @@ _BLOCKED_PATH = "/__pepper/blocked"
 _MAX_REQUEST_BYTES = 32 * 1024 * 1024   # más que eso no es una pantalla de un legacy: 413, sin agotar memoria
 _META_REFRESH_RE = re.compile(rb"<meta\s+[^>]*http-equiv\s*=\s*[\"\']?refresh[\"\']?[^>]*>", re.IGNORECASE)
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+# A dónde llevaría un navegador un destino de navegación (Location, meta refresh). No se
+# decide con urlsplit: para el navegador `///h/p`, `/\h/p` y `http:///h/p` son `http://h/p`
+# (WHATWG URL, "special authority ignore slashes"), y los tabs y saltos se ignoran.
+_NAV_SCHEMES = {"http", "https"}
+_SCHEME_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.\-]*):(.*)$", re.DOTALL)
+_AMBIGUOUS_TARGET = "destino-ambiguo"
+# Framing chunked (RFC 7230 §4.1): tamaño hexadecimal no vacío, CRLF exactos, chunk cero
+# explícito y trailers con sintaxis de cabecera; lo que no encaje es una petición mala.
+_CHUNK_SIZE_RE = re.compile(rb"^[0-9A-Fa-f]{1,16}$")
+_CHUNK_EXT_RE = re.compile(rb"^[^\x00-\x1f\x7f]*$")
+_TRAILER_RE = re.compile(rb"^([!#$%&'*+.^_`|~0-9A-Za-z\-]+):[ \t]*([^\x00-\x08\x0a-\x1f\x7f]*)$")
+_FORBIDDEN_TRAILERS = {
+    "transfer-encoding", "content-length", "host", "trailer", "te", "connection", "upgrade",
+    "expect", "max-forwards", "range", "content-type", "content-encoding", "content-range",
+    "cache-control", "authorization", "proxy-authorization", "cookie", "set-cookie",
+    "www-authenticate", "proxy-authenticate",
+}
+_MAX_TRAILERS = 32
 # Guardián para lo que CSP no cubre: window.open, clic en <a href> externo y submit
 # a otro origen. Intercepta, no navega, y reporta. Solo ASCII: se inyecta en bytes.
 _GUARD_SCRIPT = (
@@ -165,17 +183,68 @@ def guard_html(content_type: str, content_encoding: str, payload: bytes) -> Tupl
     return payload[:at] + _GUARD_SCRIPT + payload[at:], None
 
 
-def strip_meta_refresh(payload: bytes) -> Tuple[bytes, List[str]]:
-    """Quita todo <meta http-equiv=refresh> cuyo destino sea absoluto (otro origen) y
-    devuelve los destinos: una navegación top-level que la CSP no frena."""
+def _navigation_authority(rest: str, own: Iterable[str]) -> Tuple[str, str]:
+    """`rest` empieza con barras: el navegador las ignora todas y lee la autoridad hasta
+    `/`, `?` o `#`. → ("relative", ruta) si la autoridad es el propio ingress/app,
+    ("blocked", host) si no."""
+    body = rest.lstrip("/")
+    end = len(body)
+    for stop in "/?#":
+        index = body.find(stop)
+        if index >= 0:
+            end = min(end, index)
+    authority, tail = body[:end], body[end:]
+    host = authority.rsplit("@", 1)[-1].lower()
+    if not host:
+        return "blocked", _AMBIGUOUS_TARGET
+    if host in set(own):
+        path, _, query = tail.partition("?")
+        query = query.partition("#")[0]
+        return "relative", (path or "/") + (f"?{query}" if query else "")
+    return "blocked", host
+
+
+def classify_navigation(value: str, own: Iterable[str] = ()) -> Tuple[str, str]:
+    """A dónde lleva un destino de navegación, con la semántica del navegador (WHATWG URL),
+    no la de urlsplit: `/\\h/p`, `///h/p` y `http:///h/p` salen a `h` aunque urlsplit no
+    les vea netloc (revisión 2026-09-22). → ("relative", destino en el ingress) o
+    ("blocked", host o `destino-ambiguo`). Lo ambiguo (controles, barras invertidas,
+    esquemas que no son http/https, `http:ruta` sin `//`) se bloquea: no se interpreta."""
+    raw = value.strip(" ")
+    if "\\" in raw or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in raw):
+        return "blocked", _AMBIGUOUS_TARGET
+    match = _SCHEME_RE.match(raw)
+    if match:
+        scheme, rest = match.group(1).lower(), match.group(2)
+        if scheme not in _NAV_SCHEMES:
+            return "blocked", f"{scheme}:"
+        if not rest.startswith("//"):
+            return "blocked", _AMBIGUOUS_TARGET   # `http:ruta` depende del esquema base
+        return _navigation_authority(rest, own)
+    if raw.startswith("//"):
+        return _navigation_authority(raw, own)
+    return "relative", raw
+
+
+def strip_meta_refresh(payload: bytes, own: Iterable[str] = ()) -> Tuple[bytes, List[str]]:
+    """Quita todo <meta http-equiv=refresh> cuyo destino salga del ingress (o sea ambiguo)
+    y devuelve los destinos: una navegación top-level que la CSP no frena. La misma regla
+    que Location (`classify_navigation`)."""
     blocked: List[str] = []
+    own_hosts = set(own)
+
     def replace(match: "re.Match[bytes]") -> bytes:
         tag = match.group(0)
-        url = re.search(rb"url\s*=\s*[\"\']?([^\"\'>;\s]+)", tag, re.IGNORECASE)
-        target = url.group(1).decode("utf-8", "replace") if url else ""
-        if target.lower().startswith(("http://", "https://", "//")):
+        url = re.search(rb"url\s*=\s*[\"\']?([^\"\'>;]+)", tag, re.IGNORECASE)
+        if not url:
+            return tag
+        target = url.group(1).decode("utf-8", "replace")
+        kind, resolved = classify_navigation(target, own_hosts)
+        if kind == "blocked":
             blocked.append(target)
             return b"<!-- pepper: meta refresh hacia otro origen bloqueado -->"
+        if resolved != target:
+            return tag.replace(url.group(1), resolved.encode("utf-8"), 1)
         return tag
     return _META_REFRESH_RE.sub(replace, payload), blocked
 
@@ -248,6 +317,9 @@ def blocked_record(kind: str, report: Dict[str, Any]) -> Dict[str, Any]:
         uri = str(report.get("blocked_uri") or "")
         document = str(report.get("document_uri") or "")
         entry = {"ts": _now_iso(), "direction": "blocked", "kind": str(report.get("kind") or "navigation")}
+        if report.get("resolved_host"):
+            # a dónde habría llevado el navegador (WHATWG), que puede diferir de lo que urlsplit ve
+            entry["resolved_host"] = str(report["resolved_host"])
     entry["document_uri"] = sanitize_url(document)[0] if document else ""
     clean, host, path, query = sanitize_url(uri)
     entry["blocked_host"] = host
@@ -307,32 +379,58 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
             data += block
         return bytes(data)
 
+    def _read_chunk_line(self, what: str) -> bytes:
+        """Una línea del framing chunked, sin su CRLF. Sin CRLF (EOF, línea partida o solo LF)
+        el mensaje está incompleto: no se adivina dónde termina."""
+        line = self.rfile.readline(_MAX_LINE)
+        if not line:
+            raise _BadRequest(f"cuerpo chunked truncado: EOF antes de {what}")
+        if not line.endswith(b"\r\n"):
+            raise _BadRequest(f"{what} sin CRLF")
+        return line[:-2]
+
+    def _read_chunked_body(self) -> bytes:
+        """RFC 7230 §4.1 al pie de la letra. `4\\r\\nhola\\r\\n\\r\\n` (sin chunk cero),
+        `…0\\r\\n` seguido de EOF y trailers sin sintaxis de cabecera pasaban como `hola`
+        íntegro (revisión 2026-09-22, P2): el proxy reenviaba como completa una petición
+        que no lo estaba."""
+        data = bytearray()
+        while True:
+            size_line = self._read_chunk_line("el tamaño de un chunk")
+            token, _, extension = size_line.partition(b";")
+            token = token.strip(b" \t")
+            if not _CHUNK_SIZE_RE.match(token):
+                raise _BadRequest(f"tamaño de chunk ilegible: {token[:20]!r}")
+            if not _CHUNK_EXT_RE.match(extension):
+                raise _BadRequest("extensión de chunk con caracteres de control")
+            size = int(token, 16)
+            if size == 0:
+                break
+            if len(data) + size > _MAX_REQUEST_BYTES:
+                raise _TooLarge(len(data) + size)
+            data += self._read_exact(size)
+            if self._read_exact(2) != b"\r\n":
+                raise _BadRequest("terminador de chunk inválido")
+        seen = 0
+        while True:   # trailers: cabeceras válidas hasta la línea vacía; EOF antes es truncado
+            trailer = self._read_chunk_line("el cierre de los trailers")
+            if trailer == b"":
+                return bytes(data)
+            seen += 1
+            if seen > _MAX_TRAILERS:
+                raise _BadRequest(f"más de {_MAX_TRAILERS} trailers")
+            match = _TRAILER_RE.match(trailer)
+            if not match:
+                raise _BadRequest(f"trailer inválido: {trailer[:40]!r}")
+            if match.group(1).decode("ascii").lower() in _FORBIDDEN_TRAILERS:
+                raise _BadRequest(f"trailer no permitido: {match.group(1).decode('ascii')}")
+
     def _read_request_body(self) -> bytes:
         """El límite se aplica ANTES de leer: un chunk declarado de 64 MiB pedía 64 MiB de una vez y
         un cuerpo truncado pasaba como vacío (auditoría 2026-09-21, P2-01)."""
         try:
             if (self.headers.get("Transfer-Encoding") or "").lower() == "chunked":
-                data = bytearray()
-                while True:
-                    size_line = self.rfile.readline(_MAX_LINE)
-                    if not size_line.endswith(b"\n"):
-                        raise _BadRequest("tamaño de chunk ilegible")
-                    size = int(size_line.split(b";")[0].strip() or b"0", 16)
-                    if size < 0:
-                        raise _BadRequest("chunk negativo")
-                    if size == 0:
-                        while True:   # trailers hasta la línea vacía
-                            trailer = self.rfile.readline(_MAX_LINE)
-                            if trailer in (b"\r\n", b"\n", b""):
-                                break
-                            if not trailer.endswith(b"\n"):
-                                raise _BadRequest("trailer ilegible")
-                        return bytes(data)
-                    if len(data) + size > _MAX_REQUEST_BYTES:
-                        raise _TooLarge(len(data) + size)
-                    data += self._read_exact(size)
-                    if self.rfile.readline(_MAX_LINE) not in (b"\r\n", b"\n"):
-                        raise _BadRequest("terminador de chunk inválido")
+                return self._read_chunked_body()
             length = int(self.headers.get("Content-Length") or 0)
         except (_BadRequest, _TooLarge):
             raise
@@ -443,24 +541,26 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
         (su IP interna, que el navegador no alcanza) se vuelve relativo al ingress."""
         if status not in _REDIRECT_STATUSES:
             return headers
-        upstream_host, upstream_port = self.server.upstream  # type: ignore[attr-defined]
-        own = {(self.headers.get("Host") or "").lower(), f"{upstream_host}:{upstream_port}".lower(),
-               upstream_host.lower()}
+        own = self._own_hosts()
         out: List[Tuple[str, str]] = []
         for name, value in headers:
             if name.lower() != "location":
                 out.append((name, value)); continue
-            parts = urlsplit(value)
-            if not parts.netloc:
-                out.append((name, value)); continue           # relativo: se queda en el ingress
-            if parts.netloc.lower() in own:
-                rel = parts.path or "/"
-                out.append((name, rel + (f"?{parts.query}" if parts.query else "")))
-                continue
+            # Con la semántica del navegador, no la de urlsplit: `/\h/p` y `///h/p` no tenían
+            # netloc y pasaban "relativos" hacia `http://h/p` (revisión 2026-09-22).
+            kind, resolved = classify_navigation(value, own)
+            if kind == "relative":
+                out.append((name, resolved)); continue
             self.server.recorder.record(blocked_record("navigation", {  # type: ignore[attr-defined]
-                "kind": "redirect", "blocked_uri": value, "document_uri": self.path.partition("?")[0]}))
-            out.append((name, f"{_BLOCKED_PATH}?to={parts.netloc}"))
+                "kind": "redirect", "blocked_uri": value, "document_uri": self.path.partition("?")[0],
+                "resolved_host": resolved}))
+            out.append((name, f"{_BLOCKED_PATH}?to={resolved}"))
         return out
+
+    def _own_hosts(self) -> set:
+        upstream_host, upstream_port = self.server.upstream  # type: ignore[attr-defined]
+        return {(self.headers.get("Host") or "").lower(), f"{upstream_host}:{upstream_port}".lower(),
+                upstream_host.lower()}
 
     def _serve_blocked_page(self) -> None:
         to = parse_qs(urlsplit(self.path).query).get("to", ["otro origen"])[0]
@@ -547,7 +647,7 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
                 encoding = ""
         payload, guard_note = guard_html(content_type, encoding, payload)
         if is_html and not encoding:
-            payload, refreshes = strip_meta_refresh(payload)
+            payload, refreshes = strip_meta_refresh(payload, self._own_hosts())
             for target in refreshes:
                 self.server.recorder.record(blocked_record("navigation", {  # type: ignore[attr-defined]
                     "kind": "meta-refresh", "blocked_uri": target, "document_uri": self.path.partition("?")[0]}))

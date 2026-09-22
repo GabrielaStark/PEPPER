@@ -388,6 +388,66 @@ class AuditoriaRehydrateTest(unittest.TestCase):
         with self.assertRaisesRegex(Blocked, "no es un perfil completo"):
             make_plan(self._legacy(base_config=base, extra=extra), PROFILE, config_profile="inventado")
 
+    # --- P1 (revisión 2026-09-22): el perfil activo se respeta entero o se bloquea; nunca se sustituye ---
+
+    def test_perfil_activo_incompleto_no_se_sustituye_por_otro_completo(self):
+        base = "spring:\n  profiles:\n    active: production\n"
+        extra = {"WEB-INF/classes/application-production.yml": "spring:\n  datasource:\n    url: jdbc:postgresql://10.42.7.9:5432/prod_db\n",
+                 "WEB-INF/classes/application-qa.yml": CONFIG_PROD.replace("nominas_prod", "qa_db")}
+        with self.assertRaisesRegex(Blocked, r"spring\.profiles\.active = production .*fuera del artefacto"):
+            make_plan(self._legacy(prod_config=None, base_config=base, extra=extra), PROFILE)
+        # y sin ningún documento para el activo, tampoco: qa completo no lo reemplaza
+        with self.assertRaisesRegex(Blocked, r"sin documento en el artefacto: production"):
+            make_plan(self._legacy(prod_config=None, base_config=base,
+                                   extra={"WEB-INF/classes/application-qa.yml": CONFIG_PROD.replace("nominas_prod", "qa_db")}), PROFILE)
+
+    def test_varios_perfiles_activos_se_combinan_y_manda_el_ultimo(self):
+        base = "spring:\n  profiles:\n    active: prod,qa\n"
+        extra = {"WEB-INF/classes/application-qa.yml": "spring:\n  datasource:\n    url: jdbc:postgresql://10.42.7.5:5432/qa_db\n"}
+        plan = make_plan(self._legacy(base_config=base, extra=extra), PROFILE)
+        self.assertEqual((plan.spring_profile, plan.db_name, plan.db_ip), ("prod,qa", "qa_db", "10.42.7.5"))
+        self.assertEqual(plan.db_user, "nominas")   # lo que qa no redefine viene de prod
+        out = self.root / "out"
+        render(plan, PROFILE, out)
+        self.assertIn("SPRING_PROFILES_ACTIVE: prod,qa", (out / "docker-compose.yml").read_text(encoding="utf-8"))
+
+    def test_el_override_se_valida_antes_que_cualquier_salida(self):
+        from pepper.rehydrate import choose_spring_profile
+        base_only = {"default": {"spring.datasource.url": "jdbc:postgresql://10.42.7.2:5432/x",
+                                 "spring.datasource.username": "u", "spring.datasource.password": "p"}}
+        with self.assertRaisesRegex(Blocked, "no es un perfil completo"):
+            choose_spring_profile(base_only, override="inventado")
+        name, cfg, deviations = choose_spring_profile(base_only, override="default")
+        self.assertEqual((name, cfg["spring.datasource.username"]), ("default", "u"))
+        self.assertTrue(any("elegido por la persona" in d for d in deviations), deviations)
+        # un override que nombra un documento incompleto tampoco pasa
+        configs = {"default": {}, "qa": {"spring.datasource.url": "jdbc:postgresql://h:5432/qa"}}
+        with self.assertRaisesRegex(Blocked, "no es un perfil completo"):
+            choose_spring_profile(configs, override="qa")
+
+    def test_perfil_activo_sin_documento_usa_la_base_y_queda_declarado(self):
+        from pepper.rehydrate import choose_spring_profile
+        configs = {"default": {"spring.profiles.active": "production",
+                               "spring.datasource.url": "jdbc:postgresql://10.42.7.2:5432/x",
+                               "spring.datasource.username": "u", "spring.datasource.password": "p"}}
+        name, cfg, deviations = choose_spring_profile(configs)
+        self.assertEqual(name, "production")
+        self.assertEqual(cfg["spring.datasource.url"], "jdbc:postgresql://10.42.7.2:5432/x")
+        self.assertTrue(any("no trae documento para: production" in d for d in deviations), deviations)
+
+    def test_sin_perfil_activo_el_unico_completo_queda_declarado_y_la_base_completa_cuenta(self):
+        from pepper.rehydrate import choose_spring_profile
+        configs = {"default": {}, "prod": {"spring.datasource.url": "jdbc:postgresql://h:5432/p",
+                                           "spring.datasource.username": "u", "spring.datasource.password": "p"}}
+        name, _, deviations = choose_spring_profile(configs)
+        self.assertEqual(name, "prod")
+        self.assertTrue(any("único perfil completo" in d for d in deviations), deviations)
+        # base completa + otro completo, sin activo: dos ambientes posibles → BLOCKED
+        configs["default"] = {"spring.datasource.url": "jdbc:postgresql://h:5432/d",
+                              "spring.datasource.username": "u", "spring.datasource.password": "p"}
+        with self.assertRaisesRegex(Blocked, r"varios perfiles.*default, prod"):
+            choose_spring_profile(configs)
+
     def test_version_del_servidor_que_el_perfil_no_representa_es_blocked(self):
         # antes se usaba "la mayor de la tabla" (26) y se levantaba otro servidor
         with self.assertRaisesRegex(Blocked, "wildfly 999"):

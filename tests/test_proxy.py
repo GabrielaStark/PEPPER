@@ -55,9 +55,25 @@ class _UpstreamHandler(BaseHTTPRequestHandler):
         elif self.path.startswith("/salto-a-mi-ip"):
             host, port = self.server.server_address
             self._reply(302, b"", content_type="text/plain", extra_headers=[("Location", f"http://{host}:{port}/destino?x=1")])
+        elif self.path.startswith("/meta-refresh-barra"):
+            # para el navegador `/\h/x` es `http://h/x` (WHATWG); urlsplit no le ve netloc
+            self._reply(200, b'<html><head><meta http-equiv="refresh" content="0;url=/\\servidor-real.invalid/x">'
+                             b'</head><body>x</body></html>', content_type="text/html")
         elif self.path.startswith("/meta-refresh"):
             self._reply(200, b'<html><head><meta http-equiv="refresh" content="0;url=https://servidor-real.invalid/x">'
                              b'<meta http-equiv="refresh" content="5;url=/local"></head><body>x</body></html>', content_type="text/html")
+        elif self.path.startswith("/salto-"):
+            # Location que urlsplit lee como "sin netloc" o "relativo" y el navegador como otro origen
+            # (revisión 2026-09-22, P1): todos deben terminar en la página de bloqueo
+            location = {
+                "/salto-barra-invertida": "/\\servidor-real.invalid/path",
+                "/salto-triple-barra": "///servidor-real.invalid/path",
+                "/salto-esquema-sin-netloc": "http:///servidor-real.invalid/path",
+                "/salto-javascript": "javascript:alert(1)",
+                "/salto-con-tab": "/\t/servidor-real.invalid/x",
+                "/salto-esquema-sin-barras": "https:servidor-real.invalid/x",
+            }[self.path.partition("?")[0]]
+            self._reply(302, b"", content_type="text/plain", extra_headers=[("Location", location)])
         elif self.path.startswith("/gzip"):
             import gzip
             self._reply(200, gzip.compress(b"<html><head></head><body>comprimido</body></html>"),
@@ -370,6 +386,33 @@ class ProxyTest(unittest.TestCase):
         self.assertEqual(headers.get("Location"), "/destino?x=1")
         self.assertFalse(any(e.get("direction") == "blocked" for e in self.recorder.entries))
 
+    def test_un_3xx_que_solo_el_navegador_lee_como_otro_origen_tambien_se_bloquea(self):
+        # P1 (revisión 2026-09-22): `/\h/p`, `///h/p`, `http:///h/p` pasaban intactos, "relativos"
+        expected_to = {
+            "/salto-barra-invertida": "destino-ambiguo",
+            "/salto-triple-barra": "servidor-real.invalid",
+            "/salto-esquema-sin-netloc": "servidor-real.invalid",
+            "/salto-javascript": "javascript:",
+            "/salto-con-tab": "destino-ambiguo",
+            "/salto-esquema-sin-barras": "destino-ambiguo",
+        }
+        for path, to in expected_to.items():
+            self.recorder.entries.clear()
+            status, headers, _ = self._request("GET", path)
+            self.assertEqual(status, 302, path)
+            self.assertEqual(headers.get("Location"), f"/__pepper/blocked?to={to}", path)
+            blocked = [e for e in self.recorder.entries if e.get("direction") == "blocked"]
+            self.assertEqual(len(blocked), 1, path)
+            self.assertEqual(blocked[0]["kind"], "redirect", path)
+            self.assertEqual(blocked[0]["resolved_host"], to, path)
+
+    def test_meta_refresh_con_barra_invertida_se_quita(self):
+        _, _, body = self._request("GET", "/meta-refresh-barra")
+        self.assertNotIn(b"servidor-real.invalid", body)
+        self.assertIn(b"pepper: meta refresh hacia otro origen bloqueado", body)
+        entry = next(e for e in self.recorder.entries if e.get("direction") == "blocked")
+        self.assertEqual(entry["kind"], "meta-refresh")
+
     def test_meta_refresh_externo_se_quita_y_el_local_se_queda(self):
         _, _, body = self._request("GET", "/meta-refresh")
         self.assertNotIn(b"servidor-real.invalid", body)
@@ -415,6 +458,174 @@ class ProxyTest(unittest.TestCase):
         for event in events:
             by_correlation.setdefault(event.correlation_id, []).append(event)
         self.assertTrue(all(len(pair) == 2 for pair in by_correlation.values()))
+
+
+class ClasificacionDeNavegacionTest(unittest.TestCase):
+    """`classify_navigation` decide con la semántica del navegador (WHATWG URL), no con urlsplit."""
+
+    OWN = {"127.0.0.1:18080", "10.4.2.10:8080", "10.4.2.10"}
+
+    def test_lo_que_el_navegador_manda_a_otro_origen_se_bloquea(self):
+        from pepper.proxy import classify_navigation
+        for value, host in (("https://example.invalid/path", "example.invalid"),
+                            ("///example.invalid/path", "example.invalid"),
+                            ("http:///example.invalid/p", "example.invalid"),
+                            (" //example.invalid", "example.invalid"),
+                            ("http://u:p@example.invalid/", "example.invalid"),
+                            ("http://127.0.0.1:18080@example.invalid/", "example.invalid"),
+                            ("javascript:alert(1)", "javascript:"),
+                            ("data:text/html,x", "data:"),
+                            ("/\\example.invalid/path", "destino-ambiguo"),
+                            ("/\t/example.invalid/x", "destino-ambiguo"),
+                            ("\r\n//example.invalid", "destino-ambiguo"),
+                            ("http:/ruta", "destino-ambiguo"),
+                            ("https:example.invalid/x", "destino-ambiguo"),
+                            ("//", "destino-ambiguo")):
+            self.assertEqual(classify_navigation(value, self.OWN), ("blocked", host), repr(value))
+
+    def test_lo_que_se_queda_en_el_ingress_se_queda(self):
+        from pepper.proxy import classify_navigation
+        for value, resolved in (("/destino", "/destino"), ("destino?x=1", "destino?x=1"), ("?x=1", "?x=1"),
+                                ("#f", "#f"), ("", ""), ("1a:foo", "1a:foo"),
+                                ("http://10.4.2.10:8080/d?x=1", "/d?x=1"), ("http://10.4.2.10/", "/"),
+                                ("//127.0.0.1:18080/a/b?q=1#f", "/a/b?q=1"),
+                                ("HTTP://10.4.2.10:8080/", "/")):
+            self.assertEqual(classify_navigation(value, self.OWN), ("relative", resolved), repr(value))
+
+
+class LectorChunkedTest(unittest.TestCase):
+    """El framing chunked contra streams en memoria, sin sockets (P2, revisión 2026-09-22):
+    tamaño hexadecimal no vacío, chunk cero explícito, CRLF exactos, trailers válidos."""
+
+    def _read(self, raw):
+        import email.message
+        import io
+
+        from pepper.proxy import PepperProxyHandler
+        handler = PepperProxyHandler.__new__(PepperProxyHandler)
+        handler.rfile = io.BytesIO(raw)
+        handler.headers = email.message.Message()
+        handler.headers["Transfer-Encoding"] = "chunked"
+        return handler._read_request_body()
+
+    def test_un_cuerpo_bien_formado_se_lee(self):
+        self.assertEqual(self._read(b"4\r\nhola\r\n0\r\n\r\n"), b"hola")
+        self.assertEqual(self._read(b"2;ext=1\r\nho\r\n2\r\nla\r\n0\r\nX-Checksum: abc\r\n\r\n"), b"hola")
+        self.assertEqual(self._read(b"0\r\n\r\n"), b"")
+
+    def test_los_finales_invalidos_son_peticion_mala(self):
+        from pepper.proxy import _BadRequest
+        for raw, reason in ((b"4\r\nhola\r\n\r\n", "sin chunk cero: la línea vacía no es un tamaño"),
+                            (b"4\r\nhola\r\n0\r\n", "EOF antes del cierre de los trailers"),
+                            (b"4\r\nhola\r\n0\r\ninvalid-header\r\n\r\n", "trailer sin sintaxis de cabecera"),
+                            (b"4\r\nhola\n0\r\n\r\n", "terminador de chunk con LF solo"),
+                            (b"4\nhola\r\n0\r\n\r\n", "tamaño con LF solo"),
+                            (b"4\r\nhola\r\n0\r\n\n", "cierre de trailers con LF solo"),
+                            (b"4\r\nhola\r\n0\r\nContent-Length: 4\r\n\r\n", "trailer prohibido"),
+                            (b"4\r\nhola\r\n0\r\nX: a\x01b\r\n\r\n", "trailer con control"),
+                            (b"-4\r\nhola\r\n0\r\n\r\n", "tamaño negativo"),
+                            (b"\r\nhola\r\n0\r\n\r\n", "tamaño vacío"),
+                            (b"4\r\nhol", "cuerpo truncado"),
+                            (b"4\r\nhola", "sin terminador")):
+            with self.assertRaises(_BadRequest, msg=reason):
+                self._read(raw)
+
+    def test_demasiados_trailers_es_peticion_mala(self):
+        from pepper.proxy import _BadRequest
+        trailers = b"".join(b"X-%d: v\r\n" % i for i in range(40))
+        with self.assertRaises(_BadRequest):
+            self._read(b"0\r\n" + trailers + b"\r\n")
+
+
+class NavegacionHermeticaTest(unittest.TestCase):
+    """Un Chromium real detrás del ingress: ninguna navegación sale de 127.0.0.1.
+
+    Toda petición del navegador se intercepta y se anota; la que no vaya al ingress es fallo.
+    Además el resolver de Chromium se inhabilita (todo nombre → NOTFOUND salvo 127.0.0.1), así
+    que aun sin la intercepción nada saldría de la máquina. Se salta sin Playwright o sin Chromium."""
+
+    PATHS = ("/salto-externo", "/salto-barra-invertida", "/salto-triple-barra", "/salto-esquema-sin-netloc",
+             "/salto-javascript", "/salto-con-tab", "/salto-esquema-sin-barras", "/meta-refresh", "/meta-refresh-barra")
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            raise unittest.SkipTest("necesita playwright")
+        cls.upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UpstreamHandler)
+        cls.upstream.daemon_threads = True
+        _serve(cls.upstream)
+        cls.recorder = _MemoryRecorder()
+        cls.proxy = ProxyServer(("127.0.0.1", 0), cls.upstream.server_address, cls.recorder, upstream_timeout=5.0)
+        _serve(cls.proxy)
+        cls.playwright = sync_playwright().start()
+        try:
+            cls.browser = cls.playwright.chromium.launch(
+                args=["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"])
+        except Exception as error:  # noqa: BLE001 — sin navegador instalado la prueba se salta, no falla
+            cls.playwright.stop()
+            cls.proxy.shutdown(); cls.proxy.server_close()
+            cls.upstream.shutdown(); cls.upstream.server_close()
+            raise unittest.SkipTest(f"chromium no disponible: {str(error).splitlines()[0]}")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.browser.close()
+        cls.playwright.stop()
+        cls.proxy.shutdown(); cls.proxy.server_close()
+        cls.upstream.shutdown(); cls.upstream.server_close()
+
+    def _navigate(self, origin, path):
+        """(url final, contenido, peticiones fuera del origen) tras navegar a origin+path."""
+        foreign = []
+        context = self.browser.new_context()
+        page = context.new_page()
+
+        def note(request):
+            if not request.url.startswith(origin + "/"):
+                foreign.append(request.url)
+        context.on("request", note)
+
+        def handle(route, request):
+            if request.url.startswith(origin + "/"):
+                route.continue_()
+            else:
+                if request.url not in foreign:
+                    foreign.append(request.url)
+                route.abort()
+        page.route("**/*", handle)
+        try:
+            page.goto(origin + path, wait_until="load", timeout=10000)
+            page.wait_for_timeout(500)   # un meta refresh de 0 s dispara después de load
+        except Exception:  # noqa: BLE001 — una navegación abortada es justo lo que se mide
+            pass
+        url = page.url
+        try:
+            content = page.content()
+        except Exception:  # noqa: BLE001 — una página a medio navegar (abortada) no tiene contenido que leer
+            content = ""
+        context.close()
+        return url, content, foreign
+
+    def test_el_arnes_detecta_una_salida_real(self):
+        # control positivo: sin el ingress, el mismo 302 SÍ intenta salir y el arnés lo ve
+        host, port = self.upstream.server_address
+        _, _, foreign = self._navigate(f"http://{host}:{port}", "/salto-externo")
+        self.assertTrue(any("servidor-real.invalid" in u for u in foreign), foreign)
+
+    def test_ninguna_navegacion_sale_del_ingress(self):
+        host, port = self.proxy.server_address
+        origin = f"http://{host}:{port}"
+        for path in self.PATHS:
+            url, content, foreign = self._navigate(origin, path)
+            self.assertEqual(foreign, [], path)
+            self.assertTrue(url.startswith(origin + "/"), (path, url))
+            if path.startswith("/salto-"):
+                self.assertIn("/__pepper/blocked", url, path)
+                self.assertIn("bloqueada", content, path)
+            else:
+                self.assertNotIn("servidor-real.invalid", content, path)
 
 
 if __name__ == "__main__":
