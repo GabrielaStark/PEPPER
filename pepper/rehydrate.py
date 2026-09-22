@@ -404,20 +404,24 @@ def classify_components(artifacts: List[Path], profile: Profile, subnet_base: st
     return components, sin_clasificar
 
 
-def ingress_component(components: List[Component], spec: Dict[str, Any]) -> Component:
-    """A qué pieza le habla el ingress: la que el perfil diga (`ingress_role`), o la puerta de
+def ingress_component(components: List[Component], spec: Dict[str, Any],
+                      notes: Optional[List[str]] = None) -> Component:
+    """A qué pieza le habla el ingress: la que el perfil prefiera (`ingress_role`), o la puerta de
     entrada natural — gateway, luego frontend, luego el único backend. Con varias candidatas y
-    sin `ingress_role`, BLOCKED: elegir la puerta sería adivinar por dónde entra la gente."""
+    sin una preferencia que las desempate, BLOCKED: elegir la puerta sería adivinar por dónde entra
+    la gente. `ingress_role` es una preferencia, no un requisito: un sistema sin puerta de enlace se
+    entra por lo que haya, y eso queda anotado."""
     wanted = spec.get("ingress_role")
     if wanted:
         matching = [c for c in components if c.role == wanted]
-        if not matching:
-            raise Blocked(f"el perfil declara ingress_role '{wanted}' y ninguna pieza tiene ese papel: "
-                          f"{', '.join(f'{c.name}={c.role}' for c in components)}")
         if len(matching) > 1:
             raise Blocked(f"varias piezas con el papel '{wanted}' ({', '.join(c.name for c in matching)}): "
                           "el ingress solo puede apuntar a una")
-        return matching[0]
+        if matching:
+            return matching[0]
+        if notes is not None:
+            notes.append(f"el perfil prefiere entrar por una pieza '{wanted}' y este sistema no tiene ninguna; "
+                         f"se entra por lo que hay: {', '.join(f'{c.name}={c.role}' for c in components)}")
     for role in ("gateway", "frontend", "backend"):
         matching = [c for c in components if c.role == role]
         if len(matching) == 1:
@@ -714,13 +718,15 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
                 f"el perfil {profile.id} no reconoce {len(sin_clasificar)} de los {len(artifacts)} desplegables:\n{lista}\n"
                 "    Una pieza sin papel no se levanta ni se declara: agrega su regla a "
                 "`rehydrate.components.classify` o sácala de legacy/ si no es parte del sistema.")
-        if not spec.get("service_template") and not solo_backend:
-            raise Blocked(
-                f"el perfil {profile.id} declara `rehydrate.components` y reparte así los {len(artifacts)} desplegable(s):\n{lista}\n"
-                "    Pero no declara `rehydrate.components.service_template`: sabe clasificar, no levantar. "
-                "Agrega esa plantilla al perfil, o deja en legacy/ únicamente el backend a levantar.")
-        if solo_backend:
-            components = []   # un solo desplegable que es la app: el camino de siempre
+        if not spec.get("service_template"):
+            # El perfil sabe clasificar pero no levantar. La única excepción honesta sigue siendo un
+            # solo desplegable reconocido como backend: ese sí es "la aplicación" del camino de siempre.
+            if not solo_backend:
+                raise Blocked(
+                    f"el perfil {profile.id} declara `rehydrate.components` y reparte así los {len(artifacts)} desplegable(s):\n{lista}\n"
+                    "    Pero no declara `rehydrate.components.service_template`: sabe clasificar, no levantar. "
+                    "Agrega esa plantilla al perfil, o deja en legacy/ únicamente el backend a levantar.")
+            components = []
         else:
             datasource_role = spec.get("datasource_role", "backend")
             carriers = [c for c in components if c.role == datasource_role]
@@ -732,7 +738,7 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
                               "no se sabe de cuál leer el datasource ni cuál base es la del sistema. "
                               "Hoy PEPPER fabrica una sola base por entorno.")
             artifact = carriers[0].artifact   # de esta pieza sale el datasource, y con él la base
-            entry = ingress_component(components, spec)
+            entry = ingress_component(components, spec, component_notes)
             component_notes.append(
                 f"sistema de {len(components)} piezas: " + ", ".join(f"{c.name} ({c.role})" for c in components)
                 + f"; el ingress entra por `{entry.name}` y el datasource sale de `{carriers[0].name}`")

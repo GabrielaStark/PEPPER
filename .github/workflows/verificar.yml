@@ -14,6 +14,11 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - name: Chromium para la prueba hermética del ingress (sin él, esa prueba se salta)
         run: python3 -m playwright install --with-deps chromium
+      # `javap` para el mapa de un artefacto JVM y `javac` para compilar el servicio del E2E de Docker.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
       - run: python3 scripts/verificar.py
       - name: Suite (las pruebas que fallen quedan como anotaciones del job)
         run: |
@@ -40,6 +45,8 @@ jobs:
           python3 -m pepper export /tmp/pepper-demo/package --manifest /tmp/pepper-demo/package.evidence-manifest.json --check
           python3 -m pepper export /tmp/pepper-demo/package --manifest /tmp/pepper-demo/package.evidence-manifest.json --out /tmp/pepper-demo/export --system-doc /tmp/pepper-demo/docs
           test -f /tmp/pepper-demo/docs/funcional.md
+      - name: E2E de Docker (levanta un entorno aislado de verdad y lo sirve por el ingress)
+        run: python3 scripts/e2e_docker.py
       - name: Sondas adversariales sobre el gate remoto y el proxy
         run: |
           python3 -m unittest -v tests.test_sensitive.GateOnWhatTravelsTest tests.test_proxy.UrlSanitizationTest \

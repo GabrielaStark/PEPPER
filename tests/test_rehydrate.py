@@ -813,8 +813,13 @@ class LevantarVariasPiezasTest(unittest.TestCase):
         with self.assertRaisesRegex(Blocked, "varias piezas con el papel 'frontend'"):
             ingress_component(piezas, {})
         self.assertEqual(ingress_component(piezas, {"ingress_role": "backend"}).name, "c")
-        with self.assertRaisesRegex(Blocked, "ingress_role 'gateway'"):
-            ingress_component(piezas, {"ingress_role": "gateway"})
+        # `ingress_role` es preferencia, no requisito: sin gateway se entra por lo que haya, anotado
+        notas = []
+        with self.assertRaisesRegex(Blocked, "varias piezas con el papel 'frontend'"):
+            ingress_component(piezas, {"ingress_role": "gateway"}, notas)
+        solo_backend = [p for p in piezas if p.role == "backend"]
+        self.assertEqual(ingress_component(solo_backend, {"ingress_role": "gateway"}, notas).name, "c")
+        self.assertTrue(any("no tiene ninguna" in n for n in notas), notas)
 
 
 def papeles_ip(plan, name):
