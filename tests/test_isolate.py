@@ -288,7 +288,8 @@ class CapacidadesTest(Base):
 
     def test_un_directorio_del_host_en_solo_lectura_es_fuga(self):
         report = self.leak(lambda c: c["services"]["app"]["volumes"].append("/var/run:/host-run:ro"))
-        self.assertTrue(any("monta el directorio" in f.check and "/var/run" in f.check for f in report.errors),
+        # en Linux `/var/run` resuelve a `/run`; en macOS a `/private/var/run`: el mensaje nombra la declarada
+        self.assertTrue(any("monta el directorio" in f.check and "`/var/run`" in f.check for f in report.errors),
                         [f.check for f in report.findings])
 
     def test_un_volumen_nombrado_sobre_un_directorio_del_host_en_solo_lectura_es_fuga(self):

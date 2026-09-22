@@ -15,7 +15,14 @@ jobs:
       - name: Chromium para la prueba hermética del ingress (sin él, esa prueba se salta)
         run: python3 -m playwright install --with-deps chromium
       - run: python3 scripts/verificar.py
-      - run: python3 -m unittest discover -s tests
+      - name: Suite (las pruebas que fallen quedan como anotaciones del job)
+        run: |
+          set -o pipefail
+          python3 -m unittest discover -s tests 2>&1 | tee /tmp/tests.log | tail -n 5
+          status=${PIPESTATUS[0]}
+          grep -E "^(FAIL|ERROR): " /tmp/tests.log | sed 's/^/::error::/' || true
+          grep -E "^(AssertionError|[A-Za-z]+Error): " /tmp/tests.log | head -n 20 | sed 's/^/::error::/' || true
+          exit "$status"
       - name: PEPPER no se instala (fail-closed, D28)
         run: |
           set -o pipefail

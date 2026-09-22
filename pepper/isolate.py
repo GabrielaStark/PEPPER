@@ -364,7 +364,8 @@ def _check_host_mount(name: str, label: str, source: str, readonly: bool, is_ing
     if resolved.is_dir():
         inside = compose_dir is not None and resolved.is_relative_to(compose_dir.resolve())
         if not inside:
-            report.add("error", f"`{name}` monta el directorio `{resolved}` del host ({label})",
+            declared = f"`{source}` → " if str(resolved) != source else ""
+            report.add("error", f"`{name}` monta el directorio {declared}`{resolved}` del host ({label})",
                        "un directorio expone todo lo que contenga —sockets de control incluidos, con otro prefijo—; "
                        "se montan archivos concretos, o directorios escritos por PEPPER junto al compose")
             return
