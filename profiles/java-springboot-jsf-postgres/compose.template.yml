@@ -36,6 +36,7 @@ volumes:
 services:
   db:
     image: {{db_image}}                    # la versión de la cabecera del respaldo, vía rehydrate.database.images
+    platform: ${PEPPER_PLATFORM}      # la dicta el registro: amd64 emulado si la imagen exigida no existe para esta máquina
     dns: [{{dns_sink}}]                   # IP libre de la subred interna: lo que no sea alias muere aquí, no va al resolver del host
     environment:
       POSTGRES_DB: {{db_name}}             # el nombre que el artefacto espera (no el del respaldo)
@@ -59,6 +60,7 @@ services:
   # de producción en sus USER MAPPING). Una vez: docker compose --profile restore run --rm restore
   restore:
     image: {{db_tool_image}}               # un cliente >= la versión del pg_dump que generó el respaldo
+    platform: ${PEPPER_PLATFORM}      # la dicta el registro: amd64 emulado si la imagen exigida no existe para esta máquina
     dns: [{{dns_sink}}]                   # IP libre de la subred interna: lo que no sea alias muere aquí, no va al resolver del host
     profiles: ["restore"]
     depends_on:
@@ -90,6 +92,7 @@ services:
 
   app:
     image: {{server_image}}                # jboss/wildfly:<versión de NOTAS.md> si hay jboss-web.xml
+    platform: ${PEPPER_PLATFORM}      # la dicta el registro: amd64 emulado si la imagen exigida no existe para esta máquina
     dns: [{{dns_sink}}]                   # IP libre de la subred interna: lo que no sea alias muere aquí, no va al resolver del host
     depends_on:
       db:

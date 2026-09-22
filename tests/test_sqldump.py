@@ -133,7 +133,7 @@ class LectorTest(unittest.TestCase):
 
     def test_el_esquema_de_sistema_no_es_la_base_de_la_aplicacion(self):
         info = sqldump.read_sql_dump(self._write("mysql.sql", MYSQL_SYSTEM))
-        self.assertEqual(info.tool, "mariadb-dump")
+        self.assertEqual((info.tool, info.tool_version), ("mariadb-dump", "10.11.14"), "la versión es numérica; el sabor va en tool")
         self.assertTrue(info.system_only)
 
     def test_pg_dump_plano(self):

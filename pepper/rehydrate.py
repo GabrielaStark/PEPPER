@@ -455,6 +455,7 @@ class DumpFacts:
     tables: int
     system_only: bool = False
     detail: str = ""
+    tool: str = ""               # pg_dump | mysqldump | mariadb-dump: el cliente que restaura depende del sabor, no solo de la versión
 
 
 def read_dump_facts(dump: Path, database: Dict[str, Any]) -> DumpFacts:
@@ -468,7 +469,7 @@ def read_dump_facts(dump: Path, database: Dict[str, Any]) -> DumpFacts:
             raise Blocked(f"el respaldo {dump.name} no se puede leer como formato custom de pg_dump ({error}); "
                           "pg_restore tampoco lo restauraría. Consigue un respaldo hecho con `pg_dump -Fc`")
         return DumpFacts(dbname=info.dbname, server_version=info.server_version, tool_version=info.pg_dump_version,
-                         owners=info.owners(), tables=len(info.by_desc("TABLE")))
+                         owners=info.owners(), tables=len(info.by_desc("TABLE")), tool="pg_dump")
     if fmt == "sql_text":
         from pepper.inspect import sqldump
         if not sqldump.is_sql_dump(dump):
@@ -480,7 +481,8 @@ def read_dump_facts(dump: Path, database: Dict[str, Any]) -> DumpFacts:
             raise Blocked(f"el respaldo {dump.name} no se pudo leer: {error}")
         detail = ", ".join(sorted(t.name for t in info.tables.values())[:8])
         return DumpFacts(dbname=info.dbname, server_version=info.server_version, tool_version=info.tool_version,
-                         owners=info.owners, tables=len(info.tables), system_only=info.system_only, detail=detail)
+                         owners=info.owners, tables=len(info.tables), system_only=info.system_only, detail=detail,
+                         tool=info.tool)
     raise Blocked(f"el perfil declara un formato de respaldo desconocido: {fmt!r} (pg_dump_custom | sql_text)")
 
 
@@ -562,11 +564,23 @@ def discover_datasource(artifact: Path, recipe: Dict[str, Any],
     raise Blocked(f"el perfil declara un mecanismo de datasource desconocido: {mechanism!r} (spring_config | groovy_config)")
 
 
-def _db_image(database: Dict[str, Any], recipe: Dict[str, Any], version: str, key: str = "images") -> str:
-    """Imagen del motor para la versión que el respaldo declara: exacta, por mayor, o la comodín."""
+_NUMERIC_VERSION = re.compile(r"^\d+(?:\.\d+)*$")
+
+
+def _db_image(database: Dict[str, Any], recipe: Dict[str, Any], version: str, key: str = "images", tool: str = "") -> str:
+    """Imagen del motor (o del cliente que restaura) para la versión que el respaldo declara: exacta,
+    por mayor, o la comodín `*`. Con `tool`, primero se buscan `<tool>:<versión>`, `<tool>:<mayor>` y
+    `<tool>:*` (un mariadb-dump y un mysqldump de la misma versión restauran con clientes distintos).
+    La comodín solo sustituye `{version}` con una versión numérica: con "10.11.14-MariaDB" fabricaba
+    `mysql:10.11.14-MariaDB`, una imagen que no existe (prueba real, 2026-09-22)."""
     table: Dict[str, str] = database.get(key) or (recipe.get("server_images") or {}).get(database.get("engine", ""), {}) or {}
     major = version.split(".")[0] if version else ""
-    image = table.get(version) or table.get(major) or table.get("*", "")
+    image = ""
+    if tool:
+        image = table.get(f"{tool}:{version}") or table.get(f"{tool}:{major}") or table.get(f"{tool}:*", "")
+    image = image or table.get(version) or table.get(major, "")
+    if not image and (not version or _NUMERIC_VERSION.match(version)):
+        image = table.get("*", "")
     return image.replace("{major}", major).replace("{version}", version or major)
 
 
@@ -700,9 +714,17 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
     if facts.dbname and facts.dbname != db_name:
         deviations.append(f"el respaldo viene de la base '{facts.dbname}' y se restaura dentro de '{db_name}', que es la que el artefacto espera")
     db_image = _db_image(database, recipe, db_version)
-    db_tool_image = _db_image(database, recipe, db_tool_version, key="tool_images") or _db_image(database, recipe, db_tool_version)
     if not db_image:
         raise Blocked(f"el perfil {profile.id} no declara imagen de {expected_engine} para la versión {db_version} (rehydrate.database.images)")
+    db_tool_image = (_db_image(database, recipe, db_tool_version, key="tool_images", tool=facts.tool)
+                     or _db_image(database, recipe, db_tool_version, tool=facts.tool))
+    if not db_tool_image:
+        raise Blocked(f"el perfil {profile.id} no declara con qué cliente restaurar un respaldo hecho con "
+                      f"{facts.tool or 'una herramienta desconocida'} {db_tool_version} (rehydrate.database.tool_images, "
+                      f"clave '{facts.tool}:*' o '{facts.tool}:{db_tool_version}'): sin eso se inventaría una imagen")
+    if facts.tool and facts.tool_version and db_tool_image != db_image:
+        deviations.append(f"el respaldo lo generó {facts.tool} {facts.tool_version}; se restaura con {db_tool_image} "
+                          f"contra el motor {db_image}")
 
     server, server_image, server_deviations = _choose_server(artifact, profile, notes_text)
     deviations += server_deviations
@@ -773,6 +795,74 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def host_platform() -> str:
+    """La plataforma nativa de esta máquina, como la nombra Docker (`linux/amd64`, `linux/arm64`)."""
+    import platform as _platform
+    machine = _platform.machine().lower()
+    if machine in ("arm64", "aarch64"):
+        return "linux/arm64"
+    if machine in ("x86_64", "amd64"):
+        return "linux/amd64"
+    return f"linux/{machine}"
+
+
+def image_platforms(image: str) -> Optional[List[str]]:
+    """Las plataformas para las que existe la imagen, según el registro (`docker manifest inspect`).
+    None si no se pudo saber (sin docker, sin red, o una imagen de un solo manifiesto sin plataforma)."""
+    if not shutil.which("docker"):
+        return None
+    out = subprocess.run(["docker", "manifest", "inspect", image], capture_output=True, text=True)
+    if out.returncode != 0:
+        return None
+    try:
+        data = json.loads(out.stdout)
+    except ValueError:
+        return None
+    manifests = data.get("manifests") if isinstance(data, dict) else None
+    if not manifests:
+        return None
+    found = sorted({f"{m['platform'].get('os')}/{m['platform'].get('architecture')}"
+                    for m in manifests if isinstance(m.get("platform"), dict) and m["platform"].get("os") != "unknown"})
+    return found or None
+
+
+def choose_platform(images: List[str], host: Optional[str] = None,
+                    lookup=image_platforms) -> Tuple[str, List[str]]:
+    """Con qué plataforma se ejecutan los contenedores del legado. La versión la dicta el artefacto,
+    no la máquina: si una imagen exigida no existe para la arquitectura de esta máquina pero sí para
+    amd64, se emula amd64 y queda como desviación. `mysql:5.7.36` solo existe para amd64 y en una Mac
+    arm64 el pull fallaba (prueba real, 2026-09-22). → (plataforma, desviaciones)."""
+    host = host or host_platform()
+    need_amd64: List[str] = []
+    for image in dict.fromkeys(i for i in images if i):
+        available = lookup(image)
+        if available is None or host in available:
+            continue
+        if "linux/amd64" in available:
+            need_amd64.append(image)
+            continue
+        raise Blocked(f"la imagen {image} no existe para esta máquina ({host}) ni para linux/amd64 (solo: {', '.join(available)}); "
+                      "no hay forma de ejecutarla aquí")
+    if not need_amd64:
+        return host, []
+    return "linux/amd64", [f"esta máquina es {host} y {', '.join(need_amd64)} solo existe(n) para linux/amd64: "
+                           "los contenedores del legado corren emulados (platform linux/amd64), más lentos pero con las versiones originales"]
+
+
+_PLATFORM_VAR = "PEPPER_PLATFORM"
+
+
+def apply_platform(plan: Plan, out_dir: Path) -> None:
+    """Decide la plataforma con el registro y la deja en `.env` (`PEPPER_PLATFORM`), que las plantillas
+    usan en `platform:`; la desviación, si la hay, va al plan."""
+    chosen, deviations = choose_platform([plan.db_image, plan.db_tool_image, plan.server_image])
+    plan.deviations.extend(d for d in deviations if d not in plan.deviations)
+    env = out_dir / ".env"
+    lines = [l for l in env.read_text(encoding="utf-8").splitlines() if not l.startswith(f"{_PLATFORM_VAR}=")] if env.exists() else []
+    lines.append(f"{_PLATFORM_VAR}={chosen}")
+    env.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def env_line(name: str, value: str) -> str:
     """Una línea de `.env` que `docker compose` lea tal cual: `$` se escapa como `$$` (si no,
     `ab$cd` se interpola a `ab`), y las comillas dobles protegen espacios y `#`."""
@@ -805,7 +895,8 @@ def render(plan: Plan, profile: Profile, out_dir: Path) -> List[Path]:
     shutil.copy2(REPO_ROOT / "pepper" / "proxy.py", out_dir / "proxy" / "proxy.py")
     shutil.copy2(REPO_ROOT / "pepper" / "stub.py", out_dir / "stub" / "stub.py")
     env = out_dir / ".env"
-    env.write_text(env_line("DB_PASSWORD", plan.db_password) + "\n", encoding="utf-8")
+    # la plataforma nativa por defecto; bring_up consulta el registro y la cambia a amd64 si alguna imagen lo exige
+    env.write_text(env_line("DB_PASSWORD", plan.db_password) + "\n" + f"{_PLATFORM_VAR}={host_platform()}\n", encoding="utf-8")
     env.chmod(0o600)
     written += [out_dir / "proxy" / "proxy.py", out_dir / "stub" / "stub.py", env]
     return written
@@ -861,6 +952,10 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
         return "FAILED", [{"check": "sonda de la base declarada en el perfil", "result": "fail",
                            "detail": "rehydrate.database.probe necesita client, tables_sql y marker_sql: sin eso no se puede "
                                      "verificar que la base responde ni que el respaldo entró"}], missing
+    try:
+        apply_platform(plan, out_dir)
+    except Blocked as error:
+        return "BLOCKED", [{"check": "plataforma de las imágenes", "result": "fail", "detail": str(error)}], missing
     compose_path = out_dir / "docker-compose.yml"
     compose, resolved = resolve_compose(compose_path)
     report = check_static(compose, plan.external_hosts, "ingress", resolved=resolved, compose_dir=out_dir)

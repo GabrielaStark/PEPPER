@@ -363,7 +363,7 @@ class AuditoriaRehydrateTest(unittest.TestCase):
         self.assertIn("PEPPER_RESTORE status=", restore)
         self.assertIn(f"pepper:restored:{plan.dump_sha}", restore)
         env = (out / ".env").read_text(encoding="utf-8")
-        self.assertEqual(env.strip(), 'DB_PASSWORD="s3cr3t"')
+        self.assertEqual(env.splitlines()[0], 'DB_PASSWORD="s3cr3t"')
 
     def test_multidocumento_y_spring_profiles_active_mandan(self):
         base = ("spring:\n  profiles:\n    active: nomina\n"
@@ -447,6 +447,57 @@ class AuditoriaRehydrateTest(unittest.TestCase):
                               "spring.datasource.username": "u", "spring.datasource.password": "p"}
         with self.assertRaisesRegex(Blocked, r"varios perfiles.*default, prod"):
             choose_spring_profile(configs)
+
+    def test_el_cliente_que_restaura_depende_de_la_herramienta_y_no_se_inventa(self):
+        # prueba real 2026-09-22: mariadb-dump 10.11.14 contra MySQL 5.7.36 → `mysql:10.11.14-MariaDB`, que no existe
+        from pepper.rehydrate import _db_image
+        db = {"engine": "mysql", "images": {"5.7.36": "mysql:5.7.36", "*": "mysql:{version}"},
+              "tool_images": {"mysqldump:*": "mysql:{version}", "mariadb-dump:*": "mariadb:{version}"}}
+        self.assertEqual(_db_image(db, {}, "10.11.14", key="tool_images", tool="mariadb-dump"), "mariadb:10.11.14")
+        self.assertEqual(_db_image(db, {}, "8.0.36", key="tool_images", tool="mysqldump"), "mysql:8.0.36")
+        # sin tool_images, la comodín de `images` no sustituye una versión que no es numérica
+        self.assertEqual(_db_image(db, {}, "10.11.14-MariaDB"), "")
+        self.assertEqual(_db_image(db, {}, "10.11.14"), "mysql:10.11.14")
+        # postgres: pg_dump 17.2 sin tool_images sigue cayendo a la tabla del motor
+        self.assertEqual(_db_image({"engine": "postgresql", "images": {"*": "postgres:{major}"}}, {}, "17.2", key="tool_images", tool="pg_dump"), "")
+        self.assertEqual(_db_image({"engine": "postgresql", "images": {"*": "postgres:{major}"}}, {}, "17.2", tool="pg_dump"), "postgres:17")
+
+    def test_la_plataforma_la_dicta_la_imagen_exigida_no_la_maquina(self):
+        # prueba real 2026-09-22: mysql:5.7.36 solo existe para amd64 y en una Mac arm64 el pull fallaba
+        from pepper.rehydrate import apply_platform, choose_platform
+        catalog = {"mysql:5.7.36": ["linux/amd64"], "tomcat:7-jre7": ["linux/386", "linux/amd64", "linux/arm"],
+                   "mariadb:10.11.14": ["linux/amd64", "linux/arm64"], "postgres:16": ["linux/amd64", "linux/arm64"],
+                   "raro:1": ["linux/s390x"]}
+        lookup = lambda image: catalog.get(image)
+        self.assertEqual(choose_platform(["postgres:16", "mariadb:10.11.14"], "linux/arm64", lookup), ("linux/arm64", []))
+        self.assertEqual(choose_platform(["mysql:5.7.36", "tomcat:7-jre7"], "linux/amd64", lookup), ("linux/amd64", []))
+        platform, deviations = choose_platform(["mysql:5.7.36", "mariadb:10.11.14", "tomcat:7-jre7"], "linux/arm64", lookup)
+        self.assertEqual(platform, "linux/amd64")
+        self.assertEqual(len(deviations), 1)
+        self.assertIn("mysql:5.7.36, tomcat:7-jre7", deviations[0])
+        self.assertNotIn("mariadb", deviations[0])
+        # lo que el registro no sabe decir no cambia nada
+        self.assertEqual(choose_platform(["desconocida:9"], "linux/arm64", lookup), ("linux/arm64", []))
+        with self.assertRaisesRegex(Blocked, "raro:1 no existe"):
+            choose_platform(["raro:1"], "linux/arm64", lookup)
+        # render deja la nativa en .env y la plantilla la usa
+        plan = make_plan(self._legacy(), PROFILE)
+        out = self.root / "out"
+        render(plan, PROFILE, out)
+        env = (out / ".env").read_text(encoding="utf-8")
+        self.assertIn("PEPPER_PLATFORM=linux/", env)
+        self.assertEqual(env.count("PEPPER_PLATFORM="), 1)
+        self.assertIn("platform: ${PEPPER_PLATFORM}", (out / "docker-compose.yml").read_text(encoding="utf-8"))
+        from unittest import mock
+        with mock.patch("pepper.rehydrate.image_platforms", side_effect=lookup), \
+             mock.patch("pepper.rehydrate.host_platform", return_value="linux/arm64"):
+            plan.db_image, plan.db_tool_image = "mysql:5.7.36", "mariadb:10.11.14"
+            apply_platform(plan, out)
+        env = (out / ".env").read_text(encoding="utf-8")
+        self.assertIn("PEPPER_PLATFORM=linux/amd64", env)
+        self.assertEqual(env.count("PEPPER_PLATFORM="), 1)
+        self.assertTrue(env.startswith('DB_PASSWORD="'), env)
+        self.assertTrue(any("emulados" in d for d in plan.deviations), plan.deviations)
 
     def test_version_del_servidor_que_el_perfil_no_representa_es_blocked(self):
         # antes se usaba "la mayor de la tabla" (26) y se levantaba otro servidor

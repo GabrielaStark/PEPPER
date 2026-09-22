@@ -120,7 +120,10 @@ def _header(text: str, info: SqlDumpInfo) -> None:
     if m:
         info.dialect = "mysql"
         info.tool = "mysqldump" if m.group(1) == "MySQL" else "mariadb-dump"
-        info.tool_version = m.group(3)
+        # "Distrib 10.11.14-MariaDB": la versión es la parte numérica; el sabor ya está en `tool`.
+        # Con el sufijo dentro, rehydrate fabricaba la imagen `mysql:10.11.14-MariaDB`, que no existe.
+        numeric = re.match(r"[\d.]+", m.group(3))
+        info.tool_version = numeric.group(0).rstrip(".") if numeric else m.group(3)
     if re.search(r"--\s+PostgreSQL database dump", text):
         info.dialect = "postgresql"
         info.tool = "pg_dump"

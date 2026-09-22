@@ -32,6 +32,7 @@ volumes:
 services:
   db:
     image: {{db_image}}                # la versión del respaldo ("Server version" en su cabecera), vía rehydrate.database.images
+    platform: ${PEPPER_PLATFORM}      # la dicta el registro: amd64 emulado si la imagen exigida no existe para esta máquina
     dns: [{{dns_sink}}]
     environment:
       MYSQL_DATABASE: {{db_name}}              # el nombre de la URL de production del WAR (no el del respaldo)
@@ -59,6 +60,7 @@ services:
   # reescribiría las cuentas del contenedor. Una vez: docker compose --profile restore run --rm restore
   restore:
     image: {{db_tool_image}}
+    platform: ${PEPPER_PLATFORM}      # la dicta el registro: amd64 emulado si la imagen exigida no existe para esta máquina
     dns: [{{dns_sink}}]
     profiles: ["restore"]
     depends_on:
@@ -87,6 +89,7 @@ services:
 
   app:
     image: {{server_image}}            # Tomcat 7 sobre JDK 7 (MANIFEST Created-By 24.272-b10 = HotSpot de JDK 7)
+    platform: ${PEPPER_PLATFORM}      # la dicta el registro: amd64 emulado si la imagen exigida no existe para esta máquina
     network_mode: "service:db"         # localhost:3306 del datasource embebido = la base (ver cabecera)
     depends_on:
       db:

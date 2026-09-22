@@ -141,6 +141,10 @@
         "8": "mysql:8.0",
         "*": "mysql:{version}"
       },
+      "tool_images": {
+        "mysqldump:*": "mysql:{version}",
+        "mariadb-dump:*": "mariadb:{version}"
+      },
       "dump": {
         "format": "sql_text",
         "suffixes": [
