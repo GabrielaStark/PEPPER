@@ -441,5 +441,90 @@ class SystemMapTest(unittest.TestCase):
         self.assertIsNone(cov["jobs_observed"], "sin firma se declara no medible, nunca 0 observados")
 
 
+class MapaDeVariasPiezasTest(unittest.TestCase):
+    """Un sistema de varios desplegables se lee pieza por pieza y los mapas se unen (D33)."""
+
+    def _mapa(self, nombre, **campos):
+        base = {"schema_version": "0.2.0", "profile_id": "p", "artifact": {"name": nombre},
+                "generated_by": "pepper", "complete": True, "coverage_gaps": [], "entrypoints": [],
+                "jobs": [], "external_dependencies": [], "data_stores": [], "catalogs": [],
+                "distributions": [], "classes": [], "screens": [], "labels": 0, "notes": []}
+        base.update(campos)
+        return base
+
+    def test_une_las_piezas_y_cada_hallazgo_dice_de_donde_salio(self):
+        from pepper.inspect import merge_maps
+
+        backend = self._mapa("recursos.jar",
+                             entrypoints=[{"kind": "http_route", "method": "GET", "path": "/api/x",
+                                           "handler": "X.get", "evidence": "X.class"}],
+                             data_stores=[{"kind": "table", "name": "solicitud", "count": 12, "evidence": "respaldo.dump"}],
+                             labels=3)
+        front = self._mapa("front.zip",
+                           screens=[{"path": "dist/index.html", "title": "Portal", "headings": [], "fields": [],
+                                     "inputs": [], "forms": [], "buttons": [], "messages": [], "conditions": [],
+                                     "includes": [], "evidence": "front.zip!dist/index.html"}],
+                           coverage_gaps=["jvm_class_inventory: ninguna clase"], complete=False, labels=1)
+        unido = merge_maps([("recursos", backend), ("front", front)])
+
+        self.assertEqual([e["path"] for e in unido["entrypoints"]], ["/api/x"])
+        self.assertEqual(unido["entrypoints"][0]["evidence"], "recursos › X.class")
+        self.assertEqual(unido["screens"][0]["evidence"], "front › front.zip!dist/index.html")
+        self.assertEqual(unido["data_stores"][0]["evidence"], "recursos › respaldo.dump")
+        self.assertEqual(unido["labels"], 4, "las etiquetas de todas las piezas se suman")
+        self.assertFalse(unido["complete"], "si una pieza quedó incompleta, el sistema también")
+        self.assertEqual(unido["coverage_gaps"], ["front › jvm_class_inventory: ninguna clase"])
+        self.assertEqual(unido["artifact"]["name"], "recursos.jar, front.zip")
+        self.assertEqual([p["component"] for p in unido["artifact"]["parts"]], ["recursos", "front"])
+        self.assertIn("sistema de 2 piezas", unido["notes"][0])
+
+    def test_dos_piezas_con_la_misma_ruta_son_dos_rutas_distintas(self):
+        from pepper.inspect import merge_maps
+
+        def con_ruta(nombre, handler):
+            return self._mapa(nombre, entrypoints=[{"kind": "http_route", "method": "GET", "path": "/salud",
+                                                    "handler": handler, "evidence": f"{handler}.class"}])
+        unido = merge_maps([("a", con_ruta("a.jar", "A")), ("b", con_ruta("b.jar", "B"))])
+        self.assertEqual(len(unido["entrypoints"]), 2, "cada pieza tiene su propia /salud")
+        self.assertEqual(sorted(e["evidence"] for e in unido["entrypoints"]), ["a › A.class", "b › B.class"])
+
+    def test_un_solo_mapa_se_devuelve_tal_cual(self):
+        from pepper.inspect import merge_maps
+
+        uno = self._mapa("solo.jar")
+        self.assertIs(merge_maps([("solo", uno)]), uno)
+
+    def test_los_extractores_del_respaldo_no_corren_en_las_demas_piezas(self):
+        from pepper.inspect import extractors_without_dump
+
+        extractores = [{"mechanism": "pg_dump_custom"}, {"mechanism": "jvm_class_inventory"},
+                       {"mechanism": "sql_dump"}, {"mechanism": "view_templates"}]
+        quedan = [e["mechanism"] for e in extractors_without_dump(extractores)]
+        self.assertEqual(quedan, ["jvm_class_inventory", "view_templates"])
+
+
+class ExtractorRotoTest(unittest.TestCase):
+    """Un perfil es DATO: un patrón mal escrito se declara como hueco, no tira el mapa."""
+
+    def test_un_patron_invalido_no_revienta_el_mapa(self):
+        import tempfile as _tempfile
+        import zipfile as _zipfile
+
+        from pepper.inspect import build_map
+
+        with _tempfile.TemporaryDirectory() as tmp:
+            artefacto = Path(tmp) / "app.zip"
+            with _zipfile.ZipFile(artefacto, "w") as z:
+                z.writestr("vista.html", "<html><head><title>Alta</title></head><body><h1>Alta</h1>"
+                                         "<button id='guardar'>Guardar</button></body></html>")
+            roto = {"mechanism": "view_templates", "member_patterns": [r"\.html$"],
+                    "button_pattern": "<(button[^>]*>"}   # paréntesis sin cerrar: regex inválida
+            sano = {"mechanism": "archive_url_scan"}
+            mapa = build_map(artefacto, [roto, sano], "perfil-de-prueba")
+        self.assertFalse(mapa["complete"])
+        self.assertTrue(any("el extractor del perfil falló" in g for g in mapa["coverage_gaps"]), mapa["coverage_gaps"])
+        self.assertTrue(any("archive_url_scan" not in g for g in mapa["coverage_gaps"]))
+
+
 if __name__ == "__main__":
     unittest.main()

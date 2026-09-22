@@ -95,14 +95,17 @@ def match_any(patterns: List[str], value: str) -> bool:
 
 
 def collect_classes(artifact: Path, class_root: str, package_prefixes: List[str],
-                    include_libs: bool, tmpdir: Path) -> List[Tuple[str, Path]]:
+                    include_libs: bool, tmpdir: Path,
+                    unreadable: Optional[List[str]] = None) -> List[Tuple[str, Path]]:
     """Copia las clases del artefacto (y de sus jars propios) a JARs temporales.
 
     Los prefijos de paquete se anclan a un segmento de ruta (`beans/` no casa con
     `xmlbeans/`). "Jar propio" = comparte paquete raíz con las clases del WAR, así
-    las librerías de terceros quedan fuera sin listas negras.
+    las librerías de terceros quedan fuera sin listas negras. Lo que no se pueda abrir
+    se agrega a `unreadable` (si se pasa la lista) y no detiene la lectura.
     → [(nombre.calificado, jar_que_lo_contiene)] en orden determinístico."""
     anchored = [r"(?:^|/)" + p.lstrip("^/") for p in package_prefixes]
+    unreadable = unreadable if unreadable is not None else []
     wanted: List[Tuple[str, Path]] = []
     main_jar = tmpdir / "classes.jar"
     with zipfile.ZipFile(artifact) as archive:
@@ -120,17 +123,33 @@ def collect_classes(artifact: Path, class_root: str, package_prefixes: List[str]
             for n in sorted(names):
                 if not n.endswith(".jar"):
                     continue
-                with zipfile.ZipFile(archive.open(n)) as jar:
-                    members = [m for m in sorted(jar.namelist())
-                               if m.endswith(".class") and any(m.startswith(o) for o in own)
-                               and (not anchored or match_any(anchored, m))]
+                try:
+                    nested = zipfile.ZipFile(archive.open(n))
+                except (zipfile.BadZipFile, OSError, RuntimeError):
+                    # Un jar anidado ilegible (truncado, cifrado, o un archivo que solo se llama .jar)
+                    # tiraba el mapa entero con un traceback. Se anota y se sigue: el resto del
+                    # artefacto sí se puede leer, y un mapa parcial se declara parcial.
+                    unreadable.append(n)
+                    continue
+                with nested as jar:
+                    try:
+                        members = [m for m in sorted(jar.namelist())
+                                   if m.endswith(".class") and any(m.startswith(o) for o in own)
+                                   and (not anchored or match_any(anchored, m))]
+                    except (zipfile.BadZipFile, OSError):
+                        unreadable.append(n)
+                        continue
                     if not members:
                         continue
                     lib_jar = tmpdir / "lib" / (Path(n).stem + ".jar")
                     lib_jar.parent.mkdir(parents=True, exist_ok=True)
                     with zipfile.ZipFile(lib_jar, "w", zipfile.ZIP_STORED) as out:
                         for m in members:
-                            out.writestr(m, jar.read(m))
+                            try:
+                                out.writestr(m, jar.read(m))
+                            except (zipfile.BadZipFile, OSError):
+                                unreadable.append(f"{n}!{m}")
+                                continue
                             wanted.append((m[:-len(".class")].replace("/", "."), lib_jar))
     return wanted
 

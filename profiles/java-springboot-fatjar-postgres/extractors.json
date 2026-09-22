@@ -1,0 +1,136 @@
+{
+  "description": "Extractores del perfil java-springboot-fatjar-postgres. Se aplican A CADA PIEZA del sistema: `pepper map` lee cada desplegable con estos mecanismos y une los mapas (D33). Las clases de un fat jar viven en BOOT-INF/classes y el front es HTML servido tal cual, no plantillas del servidor.",
+  "extractors": [
+    {
+      "mechanism": "jvm_route_annotations",
+      "description": "Rutas @RequestMapping/@Get/@PostMapping y jobs @Scheduled del bytecode, vía javap.",
+      "class_root": "BOOT-INF/classes",
+      "package_prefixes": [
+        "controller/",
+        "rest/",
+        "cron/",
+        "schedule",
+        "job"
+      ],
+      "job_signatures": {}
+    },
+    {
+      "mechanism": "jvm_class_inventory",
+      "description": "Por clase: métodos públicos, constantes static final y cadenas del bytecode (mensajes, estados, JPQL). Cubre las clases del WAR y las de sus jars propios (no las librerías).",
+      "class_root": "BOOT-INF/classes",
+      "include_own_libs": true,
+      "package_prefixes": [
+        "controller/",
+        "rest/",
+        "cron/",
+        "beans/",
+        "service/",
+        "repository/",
+        "utils/constantes",
+        "domain/beans"
+      ],
+      "class_kinds": {
+        "pantalla (controller/bean JSF)": "\\.(controller|beans)\\.",
+        "servicio": "\\.service\\.",
+        "repositorio (consultas)": "\\.repository\\.",
+        "job": "\\.cron\\.",
+        "constantes": "constantes",
+        "rest": "\\.rest\\."
+      },
+      "max_strings_per_class": 80
+    },
+    {
+      "mechanism": "view_templates",
+      "description": "Pantallas del front: HTML servido tal cual (el dist de un SPA) y plantillas del servidor (Thymeleaf/Freemarker) dentro del fat jar. Los patrones son de HTML plano, no de JSF.",
+      "member_patterns": [
+        "\\.html?$",
+        "\\.ftl$"
+      ],
+      "exclude_patterns": [
+        "(?i)node_modules/",
+        "(?i)/(fragment|layout|template|plantilla)s?/"
+      ],
+      "bundle_patterns": [
+        "WEB-INF/classes/.*messages.*\\.properties$"
+      ],
+      "bundle_ref_pattern": "#\\{lbl\\['(?P<key>[^']+)'\\]\\}",
+      "title_pattern": "<title[^>]*>(.*?)</title>",
+      "heading_pattern": "<h[1-4][^>]*>(.*?)</h[1-4]>",
+      "label_pattern": "<label[^>]*>(.*?)</label>",
+      "button_pattern": "<(?:button|a)\\b([^>]*)>",
+      "input_pattern": "<(input|select|textarea)\\b[^>]*\\b(?:id|name)=[\\\"']([^\\\"']+)[\\\"']",
+      "form_pattern": "<form\\b([^>]*)>",
+      "message_pattern": "\\b(?:data-(?:error|mensaje)|title)=\\\"([^\\\"]+)\\\"",
+      "condition_pattern": "\\b(?:data-rol|data-role|data-permiso|ng-if|v-if|sec:authorize)=\\\"([^\\\"]+)\\\"",
+      "include_pattern": "<(?:script|link)\\b[^>]*\\b(?:src|href)=[\\\"']([^\\\"']+)[\\\"']"
+    },
+    {
+      "mechanism": "config_hosts",
+      "description": "Hosts/URLs en los perfiles application*.yml embebidos.",
+      "config_patterns": [
+        "WEB-INF/classes/application.*\\.(yml|yaml|properties)$",
+        "application.*\\.(yml|yaml|properties)$"
+      ],
+      "host_key_pattern": "(?i)(url|host|smtp|uri|endpoint|bus|renapo|calculadora|editor)",
+      "patterns": [
+        "^BOOT-INF/classes/application.*\\.(yml|yaml|properties)$"
+      ]
+    },
+    {
+      "mechanism": "archive_url_scan",
+      "description": "URLs externas incrustadas en config, vistas y bytecode.",
+      "member_patterns": [
+        "\\.(yml|yaml|properties|xml|xhtml|class)$"
+      ],
+      "exclude_host_patterns": [
+        "w3\\.org",
+        "xmlns",
+        "springframework",
+        "apache\\.org",
+        "jboss",
+        "slf4j",
+        "jasperreports\\.sourceforge\\.net",
+        "primefaces",
+        "jquery",
+        "localhost",
+        "example\\.com",
+        "cdn\\.",
+        "cdnjs\\.",
+        "jsdelivr",
+        "cloudflare",
+        "googleapis",
+        "gstatic",
+        "fontawesome",
+        "bootstrapcdn"
+      ],
+      "kind_hints": {
+        "bus": [
+          "bus\\.",
+          "desabus\\."
+        ],
+        "rest": [
+          "\\d+\\.\\d+\\.\\d+\\.\\d+"
+        ],
+        "smtp": [
+          "smtp"
+        ],
+        "web": [
+          "gob\\.mx"
+        ]
+      }
+    },
+    {
+      "mechanism": "pg_dump_custom",
+      "description": "El respaldo de PostgreSQL (formato custom) leído en Python: tablas con conteo y columnas, funciones y triggers con cuerpo, vistas, catálogos completos (tablas de hasta 300 filas, sin tablas de personas) y distribuciones de columnas de estado.",
+      "catalog_max_rows": 300,
+      "catalog_include_patterns": [
+        "^(ct_?|cat|rl_|dt_tipo|estatus|indice|video)"
+      ],
+      "catalog_exclude_patterns": [
+        "(?i)usuario|user|persona|trabajador|empleado|cliente|testigo|beneficiario|patron|empresa|jueces"
+      ],
+      "state_column_pattern": "(?i)estatus|status|estado$|^tipo|_tipo|tipo_|nivel|sector|rol$|turno$|asistencia|calasesoria|gpovulnerable|motasesoria",
+      "distribution_top": 15
+    }
+  ]
+}

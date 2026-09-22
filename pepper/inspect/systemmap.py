@@ -47,6 +47,7 @@ credenciales se omiten.
 from __future__ import annotations
 
 import html
+import json
 import math
 import re
 import tempfile
@@ -456,8 +457,11 @@ def _extract_jvm_routes(artifact: Path, spec: Dict[str, Any], report: "MapReport
         report.gap("jvm_route_annotations: el artefacto no es un archivo zip/WAR")
         return
     with tempfile.TemporaryDirectory() as tmp:
+        ilegibles: List[str] = []
         classes = jvm.collect_classes(artifact, spec.get("class_root", "WEB-INF/classes"),
-                                      spec.get("package_prefixes", []), False, Path(tmp))
+                                      spec.get("package_prefixes", []), False, Path(tmp), ilegibles)
+        for nombre in ilegibles:
+            report.gap(f"jvm_route_annotations: no se pudo abrir `{nombre}` dentro del artefacto; sus clases no se leyeron")
         if _report_no_classes("jvm_route_annotations", classes, spec.get("class_root", "WEB-INF/classes"), artifact, report):
             return
         outputs, tool_notes = jvm.javap_outputs(tools, classes, ["-p", "-v"])
@@ -568,8 +572,11 @@ def _extract_jvm_classes(artifact: Path, spec: Dict[str, Any], report: "MapRepor
     kinds: Dict[str, str] = spec.get("class_kinds") or {}
     max_strings = int(spec.get("max_strings_per_class", 80))
     with tempfile.TemporaryDirectory() as tmp:
+        ilegibles: List[str] = []
         classes = jvm.collect_classes(artifact, spec.get("class_root", "WEB-INF/classes"),
-                                      spec.get("package_prefixes", []), bool(spec.get("include_own_libs", True)), Path(tmp))
+                                      spec.get("package_prefixes", []), bool(spec.get("include_own_libs", True)), Path(tmp), ilegibles)
+        for nombre in ilegibles:
+            report.gap(f"jvm_class_inventory: no se pudo abrir `{nombre}` dentro del artefacto; sus clases no se leyeron")
         if _report_no_classes("jvm_class_inventory", classes, spec.get("class_root", "WEB-INF/classes"), artifact, report):
             return
         outputs, tool_notes = jvm.javap_outputs(tools, classes, ["-p", "-c", "-constants"])
@@ -688,6 +695,9 @@ def _extract_views(artifact: Path, spec: Dict[str, Any], report: "MapReport") ->
         labels = list(dict.fromkeys(l for l in (resolve(x) for x in label_re.findall(text)) if l and len(l) < 80 and not l.startswith("#{")))
         buttons: List[Dict[str, str]] = []
         for attrs in button_re.findall(text):
+            # Un patrón del perfil con varias alternativas devuelve tuplas; se toma la que casó.
+            if isinstance(attrs, tuple):
+                attrs = next((g for g in attrs if g), "")
             v = value_re.search(attrs)
             a = action_re.search(attrs)
             label = resolve(v.group(1)) if v else ""
@@ -787,7 +797,14 @@ def build_map(artifact: Path, extractors: List[Dict[str, Any]], profile_id: Opti
         if handler is None:
             report.gap(f"mecanismo desconocido en el perfil: {kind!r}")
             continue
-        handler(artifact, extractor, report, ctx)
+        try:
+            handler(artifact, extractor, report, ctx)
+        except Exception as error:  # noqa: BLE001 — un perfil es DATO: un patrón mal escrito no tira el mapa
+            # Los perfiles los redacta un agente y los revisa una persona; una regex con el número de
+            # grupos equivocado reventaba el mapa entero con un traceback. Se declara como hueco y se
+            # siguen corriendo los demás extractores: un mapa parcial se declara parcial.
+            report.gap(f"{kind}: el extractor del perfil falló ({type(error).__name__}: {str(error)[:160]}); "
+                       "revisa sus patrones — lo que ese mecanismo enumera NO está en el mapa")
 
     covered = set()
     for extractor in extractors:
@@ -816,6 +833,56 @@ def build_map(artifact: Path, extractors: List[Dict[str, Any]], profile_id: Opti
         "labels": report.labels,
         "notes": report.notes,
     }
+
+
+_MERGED_LISTS = ("entrypoints", "jobs", "external_dependencies", "data_stores",
+                 "catalogs", "distributions", "classes", "screens")
+# Mecanismos que leen el respaldo, no el artefacto: en un sistema de varias piezas corren UNA vez,
+# con la pieza que habla con la base. En las demás no son un hueco: no les toca.
+DUMP_MECHANISMS = ("pg_dump_custom", "sql_dump")
+
+
+def extractors_without_dump(extractors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Los extractores que no dependen del respaldo (para las piezas que no hablan con la base)."""
+    return [e for e in extractors if e.get("mechanism") not in DUMP_MECHANISMS]
+
+
+def merge_maps(parts: List[Tuple[str, Dict[str, Any]]]) -> Dict[str, Any]:
+    """Une los mapas de varias piezas en UN mapa del sistema.
+
+    Un sistema de varios desplegables tiene sus pantallas repartidas entre las piezas: leer solo
+    la que habla con la base dejaba fuera el front y la puerta de enlace, y el documento describía
+    un sistema más chico que el real (D33). Cada hallazgo conserva de qué pieza salió, anteponiéndolo
+    a su evidencia (`front › dist/index.html`), porque el contrato del mapa no admite campos nuevos
+    por elemento. Lo que dos piezas declaren idéntico —misma evidencia incluida— se dice una vez.
+
+    `parts` son (nombre de la pieza, su mapa), en el orden en que se quieren leer.
+    """
+    if not parts:
+        raise ValueError("no hay mapas que unir")
+    if len(parts) == 1:
+        return parts[0][1]
+    merged: Dict[str, Any] = dict(parts[0][1])
+    merged["artifact"] = {
+        "name": ", ".join(m.get("artifact", {}).get("name", name) for name, m in parts),
+        "parts": [{"component": name, "name": m.get("artifact", {}).get("name", name)} for name, m in parts],
+    }
+    for key in _MERGED_LISTS:
+        vistos: Dict[str, Dict[str, Any]] = {}
+        for name, mapa in parts:
+            for item in mapa.get(key) or []:
+                item = dict(item)
+                if item.get("evidence"):
+                    item["evidence"] = f"{name} › {item['evidence']}"
+                vistos.setdefault(json.dumps(item, sort_keys=True, ensure_ascii=False), item)
+        merged[key] = list(vistos.values())
+    merged["labels"] = sum(int(m.get("labels") or 0) for _, m in parts)
+    merged["complete"] = all(m.get("complete") for _, m in parts)
+    merged["coverage_gaps"] = [f"{name} › {gap}" for name, mapa in parts for gap in (mapa.get("coverage_gaps") or [])]
+    merged["notes"] = [f"{name} › {note}" for name, mapa in parts for note in (mapa.get("notes") or [])]
+    merged["notes"].insert(0, "sistema de {} piezas: {}".format(
+        len(parts), ", ".join(f"{name} ({mapa.get('artifact', {}).get('name', '?')})" for name, mapa in parts)))
+    return merged
 
 
 # ------------------------------------------------------------- render legible

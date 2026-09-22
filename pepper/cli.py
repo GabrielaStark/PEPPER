@@ -441,7 +441,7 @@ def _cmd_explore(args: argparse.Namespace) -> int:
 def _cmd_map(args: argparse.Namespace) -> int:
     import json as _json
 
-    from pepper.inspect import build_map, coverage, render_map
+    from pepper.inspect import build_map, coverage, extractors_without_dump, merge_maps, render_map
     from pepper.profiles import load_profile
 
     extractors: List[Dict] = []
@@ -458,8 +458,40 @@ def _cmd_map(args: argparse.Namespace) -> int:
         print("pepper map: sin --profile no hay extractores; el mapa saldría vacío", file=sys.stderr)
         return 2
 
+    # Un sistema de varias piezas: si se apunta al directorio del legacy y el perfil sabe repartirlas,
+    # se lee CADA pieza y se unen los mapas. Leer solo la que habla con la base dejaba fuera el front
+    # y la puerta de enlace, y el documento describía un sistema más chico que el real (D33).
+    partes: List = []
+    if args.artifact.is_dir() and not (args.artifact / "WEB-INF").exists():
+        from pepper.rehydrate import Blocked, classify_components, find_all_inputs
+        recipe = profile.data.get("rehydrate", {})
+        if recipe.get("components"):
+            suffixes = tuple(((recipe.get("database") or {}).get("dump") or {}).get("suffixes") or ())
+            try:
+                artifacts, _ = find_all_inputs(args.artifact, recipe.get("artifact_suffixes"), suffixes or None)
+            except Blocked as error:
+                print(f"pepper map: {error}", file=sys.stderr)
+                return 2
+            piezas, sin_clasificar = classify_components(artifacts, profile, "10.100.0")
+            if sin_clasificar:
+                print(f"pepper map: el perfil {profile.id} no reconoce {', '.join(sin_clasificar)}; "
+                      "agrega su regla a rehydrate.components.classify o sácalo de legacy/", file=sys.stderr)
+                return 2
+            datasource_role = (recipe["components"] or {}).get("datasource_role", "backend")
+            partes = [(c.name, c.artifact, c.role == datasource_role) for c in piezas]
+
     try:
-        system_map = build_map(args.artifact, extractors, profile_id, dump=args.dump)
+        if partes:
+            # El respaldo se lee UNA vez, con la pieza que habla con la base: si se pasara a todas,
+            # las tablas y los catálogos aparecerían repetidos una vez por pieza.
+            mapas = [(name, build_map(art, extractors if con_base else extractors_without_dump(extractors),
+                                      profile_id, dump=args.dump if con_base else None))
+                     for name, art, con_base in partes]
+            for name, _, _ in partes:
+                print(f"  pieza `{name}` leída", file=sys.stderr)
+            system_map = merge_maps(mapas)
+        else:
+            system_map = build_map(args.artifact, extractors, profile_id, dump=args.dump)
     except FileNotFoundError as error:
         print(f"pepper map: {error}", file=sys.stderr)
         return 2
@@ -475,7 +507,12 @@ def _cmd_map(args: argparse.Namespace) -> int:
     routes = [e for e in ep if e["kind"] in ("http_route", "rest_endpoint")]
     tables = [d for d in system_map["data_stores"] if d["kind"] == "table"]
     rules_in_db = [d for d in system_map["data_stores"] if d["kind"] in ("trigger", "function")]
-    print(f"map · {args.artifact.name} · perfil {profile_id}")
+    if partes:
+        print(f"map · {len(partes)} piezas · perfil {profile_id}")
+        for name, art, con_base in partes:
+            print(f"      · {name}: {art.name}" + ("  ← el respaldo se leyó aquí" if con_base else ""))
+    else:
+        print(f"map · {args.artifact.name} · perfil {profile_id}")
     print(f"  entradas HTTP: {len(routes)} ({sum(1 for e in ep if e['kind']=='rest_endpoint')} REST) · "
           f"jobs: {len(system_map['jobs'])} · hosts externos: {len(system_map['external_dependencies'])}")
     print(f"  pantallas: {len(system_map['screens'])} · clases propias: {len(system_map['classes'])} · "
