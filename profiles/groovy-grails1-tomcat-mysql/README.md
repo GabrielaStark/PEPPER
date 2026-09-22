@@ -2,7 +2,7 @@
 
 WAR de **Grails 1.3** (Groovy 1.7, Spring 3.0, Hibernate 3.3, GSP + SiteMesh, Liquibase 1.9, Quartz 2.1, con un SPA de React embebido en `js/bundle.*.js`) desplegado en **Tomcat** sobre **JDK 7**, con **MySQL 5.7**.
 
-**Estado: `draft`.** Redactado durante Inspect de un legacy real (un fork localizado de OpenBoxes 0.8.x) y refinado el mismo día al enseñarle al núcleo a fabricar MySQL, leer respaldos SQL en texto y reconstruir el datasource compilado. El plan y el compose se generan solos (`pepper rehydrate`); **el levantamiento de punta a punta no se ha corrido todavía** con un respaldo de la base de la aplicación.
+**Estado: `draft`, corrido de punta a punta el 2026-09-22** contra el legacy real (un fork localizado de OpenBoxes 0.8.x) con el respaldo de producción: mapa → `rehydrate --up` (PARTIAL: externos al stub; aislamiento vivo VERIFIED) → explorador con dos roles (62/64 pantallas cada uno) → correlate → package → discovery → `funcional.md` publicado por Export. Lo promueve a `validated` una persona tras revisar el documento.
 
 ## Contenido
 
@@ -26,9 +26,17 @@ WAR de **Grails 1.3** (Groovy 1.7, Spring 3.0, Hibernate 3.3, GSP + SiteMesh, Li
 - **Rutas sin anotaciones.** Las acciones de un controlador Grails 1.x son closures asignadas en el constructor; `allowedMethods` da el verbo; `UrlMappings` agrega las rutas REST con plantillas. Los tres mecanismos `groovy_*` los leen del bytecode.
 - **javap.** El de JDK 25 rechaza clases de Groovy 1.7 (`ACC_SYNTHETIC` en campos de major 47); el núcleo prueba con todos los javap de la máquina y anota cuál leyó qué. Con un JDK 8 instalado, el mapa sale completo.
 
+## Lo que enseñó la corrida real (2026-09-22)
+
+- **`storage_engine` sí rompe el pool** contra MySQL 5.7.36 ("Unknown system variable"): c3p0 reintenta sin fin y Tomcat queda "arrancado" sin app. `rehydrate.datasource.url_strip_params` lo quita de la URL y `rehydrate.extra_templates` monta `grails-config.properties` como `~/.grails/<app>-config.properties` con la URL limpia; queda como desviación. La configuración externa real de producción sigue siendo una pregunta abierta.
+- **El general log de MySQL 5.7 no acepta `/proc/self/fd/1` ni `/dev/stdout`** como archivo: va a `/var/lib/mysql/general.log` y el sidecar `dblog` (`tail -F` sobre el volumen, solo lectura) lo saca por su stdout → `containers/dblog.log`.
+- **mysqldump califica las vistas con el esquema de origen** (`origen`.`tabla`): `restore.sh` lee el nombre de la cabecera y lo reescribe a la base esperada.
+- **El respaldo lo hizo `mariadb-dump`**: se restaura con `mariadb:<versión>` (`tool_images` por herramienta), no con un `mysql:<versión-MariaDB>` inexistente.
+- **Imágenes solo amd64** (`mysql:5.7.36`, `tomcat:7-jre7`): en una Mac arm64 corren emuladas (`platform: ${PEPPER_PLATFORM}`); Tomcat arrancó en ~30 s aun así.
+- **Parsers contra logs reales**: MySQL 63 502 eventos / 6 sin parsear (cabeceras); Tomcat 871 eventos / 67 sin parsear (`println` sin prefijo log4j) tras extender la continuación al SQL multilínea de DataService, líneas vacías y `Field error in object`. JULI usa OneLineFormatter (`INFO: Server startup in …`). El app no loguea el `X-Pepper-Correlation-Id`: la correlación con HTTP es por ventana y afinidad de hilo.
+- **Comportamiento del sistema al arrancar**: `RefreshProductAvailabilityJob` corre de inmediato y produjo deadlocks de MySQL (evidencia del arranque, no de la ventana explorada).
+
 ## Pendiente para `validated`
 
-- [ ] Levantar de punta a punta con un respaldo de la base de la aplicación. Confirmar: imagen `tomcat:7-jre7` disponible, JDK 7 real, el comportamiento de `storage_engine` y el tiempo del primer Liquibase.
-- [ ] Capturar evidencia real y probar ambos parsers contra ella. Hoy solo se probaron con **líneas sintéticas**.
-- [ ] Confirmar el formato de consola de JULI en la imagen (OneLineFormatter o SimpleFormatter).
-- [ ] Las líneas de continuación del log arrastran el prefijo de Docker: revisar al correlacionar.
+- [ ] Que una persona revise `docs/pepper/funcional.md` de la corrida y confirme que describe el sistema.
+- [ ] Conseguir la configuración externa real de producción (`~/.grails/<app>-config.*`) y comparar con la generada.
