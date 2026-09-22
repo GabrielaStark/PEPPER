@@ -1,7 +1,7 @@
 {
   "parser_version": "0.1.0",
   "source": "tomcat-grails",
-  "description": "stdout del contenedor de Tomcat capturado con `pepper collect` (docker logs --timestamps). Por ahí salen dos formatos: (1) log4j de la app Grails con el layout por defecto de Grails 1.3, '%d [%t] %-5p %c{2} %x - %m%n' (Log4jConfig.groovy:47 en WEB-INF/lib/grails-core-1.3.9.jar; el Config.groovy del legacy no declara otro patrón); (2) JULI de Tomcat con OneLineFormatter, 'dd-MMM-yyyy HH:mm:ss.SSS NIVEL [hilo] clase.método mensaje'. El timestamp autoritativo es el prefijo RFC3339 UTC de Docker; los relojes propios (hora local del JVM, sin zona) quedan en metadata. Si la imagen usa SimpleFormatter de dos líneas para la consola, las líneas de Tomcat quedan sin parsear (explicable) y las de la app siguen parseando. Las trazas de excepción se anexan al evento anterior.",
+  "description": "stdout del contenedor de Tomcat capturado con `pepper collect` (docker logs --timestamps). Por ahí salen dos formatos: (1) log4j de la app Grails con el layout por defecto de Grails 1.3, '%d [%t] %-5p %c{2} %x - %m%n' (Log4jConfig.groovy:47 en WEB-INF/lib/grails-core-1.3.9.jar; el Config.groovy del legacy no declara otro patrón); (2) JULI de Tomcat con OneLineFormatter, 'dd-MMM-yyyy HH:mm:ss.SSS NIVEL [hilo] clase.método mensaje'. El timestamp autoritativo es el prefijo RFC3339 UTC de Docker; los relojes propios (hora local del JVM, sin zona) quedan en metadata. Si la imagen usa SimpleFormatter de dos líneas para la consola, las líneas de Tomcat quedan sin parsear (explicable) y las de la app siguen parseando. Las trazas de excepción se anexan al evento anterior. Continuación: Líneas que continúan el mensaje anterior: pilas de excepciones, y también el SQL multilínea que DataService escribe con sangría de espacios, las líneas vacías y los 'Field error in object' de la validación de Grails (441 de 1312 líneas reales quedaban sin parsear con solo tabs y trazas; prueba real 2026-09-22).",
   "line_pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z) (?:(?P<app_ts>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2},\\d{3}) \\[(?P<thread>[^\\]]*)\\] |(?P<juli_ts>\\d{2}-[A-Z][a-z]{2}-\\d{4} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}) )(?P<severity>TRACE|DEBUG|INFO|WARN|ERROR|FATAL|SEVERE|WARNING|CONFIG|FINE|FINER|FINEST)\\s+(?(juli_ts)\\[(?P<juli_thread>[^\\]]*)\\] )(?P<logger>\\S+) (?(app_ts)(?P<ndc>.*?)- )(?P<message>.*)$",
   "timestamp": {
     "group": "timestamp"
@@ -76,7 +76,7 @@
     ]
   },
   "continuation": {
-    "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z (\\s+at |\\s*Caused by: |\\s+\\.\\.\\. \\d+ more|\\t|[a-zA-Z_$][\\w$]*(\\.[a-zA-Z_$][\\w$]*)+(Exception|Error|Throwable)(: |$))"
+    "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z (\\s|$|Caused by: |- (Field|Object) error in object |[a-zA-Z_$][\\w$]*(\\.[a-zA-Z_$][\\w$]*)+(Exception|Error|Throwable)(: |$))"
   },
   "affinity": [
     "thread"
