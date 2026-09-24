@@ -9,10 +9,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests"))
 
 from pepper.correlate import run  # noqa: E402
 from pepper.export import publish, render_report, validate  # noqa: E402
 from pepper.package import assemble  # noqa: E402
+from autorizar import assemble_authorized  # noqa: E402
 
 FIXTURE = ROOT / "examples" / "legacy-demo"
 GOLDEN = FIXTURE / "expected" / "funcional.json"
@@ -31,7 +33,7 @@ class ExportTest(unittest.TestCase):
         run(FIXTURE / "raw-evidence", base / "correlated")
         self.package = base / "package"
         # el fixture trae credenciales de juguete a propósito: la excepción es explícita (D24)
-        summary = assemble(base / "correlated", self.package, FIXTURE / "artifacts", allow_sensitive=True)
+        summary = assemble_authorized(base / "correlated", self.package, FIXTURE / "artifacts")
         self.manifest = Path(summary["external_manifest"])
         self.output = self.package / "output" / "funcional.json"
         shutil.copy2(GOLDEN, self.output)

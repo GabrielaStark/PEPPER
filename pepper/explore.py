@@ -121,6 +121,13 @@ def plausible_value(field_id: str, label: str, input_type: str, hints: Dict[str,
     return None
 
 
+def identity_text(login: Dict[str, Any], role: Dict[str, Any]) -> str:
+    """Lo que debe verse en pantalla tras entrar con `role`: `role.identity_text` o
+    `login.identity_text`, con `{user}` y `{role}` sustituidos."""
+    template = role.get("identity_text") or login.get("identity_text") or ""
+    return str(template).replace("{user}", str(role.get("user", ""))).replace("{role}", str(role.get("name", "")))
+
+
 class CredentialsError(RuntimeError):
     """No se pudo fijar ninguna credencial de prueba: sin eso no hay nada que explorar."""
 
@@ -143,6 +150,7 @@ class Explorer:
         self.actions: List[Action] = []
         self.hints: Dict[str, str] = config.get("fill") or {}
         self._page = None
+        self._context = None
         self._browser = None
         self._pw = None
 
@@ -156,7 +164,26 @@ class Explorer:
         self._log = self.log_path.open("a", encoding="utf-8")
         self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.launch(headless=self.headless)
+        self._context = None
+        self._fresh_context()
+        self.ready: Optional[List[str]] = None
+        self.deadline: Optional[float] = None
+        return self
+
+    def _fresh_context(self) -> None:
+        """Cierra el contexto del navegador y abre uno nuevo, vacío.
+
+        Un contexto nuevo no hereda NADA del anterior: cookies, localStorage, sessionStorage,
+        IndexedDB, caché, service workers. Antes se reutilizaba uno solo y al salir se borraban
+        las cookies: un sistema que guarda la sesión fuera de ellas habría atribuido al rol
+        siguiente lo que puede hacer el anterior (revisión 2026-09-24)."""
+        if self._context is not None:
+            try:
+                self._context.close()
+            except Exception:
+                pass
         context = self._browser.new_context(viewport={"width": 1366, "height": 900})
+        self._context = context
         context.set_default_timeout(self.timeout_ms)
         # El navegador del explorador corre en el host (con VPN). La CSP del ingress frena lo
         # que la página carga, pero no una navegación top-level por script (location.href=).
@@ -183,14 +210,16 @@ class Explorer:
         self._page = context.new_page()
         context.on("page", lambda popup: popup.close() if popup != self._page else None)
         self._page.on("dialog", lambda d: d.accept())
-        self.ready: Optional[List[str]] = None
-        self.deadline: Optional[float] = None
-        return self
 
     def __exit__(self, *exc) -> None:
         try:
             self._log.close()
         finally:
+            if self._context is not None:
+                try:
+                    self._context.close()
+                except Exception:
+                    pass
             if self._browser:
                 self._browser.close()
             if self._pw:
@@ -352,7 +381,9 @@ class Explorer:
     # ------------------------------------------------------------ sesión
 
     def login(self, role: Dict[str, Any]) -> bool:
+        """Entra con un rol en un contexto de navegador NUEVO y comprueba quién quedó autenticado."""
         login = self.config["login"]
+        self._fresh_context()
         action = Action(role=role["name"], route=login["route"], kind="login", label=f"entrar como {role['name']}", started=_now())
         try:
             self.page.goto(self.base + login["route"])
@@ -362,7 +393,7 @@ class Explorer:
             self.page.click(login["submit"])
             self._settle()
         except Exception as error:
-            action.result, action.detail = "error", {"error": str(error)[:200]}
+            action.result, action.detail = "error", {"error": str(error)[:200], "falla": "explorador"}
             action.screenshot = self._shot(f"{role['name']}_login_error")
             self._write(action)
             return False
@@ -371,11 +402,39 @@ class Explorer:
         ok = self._route_of(self.page.url) != login["route"] and not any(
             login.get("failure_text") and login["failure_text"] in m for m in action.messages)
         action.result = "ok" if ok else "rejected"
+        if not ok:
+            action.detail = {"falla": "acceso"}
+        elif not self._identity_confirmed(role, action):
+            # Entró, pero no se puede señalar QUIÉN: atribuirle permisos sería adivinar.
+            action.result = "error"
+            ok = False
         action.screenshot = self._shot(f"{role['name']}_login")
         self._write(action)
         return ok
 
+    def _identity_confirmed(self, role: Dict[str, Any], action: Action) -> bool:
+        """El texto que el sistema muestra solo al usuario autenticado (`login.identity_text`, con
+        `{user}` y `{role}`) tiene que estar en pantalla — o en `login.identity_route`, si la
+        identidad se ve en otra página. Sin eso no se explora con ese rol."""
+        login = self.config["login"]
+        expected = identity_text(login, role)
+        try:
+            if login.get("identity_route"):
+                self.page.goto(self.base + login["identity_route"])
+                self._settle(400)
+            found = bool(expected) and expected in (self.page.locator("body").inner_text() or "")
+        except Exception as error:  # noqa: BLE001
+            action.detail = {"falla": "explorador", "identidad": "sin comprobar", "error": str(error)[:200]}
+            return False
+        if found:
+            action.detail = {"identidad": "confirmada"}
+            return True
+        action.detail = {"falla": "identidad", "identidad": "no confirmada",
+                         "error": "el texto de identidad del rol no aparece tras entrar"}
+        return False
+
     def logout(self, role: str) -> None:
+        """Sale por la ruta del sistema (queda como evidencia) y descarta el contexto entero."""
         route = self.config.get("logout_route")
         if route:
             action = Action(role=role, route=route, kind="logout", label="salir", started=_now())
@@ -384,9 +443,9 @@ class Explorer:
                 self._settle(300)
                 action.result = "ok"
             except Exception as error:
-                action.result, action.detail = "error", {"error": str(error)[:200]}
+                action.result, action.detail = "error", {"error": str(error)[:200], "falla": "explorador"}
             self._write(action)
-        self.page.context.clear_cookies()
+        self._fresh_context()
 
     # ------------------------------------------------------------ pantallas
 
@@ -434,7 +493,7 @@ class Explorer:
             status = response.status if response else None
             self._settle(600)
         except Exception as error:
-            action.result, action.detail = "error", {"error": str(error)[:200]}
+            action.result, action.detail = "error", {"error": str(error)[:200], "falla": "explorador"}
             self._write(action)
             return action
         action.status = status
@@ -449,6 +508,9 @@ class Explorer:
             action.result = "ok"
         action.messages = self._messages()
         action.detail = self.snapshot()
+        if action.result == "error":
+            # un 5xx es lo que el SISTEMA respondió: evidencia observada, no un tropiezo del explorador
+            action.detail["falla"] = "sistema"
         action.screenshot = self._shot(f"{role}_{route}")
         self._write(action)
         return action
@@ -499,7 +561,7 @@ class Explorer:
             self.open_screen_quiet(route)
             action = Action(role=role, route=route, kind="empty_submit", label=name, started=_now())
             if not self._click_button(name):
-                action.result = "error"
+                action.result, action.detail = "error", {"falla": "explorador", "error": "no se pudo apretar el botón"}
                 self._write(action)
                 continue
             self._submit_result(action, route)
@@ -580,6 +642,7 @@ class Explorer:
             action.detail = {"filled": self.fill_form()}
             if not self._click_button(name):
                 action.result = "error"
+                action.detail.update({"falla": "explorador", "error": "no se pudo apretar el botón"})
                 self._write(action)
                 continue
             self._submit_result(action, route)
@@ -600,25 +663,37 @@ class Explorer:
                 seen.append(e["path"])
         return seen
 
+    def _out_of_time(self) -> bool:
+        return bool(self.deadline) and time.time() > self.deadline
+
     def walk(self, docker_compose: Optional[Path] = None, submit: bool = True) -> Dict[str, Any]:
-        """El recorrido automático completo: credenciales → por rol: entrar, cada pantalla, rechazos, llenado, salir."""
+        """El recorrido automático completo: credenciales → por rol: entrar, cada pantalla, rechazos, llenado, salir.
+
+        Cada rol entra en un contexto de navegador nuevo y con su identidad comprobada; si el
+        presupuesto de tiempo se agota, el resumen lo dice (`interrupted`) y el veredicto es
+        INTERRUMPIDO, no un éxito con menos pantallas."""
         ready = self.ready if self.ready is not None else self.grant_credentials(docker_compose)
         routes = self.routes()
-        summary: Dict[str, Any] = {"roles": {}, "routes": len(routes)}
+        summary: Dict[str, Any] = {"mode": "walk", "roles": {}, "routes": len(routes)}
         for role in self.config.get("roles", []):
-            if self.deadline and time.time() > self.deadline:
-                summary["roles"][role["name"]] = "presupuesto de tiempo agotado"
+            if self._out_of_time():
+                summary["roles"][role["name"]] = "sin recorrer: presupuesto de tiempo agotado"
+                summary["interrupted"] = "presupuesto de tiempo agotado"
                 continue
             if role["name"] not in ready:
                 summary["roles"][role["name"]] = "sin credencial"
                 continue
             if not self.login(role):
-                summary["roles"][role["name"]] = "login rechazado"
+                falla = (self.actions[-1].detail or {}).get("falla") if self.actions else None
+                summary["roles"][role["name"]] = {"acceso": "login rechazado", "identidad": "identidad no confirmada"}.get(
+                    falla or "", "login con error del explorador")
                 continue
-            opened = rejected = 0
+            opened = rejected = visited = 0
             for route in routes:
-                if self.deadline and time.time() > self.deadline:
+                if self._out_of_time():
+                    summary["interrupted"] = "presupuesto de tiempo agotado"
                     break
+                visited += 1
                 action = self.open_screen(role["name"], route)
                 if action.result != "ok":
                     continue
@@ -629,41 +704,62 @@ class Explorer:
                     self.try_filled_submit(role["name"], route)
                     rejected += sum(1 for a in self.actions[before:] if a.result == "rejected")
             self.logout(role["name"])
-            summary["roles"][role["name"]] = f"{opened}/{len(routes)} pantallas, {rejected} rechazos provocados"
+            text = f"{opened}/{len(routes)} pantallas, {rejected} rechazos provocados"
+            if visited < len(routes):
+                text += f" (cortado por presupuesto: {len(routes) - visited} rutas sin visitar)"
+            summary["roles"][role["name"]] = text
         return summary
 
     def run_plan(self, plan: List[Dict[str, Any]], docker_compose: Optional[Path] = None) -> Dict[str, Any]:
         """Pasos escritos por el agente. Cada paso es un dict con UNA clave:
         login: <rol> · goto: <ruta> · fill: {selector: valor} · select: {id_selectonemenu: texto} ·
         click: <texto del botón> · click_at: <selector css> · check: <selector> · wait: <segundos> ·
-        expect_text: <texto> · expect_route: <ruta> · note: <texto> · logout: true
-        """
+        note: <texto> · logout: true · y las comprobaciones: expect_text: <texto> ·
+        expect_absent: <texto> · expect_route: <ruta> · expect_rejected: <texto o true>
+
+        Un clic que guarda (guardar, registrar, enviar…) debe ir seguido de una comprobación antes
+        de la siguiente acción: que el botón se dejara apretar no demuestra que el trámite exista
+        (`plan_problems` lo exige antes de correr). Un rechazo del sistema que el plan declara con
+        `expect_rejected` es resultado de negocio, no un fallo. Cada paso queda con `detail.paso`,
+        `detail.tipo` y, si falló, `detail.falla`: explorador | negocio | verificacion | acceso |
+        identidad. Con el presupuesto vencido no se corre ningún paso más."""
         if self.ready is None:
             self.grant_credentials(docker_compose)
         role = ""
-        ok = failed = 0
         aborted = False
         roles = {r["name"]: r for r in self.config.get("roles", [])}
+        executed = 0
+        summary: Dict[str, Any] = {"mode": "plan", "steps": len(plan)}
         for index, step in enumerate(plan, 1):
-            (key, value), = step.items() if len(step) == 1 else (list(step.items())[0],)
+            if self._out_of_time():
+                summary["interrupted"] = f"presupuesto de tiempo agotado antes del paso {index}"
+                self._write(Action(role=role, route="", kind="plan", label=f"{index}. presupuesto agotado", started=_now(),
+                                   result="skipped", detail={"falla": "presupuesto", "sin_correr": len(plan) - index + 1}))
+                break
+            key, value = next(iter(step.items()))
             action = Action(role=role, route=self._route_of(self.page.url) if self.page.url.startswith("http") else "",
                             kind="plan", label=f"{index}. {key}: {json.dumps(value, ensure_ascii=False)[:80]}", started=_now())
             try:
-                if aborted:
-                    action.result, action.detail = "error", {"error": "omitido: el login anterior falló"}
+                if aborted and key != "login":
+                    action.result, action.detail = "skipped", {"falla": "omitido", "why": "el login anterior falló"}
                 elif key == "login":
                     role = value
                     action.role = role
                     if value not in roles:
                         raise KeyError(f"rol desconocido en el plan: {value}")
-                    action.result = "ok" if self.login(roles[value]) else "rejected"
-                    if action.result != "ok":
-                        aborted = True
+                    entered = self.login(roles[value])
+                    login_detail = self.actions[-1].detail if self.actions else {}
+                    action.result = "ok" if entered else ("rejected" if login_detail.get("falla") == "acceso" else "error")
+                    if not entered:
+                        action.detail = {"falla": login_detail.get("falla", "explorador")}
+                    aborted = not entered
                 elif key == "goto":
                     response = self.page.goto(self.base + value)
                     self._settle(600)
                     action.status = response.status if response else None
                     action.result = "ok"
+                    if action.status and action.status >= 400:
+                        action.result, action.detail = "error", {"falla": "sistema"}
                 elif key == "fill":
                     for selector, text in value.items():
                         self._fill_input(selector, str(text))
@@ -674,10 +770,13 @@ class Explorer:
                     action.detail = {"selected": chosen}
                     action.result = "ok"
                 elif key == "click":
-                    action.result = "ok" if self._click_button(str(value)) else "error"
-                    action.messages = self._messages()
-                    if any(_REJECT_TEXT_RE.search(m) for m in action.messages):
-                        action.result = "rejected"
+                    if not self._click_button(str(value)):
+                        action.result, action.detail = "error", {"falla": "explorador", "error": "no se pudo apretar el botón"}
+                    else:
+                        action.messages = self._messages()
+                        action.result = "ok"
+                        if any(_REJECT_TEXT_RE.search(m) for m in action.messages):
+                            action.result, action.detail = "rejected", {"falla": "negocio"}
                 elif key == "check":
                     self.page.check(value)
                     action.result = "ok"
@@ -686,31 +785,166 @@ class Explorer:
                     # cuyo <input> real está oculto y no se puede marcar directo)
                     self.page.locator(str(value)).first.click(timeout=self.timeout_ms)
                     self._settle()
+                    action.messages = self._messages()
                     action.result = "ok"
+                    if any(_REJECT_TEXT_RE.search(m) for m in action.messages):
+                        action.result, action.detail = "rejected", {"falla": "negocio"}
                 elif key == "wait":
                     self.page.wait_for_timeout(int(float(value) * 1000))
                     action.result = "ok"
                 elif key == "expect_text":
                     found = self.page.get_by_text(str(value)).count() > 0 or any(str(value) in m for m in self._messages())
                     action.result = "ok" if found else "error"
+                elif key == "expect_absent":
+                    present = self.page.get_by_text(str(value)).count() > 0 or any(str(value) in m for m in self._messages())
+                    action.result = "error" if present else "ok"
                 elif key == "expect_route":
                     action.result = "ok" if self._route_of(self.page.url) == value else "error"
+                elif key == "expect_rejected":
+                    action.messages = self._messages()
+                    wanted = "" if value is True else str(value)
+                    seen = any(wanted in m for m in action.messages) if wanted else any(_REJECT_TEXT_RE.search(m) for m in action.messages)
+                    action.result = "ok" if seen else "error"
                 elif key == "note":
                     action.result = "ok"
                 elif key == "logout":
                     self.logout(role)
                     action.result = "ok"
                 else:
-                    action.result, action.detail = "error", {"error": f"paso desconocido: {key}"}
-            except Exception as error:
-                action.result, action.detail = "error", {"error": str(error)[:300]}
+                    action.result, action.detail = "error", {"falla": "explorador", "error": f"paso desconocido: {key}"}
+                if key in EXPECT_KEYS and action.result == "error" and not action.detail:
+                    action.detail = {"falla": "verificacion"}
+            except Exception as error:  # noqa: BLE001
+                action.result, action.detail = "error", {"falla": "explorador", "error": str(error)[:300]}
+            action.detail = dict(action.detail, paso=index, tipo=key)
             action.url_after = self.page.url if self.page.url.startswith("http") else ""
-            if key in ("click", "click_at", "goto", "expect_text", "expect_route", "select", "fill"):
+            if key in ("click", "click_at", "goto", "expect_text", "expect_absent", "expect_route", "expect_rejected", "select", "fill"):
                 action.screenshot = self._shot(f"plan_{index:02d}_{key}")
             self._write(action)
-            ok += action.result == "ok"
-            failed += action.result in ("error", "rejected")
-        return {"steps": len(plan), "ok": ok, "failed": failed}
+            executed += 1
+        summary["executed"] = executed
+        return summary
+
+
+STEP_KEYS = ("login", "goto", "fill", "select", "click", "click_at", "check", "wait", "note", "logout",
+             "expect_text", "expect_absent", "expect_route", "expect_rejected")
+EXPECT_KEYS = ("expect_text", "expect_absent", "expect_route", "expect_rejected")
+# Lo que termina una "acción" del plan: después de un clic que guarda, la comprobación tiene que llegar antes.
+_ACTION_KEYS = ("click", "click_at", "goto", "login", "logout")
+# Botones cuyo efecto es un trámite (crear, cambiar, cerrar algo), no una consulta.
+_COMMIT_RE = re.compile(r"(?i)guardar|registr|agregar|enviar|aceptar|agendar|confirmar|tomar|iniciar|finalizar|aplicar|"
+                        r"cargar|generar|continuar|crear|alta|autoriz|aprob|rechaz|cerrar|asignar|turnar|firmar|capturar|save|submit")
+
+
+def plan_problems(plan: Any) -> List[str]:
+    """Qué impide correr un plan; vacío si se puede. Se comprueba ANTES de abrir el navegador.
+
+    Un plan sin comprobaciones solo demuestra que los botones se dejaron apretar; por eso cada
+    clic que guarda necesita su `expect_*` antes de la siguiente acción, y el plan al menos una."""
+    if not isinstance(plan, list) or not plan:
+        return ["el plan debe ser una lista de pasos no vacía"]
+    problems: List[str] = []
+    keys: List[str] = []
+    for index, step in enumerate(plan, 1):
+        if not isinstance(step, dict) or len(step) != 1:
+            problems.append(f"paso {index}: cada paso es un objeto con UNA clave")
+            keys.append("")
+            continue
+        key = next(iter(step))
+        if key not in STEP_KEYS:
+            problems.append(f"paso {index}: clave desconocida {key!r} (válidas: {', '.join(STEP_KEYS)})")
+        keys.append(key)
+    if not any(k in EXPECT_KEYS for k in keys):
+        problems.append("el plan no comprueba nada: agrega al menos un expect_text, expect_absent, expect_route o expect_rejected")
+    for index, (key, step) in enumerate(zip(keys, plan), 1):
+        if key not in ("click", "click_at") or not _COMMIT_RE.search(str(step[key])):
+            continue
+        verified = False
+        for later in keys[index:]:
+            if later in EXPECT_KEYS:
+                verified = True
+                break
+            if later in _ACTION_KEYS:
+                break
+        if not verified:
+            problems.append(f"paso {index}: {key} {str(step[key])!r} guarda algo y nada comprueba su resultado antes de la "
+                            "siguiente acción (expect_text / expect_route / expect_rejected)")
+    return problems
+
+
+# Veredicto de una exploración. El código de salida lo dice sin leer la salida: solo COMPLETO es 0.
+STATUS_CODES = {"COMPLETO": 0, "FALLIDO": 1, "PARCIAL": 3, "INTERRUMPIDO": 4}
+
+
+def _detail(record: Dict[str, Any]) -> Dict[str, Any]:
+    return record.get("detail") or {}
+
+
+def plan_verdict(records: List[Dict[str, Any]], steps: int) -> Dict[str, Any]:
+    """Reconcilia los pasos registrados de un plan: qué se comprobó, qué rechazó el negocio a
+    propósito, qué falló y de quién fue la falla, y cuántos pasos no llegaron a correr."""
+    ran = [r for r in records if r.get("kind") == "plan" and "paso" in _detail(r)]
+    expectations = [r for r in ran if _detail(r).get("tipo") in EXPECT_KEYS]
+    passed = [r for r in expectations if r.get("result") == "ok"]
+    # un expect_rejected que pasa vuelve ESPERADO el último rechazo anterior a él
+    expected: set = set()
+    last_rejected: Optional[int] = None
+    for r in ran:
+        d = _detail(r)
+        if r.get("result") == "rejected" and d.get("tipo") in ("click", "click_at"):
+            last_rejected = d["paso"]
+        elif d.get("tipo") in _ACTION_KEYS:
+            last_rejected = None
+        if d.get("tipo") == "expect_rejected" and r.get("result") == "ok" and last_rejected is not None:
+            expected.add(last_rejected)
+            last_rejected = None
+    failures: Dict[str, int] = {}
+    for r in ran:
+        d = _detail(r)
+        if r.get("result") in ("error", "rejected") and d["paso"] not in expected:
+            kind = d.get("falla") or "explorador"
+            failures[kind] = failures.get(kind, 0) + 1
+    skipped = sum(1 for r in ran if r.get("result") == "skipped")
+    not_run = max(steps - len(ran), 0)
+    counts = {"pasos": steps, "corridos": len(ran), "sin_correr": not_run, "omitidos": skipped,
+              "comprobaciones": len(expectations), "comprobaciones_ok": len(passed),
+              "rechazos_esperados": len(expected), "fallas": failures}
+    fallas = ", ".join(f"{n} de {k}" for k, n in sorted(failures.items()))
+    if not_run:
+        status, reason = "INTERRUMPIDO", f"{not_run} de {steps} pasos sin correr"
+    elif not passed:
+        status, reason = "FALLIDO", (f"ninguna comprobación del plan se cumplió ({len(expectations)} escritas"
+                                     + (f"; fallas: {fallas}" if fallas else "") + ")")
+    elif not failures and not skipped:
+        status, reason = "COMPLETO", f"{len(passed)}/{len(expectations)} comprobaciones cumplidas, {len(expected)} rechazos esperados"
+    else:
+        status, reason = "PARCIAL", (f"{len(passed)}/{len(expectations)} comprobaciones cumplidas"
+                                     + (f"; fallas: {fallas}" if fallas else "") + (f"; {skipped} pasos omitidos" if skipped else ""))
+    return {"status": status, "reason": reason, "counts": counts}
+
+
+def walk_verdict(summary: Dict[str, Any], records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """El recorrido automático: COMPLETO solo si todos los roles entraron con identidad confirmada,
+    cada ruta dio una respuesta del sistema y el explorador no tropezó en ningún lado."""
+    roles = summary.get("roles") or {}
+    entered = [r for r, s in roles.items() if "pantallas" in str(s)]
+    missing = {r: s for r, s in roles.items() if r not in entered}
+    stumbles = sum(1 for r in records if _detail(r).get("falla") == "explorador")
+    screens_ok = sum(1 for r in records if r.get("kind") == "screen" and r.get("result") == "ok")
+    counts = {"roles": len(roles), "roles_dentro": len(entered), "pantallas_ok": screens_ok, "fallas_explorador": stumbles}
+    if summary.get("interrupted"):
+        return {"status": "INTERRUMPIDO", "reason": str(summary["interrupted"]), "counts": counts}
+    if not entered:
+        return {"status": "FALLIDO", "reason": "ningún rol entró al sistema: " + ", ".join(f"{r}: {s}" for r, s in roles.items()),
+                "counts": counts}
+    if not screens_ok:
+        return {"status": "FALLIDO", "reason": "no se abrió ninguna pantalla", "counts": counts}
+    if not missing and not stumbles:
+        return {"status": "COMPLETO", "reason": f"{len(entered)} roles, {screens_ok} pantallas abiertas", "counts": counts}
+    parts = [f"{r}: {s}" for r, s in missing.items()]
+    if stumbles:
+        parts.append(f"{stumbles} acciones que el explorador no pudo hacer")
+    return {"status": "PARCIAL", "reason": "; ".join(parts), "counts": counts}
 
 
 def config_problems(config: Dict[str, Any]) -> List[str]:
@@ -729,34 +963,34 @@ def config_problems(config: Dict[str, Any]) -> List[str]:
     for role in roles:
         if not all(role.get(k) for k in ("name", "user", "password")):
             problems.append(f"rol incompleto: {role.get('name') or '?'} (name, user, password)")
+        elif not identity_text(login, role):
+            problems.append(f"rol {role['name']}: falta login.identity_text (o identity_text del rol): el texto que el "
+                            "sistema muestra solo a quien entró, p. ej. \"{user}\"; sin él no se sabe con qué identidad se exploró")
     creds = config.get("credentials")
     if creds and creds.get("sql") and not creds.get("db_name"):
         problems.append("credentials.sql sin credentials.db_name")
     return problems
 
 
-def outcome(summary: Dict[str, Any], actions: List[Dict[str, Any]], captured_files: List[str]) -> Tuple[int, str]:
-    """(código de salida, razón). 0 solo si de verdad se exploró algo y se capturó el ingress."""
-    if summary.get("error"):
-        return 1, f"el explorador se detuvo por un error: {summary['error']}"
-    if summary.get("interrupted"):
-        return 1, "recorrido interrumpido"
-    if "steps" in summary:
-        if summary.get("ok", 0) == 0:
-            return 1, f"ningún paso del plan terminó en ok ({summary.get('failed', 0)} fallidos)"
+def outcome(summary: Dict[str, Any], actions: List[Dict[str, Any]], captured_files: List[str],
+            plan_steps: Optional[int] = None) -> Dict[str, Any]:
+    """El veredicto de la sesión: {status, code, reason, counts}. Solo COMPLETO sale con 0."""
+    if plan_steps is not None or summary.get("mode") == "plan":
+        verdict = plan_verdict(actions, plan_steps if plan_steps is not None else int(summary.get("steps", 0)))
     else:
-        roles = summary.get("roles") or {}
-        entered = [r for r, s in roles.items() if s and "pantallas" in str(s)]
-        if not entered:
-            return 1, "ningún rol entró al sistema: " + ", ".join(f"{r}: {s}" for r, s in roles.items())
-        if not any(a.get("kind") == "screen" and a.get("result") == "ok" for a in actions):
-            return 1, "no se abrió ninguna pantalla"
-    if "http.jsonl" not in captured_files:
-        return 1, "no se capturó http.jsonl del ingress: sin él no hay correlation_id y Correlate no tiene anclas"
-    return 0, ""
+        verdict = walk_verdict(summary, actions)
+    if summary.get("error"):
+        verdict = dict(verdict, status="INTERRUMPIDO", reason=f"el explorador se detuvo por un error: {summary['error']}")
+    elif summary.get("interrupted") and verdict["status"] != "INTERRUMPIDO":
+        verdict = dict(verdict, status="INTERRUMPIDO", reason=f"recorrido interrumpido: {summary['interrupted']}")
+    if verdict["status"] in ("COMPLETO", "PARCIAL") and "http.jsonl" not in captured_files:
+        verdict = dict(verdict, status="FALLIDO",
+                       reason="no se capturó http.jsonl del ingress: sin él no hay correlation_id y Correlate no tiene anclas")
+    return dict(verdict, code=STATUS_CODES[verdict["status"]])
 
 
-def operator_note(actions: List[Dict[str, Any]], summary: Dict[str, Any], kind: str) -> str:
+def operator_note(actions: List[Dict[str, Any]], summary: Dict[str, Any], kind: str,
+                  verdict: Optional[Dict[str, Any]] = None) -> str:
     """La nota de la sesión, redactada desde lo que el explorador hizo (no se le pregunta a nadie)."""
     roles = ", ".join(f"{r}: {s}" for r, s in (summary.get("roles") or {}).items())
     rejected = [a for a in actions if a.get("result") == "rejected"]
@@ -767,6 +1001,8 @@ def operator_note(actions: List[Dict[str, Any]], summary: Dict[str, Any], kind: 
             if m not in messages:
                 messages.append(m)
     parts = [f"Sesión ejercitada POR EL AGENTE (explorador de PEPPER) con un navegador headless local, todo por el ingress; modo {kind}."]
+    if verdict:
+        parts.append(f"Resultado: {verdict['status']} — {verdict['reason']}.")
     if roles:
         parts.append(f"Roles: {roles}.")
     parts.append(f"{len(actions)} acciones registradas en explore.jsonl; {len(rejected)} rechazos provocados; "
@@ -777,7 +1013,8 @@ def operator_note(actions: List[Dict[str, Any]], summary: Dict[str, Any], kind: 
 
 
 def write_session(out_dir: Path, session_id: str, flow_name: str, started: datetime, ended: datetime,
-                  profile_id: Optional[str], note: str, collectors: List[Dict[str, str]]) -> Path:
+                  profile_id: Optional[str], note: str, collectors: List[Dict[str, str]],
+                  verdict: Optional[Dict[str, Any]] = None) -> Path:
     tz = started.strftime("%z")
     tz = f"{tz[:3]}:{tz[3:]}" if tz else "Z"
     session = {
@@ -790,6 +1027,8 @@ def write_session(out_dir: Path, session_id: str, flow_name: str, started: datet
         "environment": {"profile_id": profile_id, "support_tier": 1},
         "collectors": collectors,
     }
+    if verdict:
+        session["outcome"] = {"status": verdict["status"], "reason": verdict["reason"], "counts": verdict.get("counts", {})}
     path = out_dir / "session.json"
     path.write_text(json.dumps(session, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return path

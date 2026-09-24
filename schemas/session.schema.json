@@ -19,6 +19,17 @@
     "synthetic": { "type": "boolean", "description": "true si la evidencia fue construida a mano y no capturada de una ejecución real." },
     "synthetic_note": { "type": "string" },
     "operator_note": { "type": "string", "description": "Lo que el operador hizo durante la ventana, en sus palabras." },
+    "outcome": {
+      "type": "object",
+      "description": "Veredicto del explorador sobre la sesión: COMPLETO (todo se hizo y se comprobó), PARCIAL (hay resultado comprobado y también fallas u omisiones), FALLIDO (nada comprobado) o INTERRUMPIDO (quedó trabajo sin correr). Lo que no está COMPLETO no se describe como un recorrido completo.",
+      "required": ["status", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "type": "string", "enum": ["COMPLETO", "PARCIAL", "FALLIDO", "INTERRUMPIDO"] },
+        "reason": { "type": "string" },
+        "counts": { "type": "object" }
+      }
+    },
     "environment": {
       "type": "object",
       "additionalProperties": false,

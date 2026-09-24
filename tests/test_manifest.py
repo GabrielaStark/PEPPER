@@ -13,11 +13,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests"))
 
 from pepper import manifest as evidence_manifest  # noqa: E402
 from pepper.correlate import run as correlate_run  # noqa: E402
 from pepper.export import check as export_check  # noqa: E402
 from pepper.package import assemble  # noqa: E402
+from autorizar import assemble_authorized  # noqa: E402
 
 FIXTURE = ROOT / "examples" / "legacy-demo"
 
@@ -75,7 +77,7 @@ class ExportIntegrityTest(unittest.TestCase):
             shutil.copytree(FIXTURE / "artifacts" / name, legacy / name)
         self.package = base / "package"
         # binarios falsos + credenciales de juguete: excepciones explícitas, como en un legacy real (D24)
-        summary = assemble(correlated, self.package, legacy, allow_sensitive=True, acknowledge_unscanned=True)
+        summary = assemble_authorized(correlated, self.package, legacy)
         self.external_manifest = Path(summary["external_manifest"])
         shutil.copy2(FIXTURE / "expected" / "funcional.json", self.package / "output" / "funcional.json")
         shutil.copy2(FIXTURE / "expected" / "funcional.md", self.package / "output" / "funcional.md")
@@ -123,7 +125,7 @@ class ExportIntegrityTest(unittest.TestCase):
         from pepper.package import assemble as _assemble
         corr = Path(self._tmp.name) / "corr2"
         _run(FIXTURE / "raw-evidence", corr)
-        summary = _assemble(corr, pkg2, legacy2, allow_sensitive=True)
+        summary = assemble_authorized(corr, pkg2, legacy2)
         self.assertIn("NOTAS.md", summary["redacted_notes"])
         content = (pkg2 / "legacy" / "NOTAS.md").read_text(encoding="utf-8")
         self.assertNotIn("SuperSecreta123", content)

@@ -9,9 +9,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests"))
 
 from pepper.correlate import run as correlate_run  # noqa: E402
 from pepper.package import assemble  # noqa: E402
+from autorizar import assemble_authorized  # noqa: E402
 from pepper.sensitive import scan  # noqa: E402
 
 FIXTURE = ROOT / "examples" / "legacy-demo"
@@ -59,28 +61,24 @@ class SensitiveDataGateTest(unittest.TestCase):
         legacy = self.root / "legacy-binary"
         legacy.mkdir()
         (legacy / "sistema.war").write_bytes(b"PK\x03\x04\x00\x00contenido")
-        with self.assertRaisesRegex(ValueError, "no puede inspeccionar"):
+        with self.assertRaisesRegex(ValueError, r"sin autorizar|sistema\.war \(binary\)"):
             assemble(self.correlated, self.root / "package-binary", legacy, data_mode="remote")
 
-    def test_excepciones_quedan_registradas_en_el_manifest(self):
+    def test_la_autorizacion_queda_registrada_en_el_manifest(self):
         legacy = self.root / "legacy-approved"
         legacy.mkdir()
-        (legacy / "config.txt").write_text("token=TokenAprobadoPorHumano\n", encoding="utf-8")
+        (legacy / "config.properties").write_text("token=TokenAprobadoPorHumano\n", encoding="utf-8")
         (legacy / "sistema.war").write_bytes(b"PK\x03\x04\x00\x00contenido")
         package = self.root / "package-approved"
-        summary = assemble(
-            self.correlated,
-            package,
-            legacy,
-            data_mode="remote",
-            allow_sensitive=True,
-            acknowledge_unscanned=True,
-        )
+        summary = assemble_authorized(self.correlated, package, legacy, by="Ana Responsable", data_mode="remote")
         manifest = json.loads(Path(summary["external_manifest"]).read_text(encoding="utf-8"))
-        self.assertTrue(manifest["data_policy"]["allow_sensitive"])
-        self.assertTrue(manifest["data_policy"]["acknowledge_unscanned"])
-        self.assertGreaterEqual(manifest["data_policy"]["sensitive_findings"], 1)
-        self.assertGreaterEqual(manifest["data_policy"]["unscanned_files"], 1)
+        policy = manifest["data_policy"]
+        self.assertEqual(policy["authorization"]["decided_by"], "Ana Responsable")
+        self.assertIn("credential", policy["categories"])
+        self.assertGreaterEqual(policy["sensitive_findings"], 1)
+        self.assertGreaterEqual(policy["unscanned_files"], 1)
+        self.assertIn("legacy/config.properties", policy["substitutions"])
+        self.assertNotIn("TokenAprobadoPorHumano", (package / "legacy" / "config.properties").read_text(encoding="utf-8"))
 
     def test_remoto_bloquea_rfc(self):
         legacy = self.root / "legacy-rfc"
@@ -109,7 +107,7 @@ class SensitiveDataGateTest(unittest.TestCase):
         legacy = self.root / "legacy-real"
         legacy.mkdir()
         (legacy / "sistema.war").write_bytes(b"PK\x03\x04\x00\x00contenido")
-        with self.assertRaisesRegex(ValueError, "no puede inspeccionar"):
+        with self.assertRaisesRegex(ValueError, r"sin autorizar|sistema\.war \(binary\)"):
             assemble(correlated, self.root / "package-synthetic", legacy, data_mode="remote")
         self.assertFalse((self.root / "package-synthetic").exists())
 
@@ -187,8 +185,8 @@ class GateOnWhatTravelsTest(SensitiveDataGateTest):
         previous = self.root / "funcional-anterior.json"
         previous.write_text(json.dumps({"summary": {"context": "db.password=ValorQueNoDebeSalir123"}}), encoding="utf-8")
         package = self.root / "package-contado"
-        summary = assemble(self.correlated, package, self._legacy_limpio(), data_mode="remote",
-                           previous=previous, allow_sensitive=True)
+        summary = assemble_authorized(self.correlated, package, self._legacy_limpio(), data_mode="remote",
+                                      previous=previous)
         manifest = json.loads(Path(summary["external_manifest"]).read_text(encoding="utf-8"))
         self.assertGreaterEqual(manifest["data_policy"]["sensitive_findings"], 1)
         self.assertIn("previous/funcional.json", manifest["files"])
