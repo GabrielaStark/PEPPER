@@ -13,10 +13,14 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 _MAX_TEXT_BYTES = 2_000_000
-_MAX_FINDINGS = 200
+# Tope de lo que se MUESTRA, nunca de lo que se decide. Antes era el tope de todo: con 201
+# archivos no inspeccionables el último quedaba fuera de la autorización y podía cambiar sin
+# que nada lo notara; y en un respaldo con más de 200 CURP, una categoría que aparecía después
+# (un correo) no llegaba a la propuesta y viajaba sin que la persona la aprobara (revisión 2026-09-24).
+_MAX_SHOWN = 200
 # Una sola lista para el escáner Y para lo que Package copia: lo que se copia se
 # escanea, y lo que no se escanea no se copia (.idea/dataSources.local.xml guarda
 # contraseñas de base; antes se copiaba sin mirarse — auditoría 2026-09-11).
@@ -66,18 +70,38 @@ class Finding:
 
 @dataclass
 class Report:
+    """Lo que el escáner vio.
+
+    Con `categories`, `sensitive_total` y `unscanned` se DECIDE (qué pide autorización, qué se
+    cuenta en el manifest): son completos. `sensitive` es solo una muestra de ubicaciones para
+    mostrar — las primeras `_MAX_SHOWN` y la primera de cada categoría — y no decide nada."""
     sensitive: List[Finding] = field(default_factory=list)
     unscanned: List[Finding] = field(default_factory=list)
+    categories: Set[str] = field(default_factory=set)
+    sensitive_total: int = 0
+    _unscanned_seen: Set[Finding] = field(default_factory=set, repr=False, compare=False)
 
-    def add_sensitive(self, kind: str, path: str, line: int) -> None:
-        finding = Finding(kind, path, line)
-        if finding not in self.sensitive and len(self.sensitive) < _MAX_FINDINGS:
-            self.sensitive.append(finding)
+    def add_sensitive(self, kind: str, path: str, line: Optional[int]) -> None:
+        self.sensitive_total += 1
+        first_of_its_kind = kind not in self.categories
+        self.categories.add(kind)
+        if first_of_its_kind or len(self.sensitive) < _MAX_SHOWN:
+            self.sensitive.append(Finding(kind, path, line))
 
     def add_unscanned(self, kind: str, path: str) -> None:
         finding = Finding(kind, path)
-        if finding not in self.unscanned and len(self.unscanned) < _MAX_FINDINGS:
+        if finding not in self._unscanned_seen:
+            self._unscanned_seen.add(finding)
             self.unscanned.append(finding)
+
+    def merge(self, other: "Report") -> None:
+        for finding in other.sensitive:
+            if finding.kind not in self.categories or len(self.sensitive) < _MAX_SHOWN:
+                self.sensitive.append(finding)
+        self.categories |= other.categories
+        self.sensitive_total += other.sensitive_total
+        for finding in other.unscanned:
+            self.add_unscanned(finding.kind, finding.path)
 
 
 Ignore = Callable[[str, List[str]], List[str]]
@@ -115,29 +139,22 @@ def _safe_secret_value(value: str) -> bool:
 
 
 def _scan_text(text: str, display: str, report: Report) -> None:
+    """Un hallazgo por categoría y línea (dos credenciales en una línea son una ubicación)."""
     for number, line in enumerate(text.splitlines(), 1):
+        kinds: List[str] = []
         if _PRIVATE_KEY.search(line):
-            report.add_sensitive("private_key", display, number)
-        for match in _SECRET_ASSIGNMENT.finditer(line):
-            # `String token = request.getHeader(` es código, no un secreto: el valor es una llamada
-            if line[match.end(1):match.end(1) + 1] == "(":
-                continue
-            if not _safe_secret_value(match.group(1)):
-                report.add_sensitive("credential", display, number)
-        for pattern in (_SECRET_XML, _SECRET_SQL, _SECRET_URL, _SECRET_AUTH):
-            for match in pattern.finditer(line):
-                if not _safe_secret_value(match.group(1)):
-                    report.add_sensitive("credential", display, number)
-        if _CLABE.search(line):
-            report.add_sensitive("clabe", display, number)
-        if _TARJETA.search(line):
-            report.add_sensitive("tarjeta", display, number)
-        if _CURP.search(line):
-            report.add_sensitive("curp", display, number)
-        if _RFC.search(line):
-            report.add_sensitive("rfc", display, number)
-        if _EMAIL.search(line):
-            report.add_sensitive("email", display, number)
+            kinds.append("private_key")
+        # `String token = request.getHeader(` es código, no un secreto: el valor es una llamada
+        if any(line[m.end(1):m.end(1) + 1] != "(" and not _safe_secret_value(m.group(1))
+               for m in _SECRET_ASSIGNMENT.finditer(line)) \
+                or any(not _safe_secret_value(m.group(1))
+                       for pattern in (_SECRET_XML, _SECRET_SQL, _SECRET_URL, _SECRET_AUTH) for m in pattern.finditer(line)):
+            kinds.append("credential")
+        for kind, pattern in (("clabe", _CLABE), ("tarjeta", _TARJETA), ("curp", _CURP), ("rfc", _RFC), ("email", _EMAIL)):
+            if pattern.search(line):
+                kinds.append(kind)
+        for kind in kinds:
+            report.add_sensitive(kind, display, number)
 
 
 def scan(roots: Iterable[Tuple[str, Path, Optional[Ignore]]]) -> Report:
