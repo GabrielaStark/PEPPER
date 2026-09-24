@@ -36,7 +36,13 @@ Problemas que salen y qué hacer. El detalle de cada fase está en [`REFERENCIA.
 
 **Eventos "sin asignar: ambiguo"** — peticiones concurrentes sin afinidad que las separe; el explorador va de una en una, así que esto pasa con ventanas de personas: una acción a la vez.
 
-**`package: datos sensibles detectados`** — un legacy real trae credenciales y datos personales. Las banderas `--allow-sensitive` / `--acknowledge-unscanned` son la decisión del humano de analizar con modelo remoto; se registran en el manifest. No las agregues por tu cuenta.
+**`package: … fuera de lo autorizado; no se armó`** — el paquete trae algo que la autorización de datos no cubre (o no hay autorización): otra categoría, un archivo no inspeccionable nuevo o cambiado, otra versión del legacy. Quedó `<paquete>.data-boundary.propuesta.json` con el alcance que haría falta. Se la muestras a la persona; solo con su sí y su nombre: `pepper authorize <propuesta> --by "<nombre>"` y repites con `--authorization pepper-out/data-boundary.json`. No la escribas a mano.
+
+**`authorize: … otro sistema o de otra versión del legacy`** — la autorización existente es de otros artefactos; no se mezcla. Si el legacy de verdad cambió, la persona borra `pepper-out/data-boundary.json` y decide de nuevo.
+
+**`pepper explore` sale con 3 (PARCIAL) o 4 (INTERRUMPIDO)** — `session.json` → `outcome` dice por qué, y cada paso de `explore.jsonl` lleva `detail.falla`. PARCIAL: la evidencia sirve, pero ese recorrido no se describe como completo; cubre lo que faltó con otro plan. INTERRUMPIDO: repite con otro `--session` (o más `--budget`).
+
+**`explore: rol X: identidad no confirmada`** — el texto de `login.identity_text` no aparece tras entrar: o el sistema muestra otra cosa (el nombre y no la clave: ajusta el texto o usa `identity_route`), o entró otra identidad. No se explora con ese rol hasta que se pueda señalar quién es.
 
 **`export · RECHAZADO`** — los errores dicen qué fuente no resuelve (`map:…` que no existe, event_id inexistente, archivo fuera del paquete) o qué falta (desconocidos vacíos, sin `.md`, la sesión no está en `sessions`). El subagente corrige sobre la evidencia; nadie edita la salida a mano.
 

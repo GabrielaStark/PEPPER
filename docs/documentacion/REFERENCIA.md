@@ -29,10 +29,12 @@ python3 -m pepper map <artefacto> --profile <id> --dump <respaldo> --out docs/pe
 python3 -m pepper rehydrate legacy/ --profile <id> [--up] [--port 18080]           # plan (compose, restore.sh, .env) y, con --up, el entorno corriendo
 #   [--config-profile <nombre>] [--dump legacy/<archivo>]                           # elecciones humanas cuando hay varios perfiles completos o varios respaldos (quedan registradas)
 python3 -m pepper isolate <compose> [--hosts a,b] [--live]                         # AISLADO / NO AISLADO / NO VERIFICADO (los dos últimos bloquean)
-python3 -m pepper explore <compose> --config docs/pepper/explore.json --map <mapa> --session <sid> --profile <id> [--plan plan.json] [--no-submit] [--headed]
+python3 -m pepper explore <compose> --config pepper-out/explore.json --map <mapa> --session <sid> --profile <id> [--plan plan.json] [--budget s] [--no-submit] [--headed]
+#   salida: 0 COMPLETO · 3 PARCIAL · 1 FALLIDO · 4 INTERRUMPIDO · 2 insumo inválido (también en session.json → outcome)
 python3 -m pepper collect <compose> <sid> --start <ISO> --end <ISO>                # la ventana de una persona
 python3 -m pepper correlate evidence/<sid> --out pepper-out/<sid>/correlated [--profile <id>]
-python3 -m pepper package pepper-out/<sid>/correlated --legacy legacy/ --map <mapa> --previous docs/pepper/funcional.json --out pepper-out/<sid>/package --data-mode remote
+python3 -m pepper package pepper-out/<sid>/correlated --legacy legacy/ --map <mapa> --previous docs/pepper/funcional.json --out pepper-out/<sid>/package --data-mode remote [--authorization pepper-out/data-boundary.json]
+python3 -m pepper authorize pepper-out/<sid>/package.data-boundary.propuesta.json --by "<nombre>"   # SOLO con el sí de la persona (D24)
 python3 -m pepper export pepper-out/<sid>/package --manifest pepper-out/<sid>/package.evidence-manifest.json --check
 python3 -m pepper export … --out docs/pepper/discovery/<sid> --system-doc docs/pepper
 python3 -m pepper validate <archivo>... [--schema NOMBRE]                           # contratos de schemas/
@@ -46,7 +48,8 @@ python3 -m unittest discover -s tests · python3 scripts/verificar.py
 ```json
 {
   "base_url": "http://127.0.0.1:18080",
-  "login": {"route": "/login", "user_field": "#txtNombre", "password_field": "#txtPassword", "submit": "#btnLogin", "failure_text": "Datos erroneos"},
+  "login": {"route": "/login", "user_field": "#txtNombre", "password_field": "#txtPassword", "submit": "#btnLogin", "failure_text": "Datos erroneos",
+            "identity_text": "{user}"},
   "logout_route": "/salir",
   "credentials": {"db_service": "db", "db_user": "postgres", "db_name": "<base>", "sql": "UPDATE <usuarios> SET <contrasena> = crypt('{password}', gen_salt('bf', 10)) WHERE <clave> = '{user}'"},
   "roles": [{"name": "ADMIN", "user": "<clave>", "password": "<prueba>"}, {"name": "CONSULTAS", "user": "…", "password": "…", "submit": false}],
@@ -55,7 +58,7 @@ python3 -m unittest discover -s tests · python3 scripts/verificar.py
 }
 ```
 
-`routes` es opcional (default: las rutas GET del mapa). `submit: false` = solo abrir pantallas (matriz de acceso). Las credenciales se fijan **solo** en la base del contenedor.
+`routes` es opcional (default: las rutas GET del mapa). `submit: false` = solo abrir pantallas (matriz de acceso). Las credenciales se fijan **solo** en la base del contenedor. `login.identity_text` es obligatorio: lo que el sistema muestra solo a quien entró (`{user}`, `{role}`; `login.identity_route` si se ve en otra página; un rol puede traer el suyo). Cada rol entra en un contexto de navegador nuevo y sin su identidad en pantalla no se explora.
 
 ### Un plan
 
@@ -65,12 +68,12 @@ python3 -m unittest discover -s tests · python3 scripts/verificar.py
   {"fill": {"#formCita\\:txtCurp": "PEPR900101HMCPPR09", "#formCita\\:txtNombre": "Prueba"}},
   {"select": {"formCita:cboMotivo": "Despido"}},
   {"click": "Guardar"}, {"expect_text": "exitosamente"},
-  {"logout": true}, {"login": "PROCURADOR"}, {"goto": "/procurador"}, {"click": "Recibir turnos"},
+  {"logout": true}, {"login": "PROCURADOR"}, {"goto": "/procurador"}, {"click": "Recibir turnos"}, {"expect_text": "Turno"},
   {"wait": 70}, {"note": "esperar al job de cada minuto"}
 ]
 ```
 
-Pasos: `login`, `goto`, `fill` (selector → valor), `select` (id del selectOneMenu → texto), `click` (texto del botón), `check`, `wait` (s), `expect_text`, `expect_route`, `note`, `logout`. Cada paso queda en `explore.jsonl` con resultado, mensajes y captura.
+Pasos: `login`, `goto`, `fill` (selector → valor), `select` (id del selectOneMenu → texto), `click` (texto del botón), `click_at` (selector), `check`, `wait` (s), `note`, `logout`, y las comprobaciones `expect_text`, `expect_absent`, `expect_route`, `expect_rejected` (texto del rechazo, o `true`). Cada clic que guarda lleva su comprobación antes de la siguiente acción; sin ella el plan no corre. Cada paso queda en `explore.jsonl` con resultado, mensajes, captura, `detail.paso`, `detail.tipo` y, si falló, `detail.falla` (`explorador`, `negocio`, `verificacion`, `acceso`, `identidad`, `sistema`). Un rechazo seguido de un `expect_rejected` que se cumple es resultado de negocio, no falla. Veredicto: COMPLETO (todo corrió, sin fallas, todas las comprobaciones cumplidas), PARCIAL (al menos una comprobación cumplida y alguna falla u omisión), FALLIDO (ninguna comprobación cumplida), INTERRUMPIDO (pasos sin correr: presupuesto, error, Ctrl+C).
 
 ## 3. Glosario
 

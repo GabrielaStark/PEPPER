@@ -61,10 +61,13 @@ python3 -m pepper package pepper-out/<sid>/correlated --legacy legacy/ --map doc
 
 `--previous` solo cuando ya existe `docs/pepper/funcional.json`.
 
-**La decisión de datos es del humano y se toma una vez (D24).** Sin banderas, `package` en modo `remote` se detiene si encuentra credenciales, datos de personas o archivos que no puede inspeccionar, y lista las ubicaciones (nunca los valores). Entonces:
+**La decisión de datos es de una persona y tiene alcance (D24).** Si existe `pepper-out/data-boundary.json`, pásalo siempre: `--authorization pepper-out/data-boundary.json`. `package` en modo `remote` compara lo que el paquete trae con lo autorizado — el sistema (perfil y huella del legacy), el destino, las categorías de datos detectadas y cada archivo que no puede inspeccionar con su sha256 — y si algo no cabe **no arma nada**: lista las ubicaciones (nunca los valores) y deja `pepper-out/<sid>/package.data-boundary.propuesta.json` con el alcance que haría falta. Entonces:
 
-1. Si existe `pepper-out/data-boundary.json` con `"remote": true`, el humano ya decidió: repite el comando con `--allow-sensitive --acknowledge-unscanned` y sigue.
-2. Si no existe, muéstrale el resumen (cuántos hallazgos, de qué tipo, en qué archivos) y pregúntale **una sola vez**: «este paquete va a un modelo remoto con esos datos adentro; ¿lo autorizas para este legacy?». Con un sí, escribe `pepper-out/data-boundary.json` (`{"remote": true, "decided_by": "humano", "date": "<hoy>"}`), repite con las banderas y no vuelvas a preguntar en este workspace. Sin respuesta, no sigas. **Nunca agregues las banderas por tu cuenta.**
+1. Muéstrale a la persona qué pide la propuesta (categorías, archivos no inspeccionados, lo que se excluye, y el porqué en `why`) y pregúntale: «este paquete va a un modelo remoto con esto adentro — las credenciales se quitan y los datos de personas viajan con seudónimo, pero lo que no tiene patrón (un nombre) no se detecta; ¿lo autorizas para este legacy?».
+2. Con un sí, y con su nombre: `python3 -m pepper authorize pepper-out/<sid>/package.data-boundary.propuesta.json --by "<su nombre>"`. Crea o extiende `pepper-out/data-boundary.json` (y la llave local de seudónimos, que nunca viaja). Repite `package` con `--authorization`.
+3. Sin respuesta, no sigas. Solo vuelves a preguntar si una sesión trae algo fuera de lo ya autorizado (otra categoría, un archivo nuevo o cambiado, otra versión del legacy). **Nunca corras `authorize` sin el sí y el nombre de la persona, ni escribas o edites la autorización a mano.**
+
+Lo que viaja: credenciales como `[CREDENCIAL]`; CURP, RFC, correo, CLABE y tarjeta como seudónimo estable (`[CURP-…]`, el mismo valor da el mismo seudónimo en todo el paquete y en las sesiones siguientes); keystores y llaves privadas nunca.
 
 ## 5. Descubrir — qué hace el sistema
 

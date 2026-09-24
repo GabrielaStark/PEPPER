@@ -37,6 +37,10 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 def build(root: Path, exclude: tuple = (MANIFEST_NAME,)) -> Dict:
     """Hashes de todos los archivos bajo `root` (rutas relativas POSIX, ordenadas)."""
     from pepper import __version__

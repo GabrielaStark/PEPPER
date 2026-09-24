@@ -1,4 +1,4 @@
-"""Línea de comandos: `pepper detect | map | validate | isolate | proxy | collect | correlate | package | export | demo`."""
+"""Línea de comandos: `pepper detect | map | validate | isolate | proxy | collect | correlate | package | authorize | export | demo`."""
 
 from __future__ import annotations
 
@@ -38,8 +38,7 @@ def _cmd_package(args: argparse.Namespace) -> int:
         args.out,
         args.legacy,
         data_mode=args.data_mode,
-        allow_sensitive=args.allow_sensitive,
-        acknowledge_unscanned=args.acknowledge_unscanned,
+        authorization=args.authorization,
         manifest_out=args.manifest_out,
         system_map=args.map,
         previous=args.previous,
@@ -50,7 +49,8 @@ def _cmd_package(args: argparse.Namespace) -> int:
     print(f"  mapa: {summary['map'] or 'sin mapa (usa --map docs/pepper/system-map.json): el agente solo verá la ejecución'}")
     print(f"  discovery anterior: {summary['previous'] or 'ninguno (primer documento del sistema)'}")
     print(f"  datos: modo {summary['data_mode']} · {summary['sensitive_findings']} hallazgo(s) sensible(s) · "
-          f"{summary['unscanned_files']} archivo(s) no inspeccionado(s)")
+          f"{summary['unscanned_files']} archivo(s) no inspeccionado(s) · {summary['substituted']} valor(es) sustituido(s)"
+          + (f" · excluido: {', '.join(summary['excluded'])}" if summary["excluded"] else ""))
     print(f"  paquete: {args.out}")
     print(f"  manifest externo: {summary['external_manifest']} (no lo metas al paquete)")
     if summary.get("redacted_notes"):
@@ -558,6 +558,24 @@ def _cmd_map(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_authorize(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from pepper.boundary import authorize, key_path
+
+    needed = _json.loads(args.proposal.read_text(encoding="utf-8"))
+    result = authorize(args.proposal, args.by, args.out)
+    print(f"authorize · {args.out} · decidió: {result['decided_by']} ({result['date']})")
+    print(f"  sistema: perfil {result['system'].get('profile_id')} · legacy {result['system'].get('legacy_sha256', '')[:16]}…")
+    print(f"  destino: {result['destination']}")
+    print(f"  categorías (viajan sustituidas): {', '.join(result['categories']) or 'ninguna'}")
+    print(f"  no inspeccionados autorizados: {len(result['unscanned'])} (cada uno con su sha256)")
+    if needed.get("excluded"):
+        print(f"  excluido siempre (material de llave, no viaja): {', '.join(needed['excluded'])}")
+    print(f"  llave de seudónimos: {key_path(args.out)} (local; nunca va en un paquete)")
+    return 0
+
+
 def _cmd_demo(args: argparse.Namespace) -> int:
     from pepper.correlate import run
     from pepper.package import assemble
@@ -571,11 +589,20 @@ def _cmd_demo(args: argparse.Namespace) -> int:
         f"correlate · {summary['raw_lines']} líneas crudas → {summary['kept']} eventos relevantes "
         f"en {summary['traces']} peticiones ({summary['dropped']} descartadas como ruido)"
     )
-    # El fixture trae credenciales de juguete a propósito; la excepción es explícita y
-    # queda en el manifest, igual que con un legacy real (la bandera synthetic no exime).
-    package_summary = assemble(correlated, package, fixture / "artifacts", allow_sensitive=True)
+    # El fixture trae credenciales de juguete a propósito: la frontera se ejerce igual que con un
+    # legacy real (la bandera synthetic no exime). El demo autoriza la propuesta a nombre del demo
+    # y lo deja escrito en el manifest.
+    from pepper.boundary import BoundaryError, authorize
+
+    authorization = args.out / "data-boundary.json"
+    try:
+        package_summary = assemble(correlated, package, fixture / "artifacts", authorization=authorization)
+    except BoundaryError as error:
+        authorize(error.proposal_path, "demo de PEPPER (fixture sintético)", authorization)
+        package_summary = assemble(correlated, package, fixture / "artifacts", authorization=authorization)
     print(f"package   · {package}")
-    print("            (fixture sintético con credenciales de juguete: --allow-sensitive implícito, registrado en el manifest)")
+    print(f"            (fixture sintético con credenciales de juguete: autorizado en {authorization}; "
+          f"{package_summary['substituted']} valores sustituidos)")
     print()
     print("Ahora corre tu agente dentro del paquete:")
     print(f"  cd {package} && claude    # o codex")
@@ -596,6 +623,7 @@ COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
     "map": _cmd_map,
     "rehydrate": _cmd_rehydrate,
     "explore": _cmd_explore,
+    "authorize": _cmd_authorize,
     "validate": _cmd_validate,
     "isolate": _cmd_isolate,
     "proxy": _cmd_proxy,
@@ -625,16 +653,21 @@ def build_parser() -> argparse.ArgumentParser:
     package.add_argument("--out", type=Path, required=True, help="directorio del paquete (debe no existir o estar vacío)")
     package.add_argument("--data-mode", choices=("remote", "local"), default="remote",
                          help="frontera autorizada: remote bloquea datos sensibles/no inspeccionados; local prohíbe agentes remotos")
-    package.add_argument("--allow-sensitive", action="store_true",
-                         help="autoriza explícitamente ubicaciones sensibles detectadas en modo remote")
-    package.add_argument("--acknowledge-unscanned", action="store_true",
-                         help="autoriza explícitamente binarios/archivos grandes no inspeccionables en modo remote")
+    package.add_argument("--authorization", type=Path,
+                         help="autorización de datos con alcance (pepper-out/data-boundary.json, la crea `pepper authorize`): "
+                              "sistema, destino, categorías y huella de lo no inspeccionado; lo que no quepa detiene el paquete")
     package.add_argument("--manifest-out", type=Path,
                          help="manifest externo; default <paquete>.evidence-manifest.json, siempre fuera del paquete")
     package.add_argument("--map", type=Path,
                          help="system-map.json de `pepper map` (se copia con su carpeta map/ legible); sin él el agente solo ve la ejecución")
     package.add_argument("--previous", type=Path,
                          help="funcional.json publicado por un discovery anterior: el nuevo lo extiende en vez de empezar de cero")
+
+    authorize = commands.add_parser("authorize", help="una persona autoriza el alcance de datos que `package` propuso (D24)")
+    authorize.add_argument("proposal", type=Path, help="<paquete>.data-boundary.propuesta.json que dejó `pepper package`")
+    authorize.add_argument("--by", required=True, help="nombre de la persona que autoriza (queda escrito)")
+    authorize.add_argument("--out", type=Path, default=Path("pepper-out/data-boundary.json"),
+                           help="autorización del sistema (default pepper-out/data-boundary.json); si existe y es del mismo sistema, se extiende")
 
     export = commands.add_parser("export", help="valida la salida del agente y la publica")
     export.add_argument("package", type=Path, help="paquete controlado con output/funcional.json y funcional.md")
