@@ -11,7 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from pepper.correlate.parsers import ExplorerParser  # noqa: E402
-from pepper.explore import config_problems, operator_note, outcome, plausible_value, write_session  # noqa: E402
+from pepper.explore import (config_problems, operator_note, outcome, plan_problems, plan_verdict,  # noqa: E402
+                            plausible_value, write_session)
 from pepper.session import Session  # noqa: E402
 
 
@@ -49,42 +50,236 @@ class SessionNoteTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             start = datetime(2026, 9, 4, 16, 0, tzinfo=timezone.utc)
             path = write_session(Path(tmp), "explore-001", "recorrido", start, start, "perfil-x", "nota",
-                                 [{"source": "explorer", "kind": "generic", "file": "explore.jsonl", "note": "x"}])
+                                 [{"source": "explorer", "kind": "generic", "file": "explore.jsonl", "note": "x"}],
+                                 {"status": "PARCIAL", "reason": "1/2 comprobaciones", "counts": {"pasos": 4}, "code": 3})
             session = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(session["timezone"], "+00:00")
+            self.assertEqual(session["outcome"]["status"], "PARCIAL")
+            self.assertNotIn("code", session["outcome"])
             self.assertEqual(validate_instance(session, "session"), [])
 
 
 class SalidaHonestaTest(unittest.TestCase):
     """explore salía con 0 con cero trabajo (logins rechazados, 0 pantallas, plan sin un ok, sin http.jsonl)."""
 
+    CONFIG = {"base_url": "http://127.0.0.1:18080", "login": {"route": "/login", "user_field": "#u", "password_field": "#p",
+                                                               "submit": "#b", "identity_text": "{user}"},
+              "roles": [{"name": "A", "user": "u", "password": "p"}]}
+
     def test_config_incompleto_se_dice_antes_de_arrancar(self):
-        self.assertEqual(config_problems({"base_url": "http://127.0.0.1:18080", "login": {"route": "/login", "user_field": "#u",
-                                          "password_field": "#p", "submit": "#b"}, "roles": [{"name": "A", "user": "u", "password": "p"}]}), [])
+        self.assertEqual(config_problems(self.CONFIG), [])
         problems = config_problems({"login": {"route": "/login"}, "roles": [{"name": "A"}], "credentials": {"sql": "x"}})
         self.assertTrue(any("base_url" in p for p in problems))
         self.assertTrue(any("login.submit" in p for p in problems))
         self.assertTrue(any("rol incompleto" in p for p in problems))
         self.assertTrue(any("db_name" in p for p in problems))
 
-    def test_sin_ningun_rol_dentro_no_es_exito(self):
-        code, why = outcome({"roles": {"A": "login rechazado", "B": "sin credencial"}, "routes": 19}, [], ["http.jsonl"])
-        self.assertEqual(code, 1); self.assertIn("ningún rol entró", why)
+    def test_sin_texto_de_identidad_no_se_explora(self):
+        config = json.loads(json.dumps(self.CONFIG))
+        del config["login"]["identity_text"]
+        self.assertTrue(any("identity_text" in p for p in config_problems(config)))
+        config["roles"][0]["identity_text"] = "Bienvenido {user}"
+        self.assertEqual(config_problems(config), [])
 
-    def test_recorrido_real_es_exito_solo_con_http_jsonl(self):
+    def test_sin_ningun_rol_dentro_no_es_exito(self):
+        verdict = outcome({"roles": {"A": "login rechazado", "B": "sin credencial"}, "routes": 19}, [], ["http.jsonl"])
+        self.assertEqual((verdict["status"], verdict["code"]), ("FALLIDO", 1)); self.assertIn("ningún rol entró", verdict["reason"])
+
+    def test_recorrido_real_es_completo_solo_con_http_jsonl(self):
         summary = {"roles": {"A": "19/19 pantallas, 6 rechazos provocados"}, "routes": 19}
         actions = [{"kind": "screen", "result": "ok"}]
-        self.assertEqual(outcome(summary, actions, ["explore.jsonl", "http.jsonl"]), (0, ""))
-        code, why = outcome(summary, actions, ["explore.jsonl"])
-        self.assertEqual(code, 1); self.assertIn("http.jsonl", why)
+        verdict = outcome(summary, actions, ["explore.jsonl", "http.jsonl"])
+        self.assertEqual((verdict["status"], verdict["code"]), ("COMPLETO", 0))
+        verdict = outcome(summary, actions, ["explore.jsonl"])
+        self.assertEqual(verdict["code"], 1); self.assertIn("http.jsonl", verdict["reason"])
 
-    def test_plan_sin_un_solo_ok_falla(self):
-        self.assertEqual(outcome({"steps": 5, "ok": 0, "failed": 5}, [], ["http.jsonl"])[0], 1)
-        self.assertEqual(outcome({"steps": 5, "ok": 3, "failed": 2}, [], ["http.jsonl"])[0], 0)
+    def test_un_rol_fuera_o_un_tropiezo_del_explorador_es_parcial(self):
+        actions = [{"kind": "screen", "result": "ok"}]
+        verdict = outcome({"roles": {"A": "19/19 pantallas", "B": "identidad no confirmada"}}, actions, ["http.jsonl"])
+        self.assertEqual((verdict["status"], verdict["code"]), ("PARCIAL", 3)); self.assertIn("B: identidad", verdict["reason"])
+        actions.append({"kind": "empty_submit", "result": "error", "detail": {"falla": "explorador"}})
+        self.assertEqual(outcome({"roles": {"A": "19/19 pantallas"}}, actions, ["http.jsonl"])["status"], "PARCIAL")
+        # un 500 del sistema es lo que el sistema respondió, no un tropiezo del explorador
+        actions[-1] = {"kind": "screen", "result": "error", "detail": {"falla": "sistema"}}
+        self.assertEqual(outcome({"roles": {"A": "19/19 pantallas"}}, actions, ["http.jsonl"])["status"], "COMPLETO")
 
-    def test_error_o_interrupcion_no_es_exito(self):
-        self.assertEqual(outcome({"error": "TimeoutError: x"}, [], ["http.jsonl"])[0], 1)
-        self.assertEqual(outcome({"roles": {"A": "19/19 pantallas"}, "interrupted": "sí"}, [{"kind": "screen", "result": "ok"}], ["http.jsonl"])[0], 1)
+    def test_error_o_interrupcion_es_interrumpido(self):
+        self.assertEqual(outcome({"error": "TimeoutError: x"}, [], ["http.jsonl"])["status"], "INTERRUMPIDO")
+        verdict = outcome({"roles": {"A": "19/19 pantallas"}, "interrupted": "sí"}, [{"kind": "screen", "result": "ok"}], ["http.jsonl"])
+        self.assertEqual((verdict["status"], verdict["code"]), ("INTERRUMPIDO", 4))
+
+
+def _paso(n, tipo, result, falla=None):
+    detail = {"paso": n, "tipo": tipo}
+    if falla:
+        detail["falla"] = falla
+    return {"kind": "plan", "result": result, "detail": detail}
+
+
+class VeredictoDelPlanTest(unittest.TestCase):
+    """Un plan con 1 paso correcto y 9 fallidos salía con 0 (revisión 2026-09-24)."""
+
+    def test_uno_bien_y_nueve_mal_no_es_exito(self):
+        records = [_paso(1, "login", "ok")] + [_paso(i, "click", "error", "explorador") for i in range(2, 11)]
+        verdict = outcome({"mode": "plan", "steps": 10}, records, ["http.jsonl"], plan_steps=10)
+        self.assertEqual((verdict["status"], verdict["code"]), ("FALLIDO", 1))
+        self.assertIn("ninguna comprobación", verdict["reason"])
+
+    def test_comprobado_con_fallas_es_parcial(self):
+        records = [_paso(1, "login", "ok"), _paso(2, "click", "ok"), _paso(3, "expect_text", "ok"),
+                   _paso(4, "click", "error", "explorador"), _paso(5, "expect_text", "error", "verificacion")]
+        verdict = outcome({"mode": "plan", "steps": 5}, records, ["http.jsonl"], plan_steps=5)
+        self.assertEqual((verdict["status"], verdict["code"]), ("PARCIAL", 3))
+        self.assertEqual(verdict["counts"]["fallas"], {"explorador": 1, "verificacion": 1})
+
+    def test_rechazo_declarado_es_resultado_de_negocio_no_falla(self):
+        records = [_paso(1, "login", "ok"), _paso(2, "click", "rejected", "negocio"), _paso(3, "expect_rejected", "ok")]
+        verdict = plan_verdict(records, 3)
+        self.assertEqual(verdict["status"], "COMPLETO")
+        self.assertEqual(verdict["counts"]["rechazos_esperados"], 1)
+
+    def test_rechazo_no_declarado_es_falla_de_negocio(self):
+        records = [_paso(1, "login", "ok"), _paso(2, "click", "rejected", "negocio"), _paso(3, "expect_text", "ok")]
+        verdict = plan_verdict(records, 3)
+        self.assertEqual(verdict["status"], "PARCIAL")
+        self.assertEqual(verdict["counts"]["fallas"], {"negocio": 1})
+
+    def test_pasos_sin_correr_es_interrumpido(self):
+        records = [_paso(1, "login", "ok"), _paso(2, "click", "ok"), _paso(3, "expect_text", "ok")]
+        verdict = outcome({"mode": "plan", "steps": 8, "interrupted": "presupuesto"}, records, ["http.jsonl"], plan_steps=8)
+        self.assertEqual((verdict["status"], verdict["code"]), ("INTERRUMPIDO", 4))
+        self.assertEqual(verdict["counts"]["sin_correr"], 5)
+
+
+class ProblemasDelPlanTest(unittest.TestCase):
+    def test_guardar_sin_comprobar_no_se_corre(self):
+        plan = [{"login": "A"}, {"goto": "/cita"}, {"click": "Guardar"}, {"goto": "/otra"}, {"expect_text": "x"}]
+        problems = plan_problems(plan)
+        self.assertEqual(len(problems), 1); self.assertIn("paso 3", problems[0])
+
+    def test_guardar_con_comprobacion_si(self):
+        plan = [{"login": "A"}, {"click": "Guardar"}, {"wait": 1}, {"expect_text": "Guardado"}, {"click": "Buscar"}]
+        self.assertEqual(plan_problems(plan), [])
+
+    def test_plan_sin_ninguna_comprobacion_ni_claves_raras(self):
+        problems = plan_problems([{"login": "A"}, {"click": "Buscar"}, {"teletransportar": 1}])
+        self.assertTrue(any("no comprueba nada" in p for p in problems))
+        self.assertTrue(any("teletransportar" in p for p in problems))
+        self.assertTrue(plan_problems([]))
+
+
+class _Page:
+    """Una página falsa: suficiente para run_plan sin navegador."""
+
+    def __init__(self, texts=()):
+        self.url = "http://127.0.0.1:18080/inicio"
+        self.texts = list(texts)
+
+    def goto(self, url):
+        self.url = url
+        return None
+
+    def get_by_text(self, text):
+        from unittest import mock
+        return mock.Mock(count=lambda: sum(1 for t in self.texts if text in t))
+
+    def wait_for_timeout(self, ms):
+        pass
+
+
+def _fake_explorer(page, messages=(), clicks_ok=True):
+    import io
+    from pepper.explore import Explorer
+    ex = Explorer.__new__(Explorer)
+    ex.config = {"login": {"route": "/login", "identity_text": "{user}"}, "roles": [{"name": "A", "user": "u", "password": "p"}]}
+    ex.actions, ex._log, ex.base, ex.timeout_ms = [], io.StringIO(), "http://127.0.0.1:18080", 1000
+    ex.ready, ex.deadline, ex._page = ["A"], None, page
+    ex._settle = lambda ms=0: None
+    ex._shot = lambda name: ""
+    ex._messages = lambda: list(messages)
+    ex._click_button = lambda name: clicks_ok
+    ex.login = lambda role: True
+    return ex
+
+
+class RunPlanTest(unittest.TestCase):
+    def test_con_el_presupuesto_vencido_no_corre_ni_un_paso_mas(self):
+        ex = _fake_explorer(_Page())
+        ex.deadline = 1.0  # 1970: ya venció
+        summary = ex.run_plan([{"login": "A"}, {"click": "Guardar"}, {"expect_text": "ok"}])
+        self.assertEqual(summary["executed"], 0)
+        self.assertIn("presupuesto", summary["interrupted"])
+        verdict = outcome(summary, [a.record() for a in ex.actions], ["http.jsonl"], plan_steps=3)
+        self.assertEqual(verdict["status"], "INTERRUMPIDO")
+
+    def test_clic_que_el_sistema_rechaza_y_el_plan_lo_esperaba(self):
+        ex = _fake_explorer(_Page(), messages=["La CURP es obligatoria"])
+        summary = ex.run_plan([{"login": "A"}, {"click": "Guardar"}, {"expect_rejected": "CURP"}])
+        records = [a.record() for a in ex.actions]
+        self.assertEqual([r["result"] for r in records], ["ok", "rejected", "ok"])
+        self.assertEqual(records[1]["detail"]["falla"], "negocio")
+        self.assertEqual(outcome(summary, records, ["http.jsonl"], plan_steps=3)["status"], "COMPLETO")
+
+    def test_boton_que_no_se_encuentra_es_falla_del_explorador(self):
+        ex = _fake_explorer(_Page(texts=["Guardado"]), clicks_ok=False)
+        summary = ex.run_plan([{"login": "A"}, {"click": "Guardar"}, {"expect_text": "Guardado"}])
+        records = [a.record() for a in ex.actions]
+        self.assertEqual(records[1]["detail"]["falla"], "explorador")
+        self.assertEqual(outcome(summary, records, ["http.jsonl"], plan_steps=3)["status"], "PARCIAL")
+
+    def test_comprobacion_que_no_se_cumple_es_falla_de_verificacion(self):
+        ex = _fake_explorer(_Page(texts=[]))
+        summary = ex.run_plan([{"login": "A"}, {"click": "Guardar"}, {"expect_text": "Solicitud registrada"}])
+        records = [a.record() for a in ex.actions]
+        self.assertEqual(records[2]["detail"]["falla"], "verificacion")
+        self.assertEqual(outcome(summary, records, ["http.jsonl"], plan_steps=3)["status"], "FALLIDO")
+
+
+class ContextoPorRolTest(unittest.TestCase):
+    """Un contexto de navegador por rol: cookies, localStorage y sessionStorage no cruzan de un rol a otro."""
+
+    def _explorer(self, body_text):
+        import io
+        from unittest import mock
+        from pepper.explore import Explorer
+        ex = Explorer.__new__(Explorer)
+        ex.config = {"login": {"route": "/login", "user_field": "#u", "password_field": "#p", "submit": "#b",
+                               "identity_text": "Usuario: {user}"}, "logout_route": "/salir",
+                     "roles": [{"name": "A", "user": "ana", "password": "p"}]}
+        ex.actions, ex._log, ex.base, ex.timeout_ms = [], io.StringIO(), "http://127.0.0.1:18080", 1000
+        ex._settle = lambda ms=0: None
+        ex._shot = lambda name: ""
+        ex._messages = lambda: []
+        contexts = []
+
+        def new_context(**kwargs):
+            page = mock.Mock(url="http://127.0.0.1:18080/inicio")
+            page.locator.return_value.inner_text.return_value = body_text
+            context = mock.Mock()
+            context.new_page.return_value = page
+            contexts.append(context)
+            return context
+
+        ex._browser = mock.Mock(new_context=new_context)
+        ex._context, ex._page = None, None
+        ex._fresh_context()
+        return ex, contexts
+
+    def test_cada_login_estrena_contexto_y_salir_lo_descarta(self):
+        ex, contexts = self._explorer("Usuario: ana")
+        self.assertTrue(ex.login(ex.config["roles"][0]))
+        self.assertEqual(len(contexts), 2)
+        contexts[0].close.assert_called_once()
+        ex.logout("A")
+        self.assertEqual(len(contexts), 3)
+        contexts[1].close.assert_called_once()
+        self.assertEqual(ex.actions[0].detail["identidad"], "confirmada")
+
+    def test_sin_la_identidad_en_pantalla_no_se_explora_con_ese_rol(self):
+        ex, _ = self._explorer("Usuario: otro")
+        self.assertFalse(ex.login(ex.config["roles"][0]))
+        self.assertEqual(ex.actions[0].result, "error")
+        self.assertEqual(ex.actions[0].detail["falla"], "identidad")
 
 
 class CredencialesTest(unittest.TestCase):

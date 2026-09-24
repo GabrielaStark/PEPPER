@@ -304,7 +304,7 @@ def _cmd_explore(args: argparse.Namespace) -> int:
     from pepper.observe import collect
     from pepper.profiles import load_profile
 
-    from pepper.explore import CredentialsError, config_problems, outcome
+    from pepper.explore import CredentialsError, config_problems, outcome, plan_problems
 
     if not _re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", args.session) or ".." in args.session:
         print(f"pepper explore: --session {args.session!r} no es un identificador válido (letras, dígitos, _ . -)", file=sys.stderr)
@@ -331,6 +331,12 @@ def _cmd_explore(args: argparse.Namespace) -> int:
     if not args.plan and not any(e.get("method", "GET") in ("GET", "") for e in system_map.get("entrypoints", [])):
         print("pepper explore: el mapa no trae rutas GET que recorrer; pasa --map docs/pepper/system-map.json", file=sys.stderr)
         return 2
+    plan = _json.loads(args.plan.read_text(encoding="utf-8")) if args.plan else None
+    if args.plan:
+        problems = plan_problems(plan)
+        if problems:
+            print(f"pepper explore: {args.plan} no se puede correr — " + "; ".join(problems), file=sys.stderr)
+            return 2
     out_dir = args.out / args.session
     if out_dir.exists() and any(out_dir.iterdir()):
         print(f"pepper explore: evidence/{args.session} ya existe; usa otro --session", file=sys.stderr)
@@ -352,7 +358,6 @@ def _cmd_explore(args: argparse.Namespace) -> int:
         return 1
     print(f"explore · aislamiento verificado en vivo ({len([f for f in report.findings if f.level == 'ok'])} comprobaciones)")
 
-    plan = _json.loads(args.plan.read_text(encoding="utf-8")) if args.plan else None
     kind = f"plan ({args.plan.name})" if plan else "recorrido automático por rol y pantalla"
     actions: List[Dict] = []
     summary: Dict = {}
@@ -421,21 +426,25 @@ def _cmd_explore(args: argparse.Namespace) -> int:
                                "note": f"docker logs --timestamps del servicio {item['service']} (prefijo RFC3339 UTC de Docker)."})
         else:
             print(f"  – {rel}: sin parser en el perfil; se conserva pero no se correlaciona")
-    note = operator_note(actions, summary, kind)
+    verdict = outcome(summary, actions, [c["file"] for c in collectors], len(plan) if plan else None)
+    note = operator_note(actions, summary, kind, verdict)
     write_session(out_dir, args.session, args.flow_name or kind, started, ended,
-                  profile.id if profile else None, note, collectors)
+                  profile.id if profile else None, note, collectors, verdict)
     print(f"  session.json: {out_dir / 'session.json'}")
     print(f"  nota: {note[:300]}")
     print(f"  capturas: {out_dir / 'screens'}")
-    # Un exit 0 con cero trabajo escondía el fallo detrás de un "Siguiente" (auditoría 2026-09-11).
-    code, why = outcome(summary, actions, [c["file"] for c in collectors])
-    if code:
-        print(f"pepper explore: {why}", file=sys.stderr)
+    # Un exit 0 con cero trabajo escondía el fallo detrás de un "Siguiente" (auditoría 2026-09-11); y un
+    # plan con 1 paso bien y 9 fallidos también salía con 0 (revisión 2026-09-24). Solo COMPLETO es 0.
+    print(f"explore · {verdict['status']} · {verdict['reason']}")
+    if verdict["status"] in ("FALLIDO", "INTERRUMPIDO"):
+        print(f"pepper explore: {verdict['status']}: {verdict['reason']}", file=sys.stderr)
         print(f"  la sesión quedó escrita en {out_dir} para que se vea qué pasó; usa otro --session al repetir", file=sys.stderr)
-        return code
+        return verdict["code"]
     print()
+    if verdict["status"] == "PARCIAL":
+        print("  PARCIAL: la evidencia sirve, pero este recorrido no se puede describir como completo (session.json lo dice).")
     print(f"Siguiente: {_invocation()} correlate {out_dir} --out pepper-out/{args.session}/correlated")
-    return 0
+    return verdict["code"]
 
 
 def _cmd_map(args: argparse.Namespace) -> int:
@@ -661,7 +670,8 @@ def build_parser() -> argparse.ArgumentParser:
     rehydrate.add_argument("--dump", type=Path, default=None,
                       help="qué respaldo restaurar cuando legacy/ trae más de uno (queda registrado como elección humana)")
 
-    explore = commands.add_parser("explore", help="recorre el sistema solo: entra con cada rol, abre cada pantalla, provoca rechazos, llena y guarda; o ejecuta un plan del agente")
+    explore = commands.add_parser("explore", help="recorre el sistema solo: entra con cada rol, abre cada pantalla, provoca rechazos, llena y guarda; o ejecuta un plan del agente",
+                                  epilog="salida: 0 COMPLETO · 3 PARCIAL · 1 FALLIDO · 4 INTERRUMPIDO · 2 insumo inválido (explore.json, plan, sesión)")
     explore.add_argument("compose", type=Path, help="docker-compose.yml del entorno rehidratado (se verifica el aislamiento en vivo antes)")
     explore.add_argument("--config", type=Path, required=True, help="explore.json: cómo entrar, roles y credenciales de la base desechable, pistas de llenado")
     explore.add_argument("--map", type=Path, help="system-map.json: de ahí salen las rutas a recorrer")
@@ -672,7 +682,7 @@ def build_parser() -> argparse.ArgumentParser:
     explore.add_argument("--hosts", help="hosts externos del artefacto (para isolate), separados por coma")
     explore.add_argument("--ingress", default="ingress")
     explore.add_argument("--out", type=Path, default=Path("evidence"), help="raíz de la evidencia (default evidence/)")
-    explore.add_argument("--budget", type=int, default=0, help="segundos máximos de recorrido; al agotarse cierra limpio y escribe session.json")
+    explore.add_argument("--budget", type=int, default=0, help="segundos máximos de recorrido (automático o plan); al agotarse no corre nada más, escribe session.json y sale INTERRUMPIDO (4)")
     explore.add_argument("--no-submit", action="store_true", help="solo abrir y fotografiar pantallas; no apretar botones")
     explore.add_argument("--headed", action="store_true", help="navegador visible (para depurar)")
     explore.add_argument("--settle", type=int, default=12, help="segundos de espera al final antes de cerrar la ventana (default 12)")
