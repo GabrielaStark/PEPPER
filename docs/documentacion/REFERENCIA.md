@@ -67,13 +67,27 @@ python3 -m unittest discover -s tests · python3 scripts/verificar.py
   {"login": "RECEPCION"}, {"goto": "/cita"},
   {"fill": {"#formCita\\:txtCurp": "PEPR900101HMCPPR09", "#formCita\\:txtNombre": "Prueba"}},
   {"select": {"formCita:cboMotivo": "Despido"}},
-  {"click": "Guardar"}, {"expect_text": "exitosamente"},
-  {"logout": true}, {"login": "PROCURADOR"}, {"goto": "/procurador"}, {"click": "Recibir turnos"}, {"expect_text": "Turno"},
+  {"click": "Guardar", "efecto": "modifica", "id": "registrar-cita"},
+  {"expect_text": "exitosamente", "comprueba": "registrar-cita"},
+  {"logout": true}, {"login": "PROCURADOR"}, {"goto": "/procurador"},
+  {"expect_text": "PEPR900101HMCPPR09", "comprueba": "registrar-cita"},
+  {"click_at": "#j_idt42", "efecto": "modifica", "id": "recibir-turnos"},
+  {"expect_text": "Turno", "comprueba": "recibir-turnos"},
+  {"click": "Generar reporte", "efecto": "consulta", "porque": "descarga un PDF; no guarda nada"},
   {"wait": 70}, {"note": "esperar al job de cada minuto"}
 ]
 ```
 
-Pasos: `login`, `goto`, `fill` (selector → valor), `select` (id del selectOneMenu → texto), `click` (texto del botón), `click_at` (selector), `check`, `wait` (s), `note`, `logout`, y las comprobaciones `expect_text`, `expect_absent`, `expect_route`, `expect_rejected` (texto del rechazo, o `true`). Cada clic que guarda lleva su comprobación antes de la siguiente acción; sin ella el plan no corre. Cada paso queda en `explore.jsonl` con resultado, mensajes, captura, `detail.paso`, `detail.tipo` y, si falló, `detail.falla` (`explorador`, `negocio`, `verificacion`, `acceso`, `identidad`, `sistema`). Un rechazo seguido de un `expect_rejected` que se cumple es resultado de negocio, no falla. Veredicto: COMPLETO (todo corrió, sin fallas, todas las comprobaciones cumplidas), PARCIAL (al menos una comprobación cumplida y alguna falla u omisión), FALLIDO (ninguna comprobación cumplida), INTERRUMPIDO (pasos sin correr: presupuesto, error, Ctrl+C).
+Acciones (una por paso): `login`, `goto`, `fill` (selector → valor), `select` (id del selectOneMenu → texto), `click` (texto del botón), `click_at` (selector), `check`, `wait` (s), `note`, `logout`, y las comprobaciones `expect_text`, `expect_absent`, `expect_route`, `expect_rejected` (texto del rechazo, o `true`).
+
+Junto a la acción, el paso **declara** qué hace — sin depender del texto del botón ni del selector:
+
+- `efecto`: `"modifica"` o `"consulta"`. Obligatorio en `click` y `click_at`; opcional en `goto`, `fill`, `select`, `check` (un GET que borra o un combo que guarda al cambiar también se declaran).
+- `id`: nombre del paso. Obligatorio en lo que modifica.
+- `comprueba: <id>`: en una comprobación, qué acción comprueba. Todo lo que modifica necesita al menos una comprobación posterior que lo nombre — en la misma pantalla o después, con otro rol. `expect_rejected` siempre dice qué rechazo esperaba.
+- `porque`: obligatorio si un clic cuyo texto suele guardar (guardar, registrar, generar…) se declara `"consulta"`.
+
+Sin eso el plan no corre. Cada paso queda en `explore.jsonl` con resultado, mensajes, captura, `detail.paso`, `detail.tipo`, lo declarado y, si falló, `detail.falla`: `explorador`, `negocio`, `verificacion`, `acceso`, `identidad`, `sistema`, `sin_comprobar` o `declaracion` (un clic declarado `"consulta"` tras el cual apareció un mensaje de que se guardó algo). Un rechazo que su `expect_rejected` confirma es resultado de negocio, no falla. Veredicto: **COMPLETO** (todo corrió, sin fallas, y cada acción que modifica tiene su propia comprobación cumplida), **PARCIAL** (alguna comprobada, alguna falla u omisión), **FALLIDO** (ninguna comprobación cumplida, o ninguna de las acciones que modifican quedó comprobada), **INTERRUMPIDO** (pasos sin correr: presupuesto, error, Ctrl+C). Comprobaciones de otras pantallas no cuentan por un guardado.
 
 ## 3. Glosario
 

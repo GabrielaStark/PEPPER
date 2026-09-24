@@ -304,7 +304,7 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
         data_report = _scan(staging)
         substitutions: Dict[str, Dict[str, Any]] = {}
         approved: Optional[Dict[str, Any]] = None
-        if data_mode == "remote" and (data_report.sensitive or data_report.unscanned):
+        if data_mode == "remote" and (data_report.categories or data_report.unscanned):
             needed = boundary.proposal(staging, (session.get("environment") or {}).get("profile_id"), data_report, excluded)
             if authorization is None or not authorization.is_file():
                 problems = ["no hay autorización de datos para este sistema"]
@@ -320,12 +320,12 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
                     f"Propuesta de alcance para que una persona decida: {proposal_path} "
                     "(con su sí: `pepper authorize <propuesta> --by <nombre>` y repite con --authorization)",
                     proposal_path)
-            if data_report.sensitive:
+            if data_report.categories:
                 substitutions = _substitute(staging, boundary.pseudonym_key(authorization))
-                residual = _scan(staging).sensitive
-                if residual:
+                residual = _scan(staging)
+                if residual.sensitive_total:
                     raise ValueError("quedaron datos detectables tras la sustitución; no se armó el paquete. "
-                                     f"Ubicaciones: {summarize_sensitive(residual)}")
+                                     f"Ubicaciones: {summarize_sensitive(residual.sensitive)}")
         _finish(staging, correlated_dir, source_manifest, session, flow, legacy_dirs, data_mode,
                 data_report, map_summary, previous_summary, synthetic, external_manifest,
                 approved, authorization, substitutions, excluded)
@@ -345,7 +345,7 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
         "map": map_summary,
         "previous": previous_summary,
         "data_mode": data_mode,
-        "sensitive_findings": len(data_report.sensitive),
+        "sensitive_findings": data_report.sensitive_total,
         "unscanned_files": len(data_report.unscanned),
         "substituted": sum(sum(s["counts"].values()) for s in substitutions.values()),
         "excluded": excluded,
@@ -407,8 +407,7 @@ def _scan(out_dir: Path):
     roots = [(scope, out_dir / scope, None) for scope in _SCOPES if (out_dir / scope).is_dir()]
     data_report = scan_sensitive(roots)
     session_report = scan_sensitive([("", out_dir, _only_session_json)])
-    data_report.sensitive.extend(session_report.sensitive)
-    data_report.unscanned.extend(session_report.unscanned)
+    data_report.merge(session_report)
     return data_report
 
 
@@ -496,7 +495,7 @@ def _finish(out_dir: Path, correlated_dir: Path, source_manifest: Dict[str, Any]
         overrides.append(f"{approved['decided_by']} ({approved['date']}): categorías "
                          f"{', '.join(approved['categories']) or 'ninguna'}; {len(approved['unscanned'])} archivo(s) no inspeccionado(s)")
     (out_dir / "README.md").write_text(
-        _readme(session, flow, legacy_dirs, data_mode, len(data_report.sensitive),
+        _readme(session, flow, legacy_dirs, data_mode, data_report.sensitive_total,
                 len(data_report.unscanned), overrides, bool(map_summary), bool(previous_summary)),
         encoding="utf-8",
     )
@@ -522,8 +521,8 @@ def _finish(out_dir: Path, correlated_dir: Path, source_manifest: Dict[str, Any]
     manifest["data_policy"] = {
         "mode": data_mode,
         "synthetic": synthetic,
-        "sensitive_findings": len(data_report.sensitive),
-        "categories": sorted({f.kind for f in data_report.sensitive}),
+        "sensitive_findings": data_report.sensitive_total,
+        "categories": sorted(data_report.categories),
         "unscanned_files": len(data_report.unscanned),
         "excluded": excluded,
         "substitutions": dict(sorted(substitutions.items())),

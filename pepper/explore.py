@@ -711,18 +711,18 @@ class Explorer:
         return summary
 
     def run_plan(self, plan: List[Dict[str, Any]], docker_compose: Optional[Path] = None) -> Dict[str, Any]:
-        """Pasos escritos por el agente. Cada paso es un dict con UNA clave:
+        """Pasos escritos por el agente. Cada paso es un dict con UNA acción:
         login: <rol> · goto: <ruta> · fill: {selector: valor} · select: {id_selectonemenu: texto} ·
         click: <texto del botón> · click_at: <selector css> · check: <selector> · wait: <segundos> ·
         note: <texto> · logout: true · y las comprobaciones: expect_text: <texto> ·
         expect_absent: <texto> · expect_route: <ruta> · expect_rejected: <texto o true>
+        y, junto a la acción, su declaración: `efecto` ("modifica" | "consulta"; obligatorio en los
+        clics), `id`, `porque`; y en las comprobaciones, `comprueba: <id>` (ver `plan_problems`).
 
-        Un clic que guarda (guardar, registrar, enviar…) debe ir seguido de una comprobación antes
-        de la siguiente acción: que el botón se dejara apretar no demuestra que el trámite exista
-        (`plan_problems` lo exige antes de correr). Un rechazo del sistema que el plan declara con
-        `expect_rejected` es resultado de negocio, no un fallo. Cada paso queda con `detail.paso`,
-        `detail.tipo` y, si falló, `detail.falla`: explorador | negocio | verificacion | acceso |
-        identidad. Con el presupuesto vencido no se corre ningún paso más."""
+        Cada paso queda con `detail.paso`, `detail.tipo`, lo declarado (`efecto`, `id`,
+        `comprueba`) y, si falló, `detail.falla`: explorador | negocio | verificacion | acceso |
+        identidad | sistema | declaracion (un clic declarado "consulta" tras el cual el sistema dijo
+        que guardó algo). Con el presupuesto vencido no se corre ningún paso más."""
         if self.ready is None:
             self.grant_credentials(docker_compose)
         role = ""
@@ -736,11 +736,16 @@ class Explorer:
                 self._write(Action(role=role, route="", kind="plan", label=f"{index}. presupuesto agotado", started=_now(),
                                    result="skipped", detail={"falla": "presupuesto", "sin_correr": len(plan) - index + 1}))
                 break
-            key, value = next(iter(step.items()))
+            key, value = step_action(step)
+            declared = {k: step[k] for k in ("efecto", "id", "comprueba", "porque") if isinstance(step, dict) and k in step}
+            effect = f" [{declared['efecto']}]" if declared.get("efecto") else ""
             action = Action(role=role, route=self._route_of(self.page.url) if self.page.url.startswith("http") else "",
-                            kind="plan", label=f"{index}. {key}: {json.dumps(value, ensure_ascii=False)[:80]}", started=_now())
+                            kind="plan", label=f"{index}. {key}{effect}: {json.dumps(value, ensure_ascii=False)[:80]}",
+                            started=_now())
             try:
-                if aborted and key != "login":
+                if key is None:
+                    action.result, action.detail = "error", {"falla": "explorador", "error": "el paso no tiene exactamente una acción"}
+                elif aborted and key != "login":
                     action.result, action.detail = "skipped", {"falla": "omitido", "why": "el login anterior falló"}
                 elif key == "login":
                     role = value
@@ -770,6 +775,7 @@ class Explorer:
                     action.detail = {"selected": chosen}
                     action.result = "ok"
                 elif key == "click":
+                    before = self._messages()
                     if not self._click_button(str(value)):
                         action.result, action.detail = "error", {"falla": "explorador", "error": "no se pudo apretar el botón"}
                     else:
@@ -777,18 +783,21 @@ class Explorer:
                         action.result = "ok"
                         if any(_REJECT_TEXT_RE.search(m) for m in action.messages):
                             action.result, action.detail = "rejected", {"falla": "negocio"}
+                        self._check_declaration(action, declared, before)
                 elif key == "check":
                     self.page.check(value)
                     action.result = "ok"
                 elif key == "click_at":
                     # un control por selector CSS (p. ej. la caja visible de un radio de PrimeFaces,
                     # cuyo <input> real está oculto y no se puede marcar directo)
+                    before = self._messages()
                     self.page.locator(str(value)).first.click(timeout=self.timeout_ms)
                     self._settle()
                     action.messages = self._messages()
                     action.result = "ok"
                     if any(_REJECT_TEXT_RE.search(m) for m in action.messages):
                         action.result, action.detail = "rejected", {"falla": "negocio"}
+                    self._check_declaration(action, declared, before)
                 elif key == "wait":
                     self.page.wait_for_timeout(int(float(value) * 1000))
                     action.result = "ok"
@@ -816,7 +825,7 @@ class Explorer:
                     action.detail = {"falla": "verificacion"}
             except Exception as error:  # noqa: BLE001
                 action.result, action.detail = "error", {"falla": "explorador", "error": str(error)[:300]}
-            action.detail = dict(action.detail, paso=index, tipo=key)
+            action.detail = dict(action.detail, paso=index, tipo=key, **declared)
             action.url_after = self.page.url if self.page.url.startswith("http") else ""
             if key in ("click", "click_at", "goto", "expect_text", "expect_absent", "expect_route", "expect_rejected", "select", "fill"):
                 action.screenshot = self._shot(f"plan_{index:02d}_{key}")
@@ -825,50 +834,115 @@ class Explorer:
         summary["executed"] = executed
         return summary
 
+    @staticmethod
+    def _check_declaration(action: Action, declared: Dict[str, Any], before: List[str]) -> None:
+        """Un clic declarado "consulta" tras el cual el SISTEMA dice que guardó algo (un mensaje que
+        no estaba antes del clic) contradice la declaración: queda como falla `declaracion` y el
+        veredicto no puede ser COMPLETO."""
+        if declared.get("efecto") == "consulta" and action.result == "ok" \
+                and any(_SAVED_TEXT_RE.search(m) for m in action.messages if m not in before):
+            action.detail = {"falla": "declaracion",
+                             "error": "declarado \"consulta\", pero el sistema respondió que guardó algo"}
+
 
 STEP_KEYS = ("login", "goto", "fill", "select", "click", "click_at", "check", "wait", "note", "logout",
              "expect_text", "expect_absent", "expect_route", "expect_rejected")
 EXPECT_KEYS = ("expect_text", "expect_absent", "expect_route", "expect_rejected")
-# Lo que termina una "acción" del plan: después de un clic que guarda, la comprobación tiene que llegar antes.
-_ACTION_KEYS = ("click", "click_at", "goto", "login", "logout")
-# Botones cuyo efecto es un trámite (crear, cambiar, cerrar algo), no una consulta.
+# Lo que un paso puede declarar además de su acción.
+META_KEYS = ("efecto", "id", "comprueba", "porque")
+EFFECTS = ("modifica", "consulta")
+# Pasos que pueden cambiar datos: pueden declarar `efecto`; los clics DEBEN declararlo.
+_EFFECT_KEYS = ("goto", "fill", "select", "check", "click", "click_at")
+_CLICK_KEYS = ("click", "click_at")
+# Texto de botón que suele guardar: no decide nada (la declaración decide), pero declarar
+# "consulta" en uno de estos exige decir por qué.
 _COMMIT_RE = re.compile(r"(?i)guardar|registr|agregar|enviar|aceptar|agendar|confirmar|tomar|iniciar|finalizar|aplicar|"
-                        r"cargar|generar|continuar|crear|alta|autoriz|aprob|rechaz|cerrar|asignar|turnar|firmar|capturar|save|submit")
+                        r"cargar|generar|continuar|crear|alta|autoriz|aprob|rechaz|cerrar|asignar|turnar|firmar|capturar|"
+                        r"eliminar|borrar|baja|save|submit|delete")
+# Lo que el SISTEMA dice cuando guardó algo. Tras un clic declarado "consulta", contradice la declaración.
+# Solo tiempo pasado ("se guardó", "registro guardado con éxito"): "se actualiza cada minuto" no cuenta.
+_SAVED_TEXT_RE = re.compile(
+    r"(?i)\bse\s+(?:ha[n]?\s+)?(?:guard[oó]|registr[oó]|agreg[oó]|actualiz[oó]|elimin[oó]|envi[oó]|cre[oó]|"
+    r"guardad[oa]s?|registrad[oa]s?|agregad[oa]s?|actualizad[oa]s?|eliminad[oa]s?|enviad[oa]s?|cread[oa]s?|"
+    r"di[oó]\s+de\s+alta|dad[oa]\s+de\s+alta)\b|"
+    r"\b(?:guardad|registrad|actualizad|eliminad|agregad|cread)[oa]s?\s+(?:con\s+[eé]xito|correctamente|exitosamente|satisfactoriamente)|"
+    r"\b(?:registro|guardado|alta)\s+exitos[oa]")
+
+
+def step_action(step: Dict[str, Any]) -> Tuple[Optional[str], Any]:
+    """(acción, valor) de un paso: la única clave de STEP_KEYS; (None, None) si no hay exactamente una."""
+    keys = [k for k in step if k in STEP_KEYS] if isinstance(step, dict) else []
+    return (keys[0], step[keys[0]]) if len(keys) == 1 else (None, None)
 
 
 def plan_problems(plan: Any) -> List[str]:
     """Qué impide correr un plan; vacío si se puede. Se comprueba ANTES de abrir el navegador.
 
-    Un plan sin comprobaciones solo demuestra que los botones se dejaron apretar; por eso cada
-    clic que guarda necesita su `expect_*` antes de la siguiente acción, y el plan al menos una."""
+    Que un botón se deje apretar no demuestra que el trámite exista. Por eso el plan DECLARA qué
+    cambia datos y cómo se comprueba, sin depender del texto del botón ni del selector:
+      - cada `click` / `click_at` declara `efecto`: "modifica" o "consulta";
+      - todo paso que modifica lleva `id`, y al menos una comprobación POSTERIOR lo nombra con
+        `comprueba: <id>` (en la misma pantalla o después, con otro rol);
+      - `expect_rejected` dice qué rechazo esperaba: `comprueba: <id>`;
+      - un clic cuyo texto suele guardar (guardar, registrar, enviar…) declarado "consulta" dice
+        `porque`."""
     if not isinstance(plan, list) or not plan:
         return ["el plan debe ser una lista de pasos no vacía"]
     problems: List[str] = []
-    keys: List[str] = []
+    ids: Dict[str, int] = {}
+    parsed: List[Tuple[int, Optional[str], Any, Dict[str, Any]]] = []
     for index, step in enumerate(plan, 1):
-        if not isinstance(step, dict) or len(step) != 1:
-            problems.append(f"paso {index}: cada paso es un objeto con UNA clave")
-            keys.append("")
+        if not isinstance(step, dict):
+            problems.append(f"paso {index}: cada paso es un objeto")
             continue
-        key = next(iter(step))
-        if key not in STEP_KEYS:
-            problems.append(f"paso {index}: clave desconocida {key!r} (válidas: {', '.join(STEP_KEYS)})")
-        keys.append(key)
-    if not any(k in EXPECT_KEYS for k in keys):
+        key, value = step_action(step)
+        if key is None:
+            problems.append(f"paso {index}: lleva exactamente UNA acción ({', '.join(STEP_KEYS)})")
+            continue
+        extra = [k for k in step if k != key and k not in META_KEYS]
+        if extra:
+            problems.append(f"paso {index}: claves desconocidas {', '.join(map(repr, extra))} (además de la acción: {', '.join(META_KEYS)})")
+        meta = {k: step[k] for k in META_KEYS if k in step}
+        parsed.append((index, key, value, meta))
+        effect = meta.get("efecto")
+        if key in _CLICK_KEYS and effect is None:
+            problems.append(f"paso {index}: {key} {str(value)!r} no declara su efecto: \"efecto\": \"modifica\" o \"consulta\"")
+        if effect is not None and key not in _EFFECT_KEYS:
+            problems.append(f"paso {index}: {key} no lleva efecto (solo {', '.join(_EFFECT_KEYS)})")
+        elif effect is not None and effect not in EFFECTS:
+            problems.append(f"paso {index}: efecto {effect!r} no es \"modifica\" ni \"consulta\"")
+        if "porque" in meta and (effect is None or not str(meta["porque"]).strip()):
+            problems.append(f"paso {index}: \"porque\" acompaña a un efecto declarado y no va vacío")
+        if effect == "consulta" and key in _CLICK_KEYS and _COMMIT_RE.search(str(value)) and not str(meta.get("porque", "")).strip():
+            problems.append(f"paso {index}: {key} {str(value)!r} suele guardar y se declaró \"consulta\": di \"porque\" "
+                            "(p. ej. descarga un PDF) o declara \"modifica\" con su comprobación")
+        if "id" in meta:
+            if key in EXPECT_KEYS:
+                problems.append(f"paso {index}: una comprobación no lleva id; usa \"comprueba\" para nombrar la acción")
+            elif not isinstance(meta["id"], str) or not meta["id"].strip():
+                problems.append(f"paso {index}: id vacío")
+            elif meta["id"] in ids:
+                problems.append(f"paso {index}: id {meta['id']!r} repetido (ya es del paso {ids[meta['id']]})")
+            else:
+                ids[meta["id"]] = index
+        if "comprueba" in meta:
+            if key not in EXPECT_KEYS:
+                problems.append(f"paso {index}: solo una comprobación (expect_*) lleva \"comprueba\"")
+            elif meta["comprueba"] not in ids:
+                problems.append(f"paso {index}: comprueba {meta['comprueba']!r}, que no es el id de un paso ANTERIOR")
+        if key == "expect_rejected" and "comprueba" not in meta:
+            problems.append(f"paso {index}: expect_rejected dice qué rechazo esperaba: \"comprueba\": <id de la acción>")
+    if not any(key in EXPECT_KEYS for _, key, _, _ in parsed):
         problems.append("el plan no comprueba nada: agrega al menos un expect_text, expect_absent, expect_route o expect_rejected")
-    for index, (key, step) in enumerate(zip(keys, plan), 1):
-        if key not in ("click", "click_at") or not _COMMIT_RE.search(str(step[key])):
+    checked = {meta["comprueba"] for _, key, _, meta in parsed if key in EXPECT_KEYS and "comprueba" in meta}
+    for index, key, value, meta in parsed:
+        if meta.get("efecto") != "modifica":
             continue
-        verified = False
-        for later in keys[index:]:
-            if later in EXPECT_KEYS:
-                verified = True
-                break
-            if later in _ACTION_KEYS:
-                break
-        if not verified:
-            problems.append(f"paso {index}: {key} {str(step[key])!r} guarda algo y nada comprueba su resultado antes de la "
-                            "siguiente acción (expect_text / expect_route / expect_rejected)")
+        if not meta.get("id"):
+            problems.append(f"paso {index}: {key} {str(value)!r} modifica datos y no tiene \"id\" para que una comprobación lo nombre")
+        elif meta["id"] not in checked:
+            problems.append(f"paso {index}: {key} {str(value)!r} modifica datos y ninguna comprobación posterior dice "
+                            f"\"comprueba\": \"{meta['id']}\"")
     return problems
 
 
@@ -881,45 +955,61 @@ def _detail(record: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def plan_verdict(records: List[Dict[str, Any]], steps: int) -> Dict[str, Any]:
-    """Reconcilia los pasos registrados de un plan: qué se comprobó, qué rechazó el negocio a
-    propósito, qué falló y de quién fue la falla, y cuántos pasos no llegaron a correr."""
+    """Reconcilia los pasos registrados de un plan: qué acciones cambiaron datos y cuáles quedaron
+    comprobadas por su propia comprobación (`comprueba`), qué rechazó el negocio a propósito, qué
+    falló y de quién fue la falla, y cuántos pasos no llegaron a correr.
+
+    COMPLETO exige que CADA acción que modifica tenga su comprobación cumplida: comprobaciones de
+    otras pantallas no cuentan por ella. Si ninguna quedó comprobada, el plan es FALLIDO."""
     ran = [r for r in records if r.get("kind") == "plan" and "paso" in _detail(r)]
+    by_id = {_detail(r)["id"]: r for r in ran if _detail(r).get("id")}
     expectations = [r for r in ran if _detail(r).get("tipo") in EXPECT_KEYS]
     passed = [r for r in expectations if r.get("result") == "ok"]
-    # un expect_rejected que pasa vuelve ESPERADO el último rechazo anterior a él
-    expected: set = set()
-    last_rejected: Optional[int] = None
-    for r in ran:
-        d = _detail(r)
-        if r.get("result") == "rejected" and d.get("tipo") in ("click", "click_at"):
-            last_rejected = d["paso"]
-        elif d.get("tipo") in _ACTION_KEYS:
-            last_rejected = None
-        if d.get("tipo") == "expect_rejected" and r.get("result") == "ok" and last_rejected is not None:
-            expected.add(last_rejected)
-            last_rejected = None
+    checks: Dict[str, List[Dict[str, Any]]] = {}
+    for r in expectations:
+        target = _detail(r).get("comprueba")
+        if target:
+            checks.setdefault(target, []).append(r)
+    # un expect_rejected cumplido vuelve ESPERADO el rechazo de la acción que nombra
+    expected = {_detail(by_id[_detail(r)["comprueba"]])["paso"] for r in passed
+                if _detail(r).get("tipo") == "expect_rejected" and _detail(r).get("comprueba") in by_id
+                and by_id[_detail(r)["comprueba"]].get("result") == "rejected"}
+    modifying = [r for r in ran if _detail(r).get("efecto") == "modifica"]
+    verified = [r for r in modifying if any(c.get("result") == "ok" for c in checks.get(_detail(r).get("id") or "", []))]
     failures: Dict[str, int] = {}
+
+    def fail(kind: str) -> None:
+        failures[kind] = failures.get(kind, 0) + 1
+
     for r in ran:
         d = _detail(r)
         if r.get("result") in ("error", "rejected") and d["paso"] not in expected:
-            kind = d.get("falla") or "explorador"
-            failures[kind] = failures.get(kind, 0) + 1
+            fail(d.get("falla") or "explorador")
+        elif d.get("falla") == "declaracion":
+            fail("declaracion")
+    for r in modifying:
+        # corrió, pero nada lo nombra: comprobaciones de otras cosas no cuentan por él
+        if r.get("result") in ("ok", "rejected") and not checks.get(_detail(r).get("id") or ""):
+            fail("sin_comprobar")
     skipped = sum(1 for r in ran if r.get("result") == "skipped")
     not_run = max(steps - len(ran), 0)
     counts = {"pasos": steps, "corridos": len(ran), "sin_correr": not_run, "omitidos": skipped,
               "comprobaciones": len(expectations), "comprobaciones_ok": len(passed),
+              "modifican": len(modifying), "modifican_comprobadas": len(verified),
               "rechazos_esperados": len(expected), "fallas": failures}
     fallas = ", ".join(f"{n} de {k}" for k, n in sorted(failures.items()))
+    mods = f"{len(verified)}/{len(modifying)} acciones que modifican datos comprobadas"
+    checked = f"{len(passed)}/{len(expectations)} comprobaciones cumplidas"
     if not_run:
         status, reason = "INTERRUMPIDO", f"{not_run} de {steps} pasos sin correr"
-    elif not passed:
-        status, reason = "FALLIDO", (f"ninguna comprobación del plan se cumplió ({len(expectations)} escritas"
-                                     + (f"; fallas: {fallas}" if fallas else "") + ")")
-    elif not failures and not skipped:
-        status, reason = "COMPLETO", f"{len(passed)}/{len(expectations)} comprobaciones cumplidas, {len(expected)} rechazos esperados"
+    elif not passed or (modifying and not verified):
+        status, reason = "FALLIDO", (f"{mods}; {checked}" if modifying else f"ninguna comprobación del plan se cumplió ({len(expectations)} escritas)") \
+            + (f"; fallas: {fallas}" if fallas else "")
+    elif not failures and not skipped and len(verified) == len(modifying):
+        status, reason = "COMPLETO", f"{mods}; {checked}; {len(expected)} rechazos esperados"
     else:
-        status, reason = "PARCIAL", (f"{len(passed)}/{len(expectations)} comprobaciones cumplidas"
-                                     + (f"; fallas: {fallas}" if fallas else "") + (f"; {skipped} pasos omitidos" if skipped else ""))
+        status, reason = "PARCIAL", f"{mods}; {checked}" + (f"; fallas: {fallas}" if fallas else "") \
+            + (f"; {skipped} pasos omitidos" if skipped else "")
     return {"status": status, "reason": reason, "counts": counts}
 
 

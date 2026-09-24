@@ -132,6 +132,32 @@ class SensitiveDataGateTest(unittest.TestCase):
         self.assertEqual(summary["data_mode"], "local")
 
 
+class EscanerCompletoTest(unittest.TestCase):
+    """Lo que decide es completo; solo lo que se muestra tiene tope."""
+
+    def test_todos_los_no_inspeccionables_y_todas_las_categorias(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for i in range(300):
+                (root / f"bin-{i:03d}.dat").write_bytes(b"\x00%d" % i)
+            lines = [f"'GOCG95{(i % 12) + 1:02d}{(i % 28) + 1:02d}MDFRRB{i % 10}9'" for i in range(400)]
+            lines.append("contacto: alguien@example.com")
+            (root / "dump.sql").write_text("\n".join(lines) + "\n", encoding="utf-8")
+            report = scan([("legacy", root, None)])
+        self.assertEqual(len(report.unscanned), 300)
+        self.assertEqual(report.categories, {"curp", "email"})
+        self.assertEqual(report.sensitive_total, 401)
+        self.assertLessEqual(len(report.sensitive), 201)
+        self.assertIn("email", {f.kind for f in report.sensitive})  # la primera de cada categoría se muestra
+
+    def test_dos_credenciales_en_una_linea_son_una_ubicacion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "app.properties").write_text("db.password=Uno12345 api_key=Dos12345\n", encoding="utf-8")
+            report = scan([("legacy", Path(tmp), None)])
+        self.assertEqual(report.sensitive_total, 1)
+        self.assertEqual([f.location for f in report.sensitive], ["legacy/app.properties:1"])
+
+
 if __name__ == "__main__":
     unittest.main()
 

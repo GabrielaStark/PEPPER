@@ -59,13 +59,23 @@ def proposal(staging: Path, profile_id: Optional[str], report, excluded: List[st
     return {
         "system": {"profile_id": profile_id, "legacy_sha256": legacy_fingerprint(staging / "legacy")},
         "destination": REMOTE_DESTINATION,
-        "categories": sorted({finding.kind for finding in report.sensitive}),
+        # completos: el alcance se decide con TODAS las categorías y TODOS los archivos no inspeccionados
+        "categories": sorted(report.categories),
         "unscanned": {finding.path: evidence_manifest.sha256_file(staging / finding.path)
                       for finding in sorted(report.unscanned, key=lambda f: f.path)
                       if (staging / finding.path).is_file()},
         "excluded": sorted(excluded),
-        "locations": [finding.location + f" ({finding.kind})" for finding in report.sensitive[:50]],
+        "locations": _sample_locations(report.sensitive),
     }
+
+
+def _sample_locations(findings, limit: int = 50) -> List[str]:
+    """Para mostrar: la primera ubicación de cada categoría y después las demás, hasta `limit`."""
+    first = {}
+    for finding in findings:
+        first.setdefault(finding.kind, finding)
+    ordered = list(first.values()) + [f for f in findings if first.get(f.kind) is not f]
+    return [f"{f.location} ({f.kind})" for f in ordered[:limit]]
 
 
 def load(path: Path) -> Dict[str, Any]:

@@ -24,7 +24,9 @@ FIXTURE = ROOT / "examples" / "legacy-demo"
 CURP = "GOCG950101MDFRRB09"
 
 
-class AlcanceTest(unittest.TestCase):
+class _ConLegacy(unittest.TestCase):
+    """Un legacy chico con una CURP en dos archivos y un binario; sin pruebas propias."""
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
@@ -53,6 +55,9 @@ class AlcanceTest(unittest.TestCase):
             self._package()
         authorize(raised.exception.proposal_path, "Ana Responsable", self.auth)
         return self._package()
+
+
+class AlcanceTest(_ConLegacy):
 
     def test_sin_autorizacion_propone_el_alcance_y_no_arma_nada(self):
         with self.assertRaises(BoundaryError) as raised:
@@ -128,6 +133,42 @@ class AlcanceTest(unittest.TestCase):
         (clean / "README.md").write_text("sistema de citas\n", encoding="utf-8")
         summary = assemble(self.correlated, self.root / "package-limpio", clean, data_mode="remote")
         self.assertEqual(summary["substituted"], 0)
+
+
+class SinTopeParaDecidirTest(_ConLegacy):
+    """El escáner guardaba como máximo 200 hallazgos y 200 archivos no inspeccionables, y con eso
+    se decidía el alcance (revisión de main 2026-09-24): el archivo 201 quedaba fuera de la
+    autorización, y una categoría que aparecía después de 200 hallazgos no llegaba a la propuesta."""
+
+    def test_el_archivo_201_queda_en_la_autorizacion_y_si_cambia_se_detiene(self):
+        # .txt: las notas no entran en la huella del legacy, así que SOLO la autorización lo vigila
+        for i in range(201):
+            (self.legacy / f"export-{i:03d}.txt").write_bytes(b"\x00binario %d" % i)
+        with self.assertRaises(BoundaryError) as raised:
+            self._package()
+        proposal = json.loads(raised.exception.proposal_path.read_text(encoding="utf-8"))
+        self.assertIn("legacy/export-200.txt", proposal["unscanned"])
+        self.assertEqual(len(proposal["unscanned"]), 202)  # los 201 y sistema.war
+        authorize(raised.exception.proposal_path, "Ana Responsable", self.auth)
+        self._package()
+        (self.legacy / "export-200.txt").write_bytes(b"\x00otro contenido")
+        with self.assertRaisesRegex(BoundaryError, "cambió desde que se autorizó: legacy/export-200.txt"):
+            self._package()
+
+    def test_una_categoria_despues_de_200_hallazgos_llega_a_la_propuesta(self):
+        lines = [f"INSERT INTO persona VALUES ('GOCG95{(i % 12) + 1:02d}{(i % 28) + 1:02d}MDFRRB{i % 10}9');" for i in range(250)]
+        lines.append("INSERT INTO contacto VALUES ('alguien@example.com');")
+        (self.legacy / "persona.sql").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        with self.assertRaises(BoundaryError) as raised:
+            self._package()
+        proposal = json.loads(raised.exception.proposal_path.read_text(encoding="utf-8"))
+        self.assertEqual(proposal["categories"], ["curp", "email"])
+        self.assertTrue(any("(email)" in location for location in proposal["locations"]))
+        authorize(raised.exception.proposal_path, "Ana Responsable", self.auth)
+        summary = self._package()
+        manifest = json.loads(Path(summary["external_manifest"]).read_text(encoding="utf-8"))
+        self.assertEqual(manifest["data_policy"]["sensitive_findings"], 252)  # 250 + el correo + otra.sql
+        self.assertEqual(manifest["data_policy"]["categories"], ["curp", "email"])
 
 
 class SustitucionTest(unittest.TestCase):
