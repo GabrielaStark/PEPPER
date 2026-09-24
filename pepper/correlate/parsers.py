@@ -382,7 +382,8 @@ class ExplorerParser:
                     if key in record}
         if isinstance(record.get("detail"), dict):
             detail = record["detail"]
-            for key in ("filled", "error", "buttons", "fields", "headings", "title"):
+            for key in ("filled", "error", "buttons", "fields", "headings", "title",
+                        "paso", "tipo", "falla", "efecto", "id", "comprueba", "identidad"):
                 if key in detail:
                     metadata[f"detail_{key}"] = detail[key]
         return Event(

@@ -42,6 +42,8 @@ Problemas que salen y qué hacer. El detalle de cada fase está en [`REFERENCIA.
 
 **`pepper explore` sale con 3 (PARCIAL) o 4 (INTERRUMPIDO)** — `session.json` → `outcome` dice por qué, y cada paso de `explore.jsonl` lleva `detail.falla`. PARCIAL: la evidencia sirve, pero ese recorrido no se describe como completo; cubre lo que faltó con otro plan. INTERRUMPIDO: repite con otro `--session` (o más `--budget`).
 
+**`pepper explore: <plan> no se puede correr — paso N: …`** — el plan no declara lo que hace. Cada `click`/`click_at` lleva `"efecto": "modifica"` o `"consulta"`; lo que modifica lleva `"id"` y una comprobación posterior con `"comprueba": "<id>"`; `expect_rejected` dice qué rechazo esperaba. Declara por lo que el paso hace (míralo en `screens.md`: el botón y su acción), no por su texto.
+
 **`explore: rol X: identidad no confirmada`** — el texto de `login.identity_text` no aparece tras entrar: o el sistema muestra otra cosa (el nombre y no la clave: ajusta el texto o usa `identity_route`), o entró otra identidad. No se explora con ese rol hasta que se pueda señalar quién es.
 
 **`export · RECHAZADO`** — los errores dicen qué fuente no resuelve (`map:…` que no existe, event_id inexistente, archivo fuera del paquete) o qué falta (desconocidos vacíos, sin `.md`, la sesión no está en `sessions`). El subagente corrige sobre la evidencia; nadie edita la salida a mano.

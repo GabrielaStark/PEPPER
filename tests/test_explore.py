@@ -109,8 +109,8 @@ class SalidaHonestaTest(unittest.TestCase):
         self.assertEqual((verdict["status"], verdict["code"]), ("INTERRUMPIDO", 4))
 
 
-def _paso(n, tipo, result, falla=None):
-    detail = {"paso": n, "tipo": tipo}
+def _paso(n, tipo, result, falla=None, **declarado):
+    detail = {"paso": n, "tipo": tipo, **declarado}
     if falla:
         detail["falla"] = falla
     return {"kind": "plan", "result": result, "detail": detail}
@@ -120,51 +120,114 @@ class VeredictoDelPlanTest(unittest.TestCase):
     """Un plan con 1 paso correcto y 9 fallidos salía con 0 (revisión 2026-09-24)."""
 
     def test_uno_bien_y_nueve_mal_no_es_exito(self):
-        records = [_paso(1, "login", "ok")] + [_paso(i, "click", "error", "explorador") for i in range(2, 11)]
+        records = [_paso(1, "login", "ok")] + [_paso(i, "click", "error", "explorador", efecto="consulta") for i in range(2, 11)]
         verdict = outcome({"mode": "plan", "steps": 10}, records, ["http.jsonl"], plan_steps=10)
         self.assertEqual((verdict["status"], verdict["code"]), ("FALLIDO", 1))
         self.assertIn("ninguna comprobación", verdict["reason"])
 
-    def test_comprobado_con_fallas_es_parcial(self):
-        records = [_paso(1, "login", "ok"), _paso(2, "click", "ok"), _paso(3, "expect_text", "ok"),
-                   _paso(4, "click", "error", "explorador"), _paso(5, "expect_text", "error", "verificacion")]
+    def test_guardado_comprobado_por_su_propia_comprobacion_es_completo(self):
+        records = [_paso(1, "login", "ok"), _paso(2, "click_at", "ok", efecto="modifica", id="registrar"),
+                   _paso(3, "expect_text", "ok", comprueba="registrar")]
+        verdict = plan_verdict(records, 3)
+        self.assertEqual(verdict["status"], "COMPLETO")
+        self.assertEqual((verdict["counts"]["modifican"], verdict["counts"]["modifican_comprobadas"]), (1, 1))
+
+    def test_comprobaciones_de_otras_pantallas_no_cuentan_por_el_guardado(self):
+        # el caso de la revisión de main: click_at "#j_idt42" guarda; las comprobaciones que pasan son de otra cosa
+        records = [_paso(1, "login", "ok"), _paso(2, "expect_route", "ok"),
+                   _paso(3, "click_at", "ok", efecto="modifica", id="registrar"),
+                   _paso(4, "goto", "ok"), _paso(5, "expect_text", "ok")]
+        verdict = plan_verdict(records, 5)
+        self.assertEqual(verdict["status"], "FALLIDO")
+        self.assertEqual(verdict["counts"]["fallas"], {"sin_comprobar": 1})
+        self.assertIn("0/1 acciones que modifican datos comprobadas", verdict["reason"])
+
+    def test_su_comprobacion_falla_y_otras_pasan_es_fallido(self):
+        records = [_paso(1, "login", "ok"), _paso(2, "click", "ok", efecto="modifica", id="guardar"),
+                   _paso(3, "expect_text", "error", "verificacion", comprueba="guardar"), _paso(4, "expect_route", "ok")]
+        self.assertEqual(plan_verdict(records, 4)["status"], "FALLIDO")
+
+    def test_un_guardado_comprobado_y_otro_no_es_parcial(self):
+        records = [_paso(1, "login", "ok"), _paso(2, "click", "ok", efecto="modifica", id="a"),
+                   _paso(3, "expect_text", "ok", comprueba="a"), _paso(4, "click", "ok", efecto="modifica", id="b"),
+                   _paso(5, "expect_text", "error", "verificacion", comprueba="b")]
         verdict = outcome({"mode": "plan", "steps": 5}, records, ["http.jsonl"], plan_steps=5)
         self.assertEqual((verdict["status"], verdict["code"]), ("PARCIAL", 3))
-        self.assertEqual(verdict["counts"]["fallas"], {"explorador": 1, "verificacion": 1})
+        self.assertEqual(verdict["counts"]["fallas"], {"verificacion": 1})
 
     def test_rechazo_declarado_es_resultado_de_negocio_no_falla(self):
-        records = [_paso(1, "login", "ok"), _paso(2, "click", "rejected", "negocio"), _paso(3, "expect_rejected", "ok")]
+        records = [_paso(1, "login", "ok"), _paso(2, "click", "rejected", "negocio", efecto="modifica", id="vacio"),
+                   _paso(3, "expect_rejected", "ok", comprueba="vacio")]
         verdict = plan_verdict(records, 3)
         self.assertEqual(verdict["status"], "COMPLETO")
         self.assertEqual(verdict["counts"]["rechazos_esperados"], 1)
 
     def test_rechazo_no_declarado_es_falla_de_negocio(self):
-        records = [_paso(1, "login", "ok"), _paso(2, "click", "rejected", "negocio"), _paso(3, "expect_text", "ok")]
+        records = [_paso(1, "login", "ok"), _paso(2, "click", "rejected", "negocio", efecto="consulta"), _paso(3, "expect_text", "ok")]
         verdict = plan_verdict(records, 3)
         self.assertEqual(verdict["status"], "PARCIAL")
         self.assertEqual(verdict["counts"]["fallas"], {"negocio": 1})
 
+    def test_consulta_tras_la_cual_el_sistema_dice_que_guardo_no_es_completo(self):
+        records = [_paso(1, "login", "ok"), _paso(2, "click_at", "ok", "declaracion", efecto="consulta"), _paso(3, "expect_text", "ok")]
+        verdict = plan_verdict(records, 3)
+        self.assertEqual(verdict["status"], "PARCIAL")
+        self.assertEqual(verdict["counts"]["fallas"], {"declaracion": 1})
+
     def test_pasos_sin_correr_es_interrumpido(self):
-        records = [_paso(1, "login", "ok"), _paso(2, "click", "ok"), _paso(3, "expect_text", "ok")]
+        records = [_paso(1, "login", "ok"), _paso(2, "click", "ok", efecto="consulta"), _paso(3, "expect_text", "ok")]
         verdict = outcome({"mode": "plan", "steps": 8, "interrupted": "presupuesto"}, records, ["http.jsonl"], plan_steps=8)
         self.assertEqual((verdict["status"], verdict["code"]), ("INTERRUMPIDO", 4))
         self.assertEqual(verdict["counts"]["sin_correr"], 5)
 
 
 class ProblemasDelPlanTest(unittest.TestCase):
-    def test_guardar_sin_comprobar_no_se_corre(self):
-        plan = [{"login": "A"}, {"goto": "/cita"}, {"click": "Guardar"}, {"goto": "/otra"}, {"expect_text": "x"}]
-        problems = plan_problems(plan)
-        self.assertEqual(len(problems), 1); self.assertIn("paso 3", problems[0])
+    def test_un_clic_sin_efecto_declarado_no_se_corre(self):
+        # un selector no dice nada: "#j_idt42" puede guardar; el plan lo tiene que declarar
+        problems = plan_problems([{"login": "A"}, {"click_at": "#j_idt42"}, {"expect_text": "x"}])
+        self.assertEqual(len(problems), 1); self.assertIn("no declara su efecto", problems[0])
 
-    def test_guardar_con_comprobacion_si(self):
-        plan = [{"login": "A"}, {"click": "Guardar"}, {"wait": 1}, {"expect_text": "Guardado"}, {"click": "Buscar"}]
+    def test_lo_que_modifica_necesita_su_propia_comprobacion(self):
+        plan = [{"login": "A"}, {"click_at": "#j_idt42", "efecto": "modifica", "id": "registrar"},
+                {"goto": "/otra"}, {"expect_text": "Bienvenido"}]
+        problems = plan_problems(plan)
+        self.assertEqual(len(problems), 1); self.assertIn('"comprueba": "registrar"', problems[0])
+        self.assertTrue(any("sin" in p or "id" in p for p in plan_problems([{"login": "A"}, {"click": "Guardar", "efecto": "modifica"},
+                                                                        {"expect_text": "x"}])))
+
+    def test_la_comprobacion_puede_llegar_despues_y_con_otro_rol(self):
+        plan = [{"login": "RECEPCION"}, {"goto": "/cita"}, {"click": "Guardar", "efecto": "modifica", "id": "cita"},
+                {"logout": True}, {"login": "SUPERVISOR"}, {"goto": "/citas"}, {"expect_text": "Prueba PEPPER", "comprueba": "cita"},
+                {"click": "Buscar", "efecto": "consulta"}]
         self.assertEqual(plan_problems(plan), [])
 
+    def test_consulta_con_texto_de_guardar_dice_por_que(self):
+        base = [{"login": "A"}, {"expect_route": "/home"}]
+        problems = plan_problems(base + [{"click": "Generar reporte", "efecto": "consulta"}])
+        self.assertTrue(any("porque" in p for p in problems))
+        self.assertEqual(plan_problems(base + [{"click": "Generar reporte", "efecto": "consulta",
+                                                "porque": "descarga un PDF; no guarda nada"}]), [])
+
+    def test_comprueba_nombra_un_paso_anterior_y_los_ids_no_se_repiten(self):
+        problems = plan_problems([{"login": "A"}, {"expect_text": "x", "comprueba": "despues"},
+                                  {"click": "Guardar", "efecto": "modifica", "id": "despues"},
+                                  {"click": "Enviar", "efecto": "modifica", "id": "despues"}])
+        self.assertTrue(any("paso ANTERIOR" in p for p in problems))
+        self.assertTrue(any("repetido" in p for p in problems))
+
+    def test_expect_rejected_dice_que_rechazo_esperaba(self):
+        problems = plan_problems([{"login": "A"}, {"click": "Buscar", "efecto": "consulta", "id": "b"}, {"expect_rejected": True}])
+        self.assertTrue(any("expect_rejected" in p for p in problems))
+        self.assertEqual(plan_problems([{"login": "A"}, {"click": "Buscar", "efecto": "consulta", "id": "b"},
+                                        {"expect_rejected": True, "comprueba": "b"}]), [])
+
     def test_plan_sin_ninguna_comprobacion_ni_claves_raras(self):
-        problems = plan_problems([{"login": "A"}, {"click": "Buscar"}, {"teletransportar": 1}])
+        problems = plan_problems([{"login": "A"}, {"click": "Buscar", "efecto": "consulta"}, {"teletransportar": 1},
+                                  {"goto": "/x", "efecto": "quizas"}, {"goto": "/y", "prisa": True}])
         self.assertTrue(any("no comprueba nada" in p for p in problems))
-        self.assertTrue(any("teletransportar" in p for p in problems))
+        self.assertTrue(any("exactamente UNA acción" in p for p in problems))
+        self.assertTrue(any("quizas" in p for p in problems))
+        self.assertTrue(any("prisa" in p for p in problems))
         self.assertTrue(plan_problems([]))
 
 
@@ -186,6 +249,10 @@ class _Page:
     def wait_for_timeout(self, ms):
         pass
 
+    def locator(self, selector):
+        from unittest import mock
+        return mock.Mock()  # .first.click() funciona: el clic "ocurre"
+
 
 def _fake_explorer(page, messages=(), clicks_ok=True):
     import io
@@ -203,10 +270,12 @@ def _fake_explorer(page, messages=(), clicks_ok=True):
 
 
 class RunPlanTest(unittest.TestCase):
+    GUARDAR = [{"login": "A"}, {"click": "Guardar", "efecto": "modifica", "id": "g"}]
+
     def test_con_el_presupuesto_vencido_no_corre_ni_un_paso_mas(self):
         ex = _fake_explorer(_Page())
         ex.deadline = 1.0  # 1970: ya venció
-        summary = ex.run_plan([{"login": "A"}, {"click": "Guardar"}, {"expect_text": "ok"}])
+        summary = ex.run_plan(self.GUARDAR + [{"expect_text": "ok", "comprueba": "g"}])
         self.assertEqual(summary["executed"], 0)
         self.assertIn("presupuesto", summary["interrupted"])
         verdict = outcome(summary, [a.record() for a in ex.actions], ["http.jsonl"], plan_steps=3)
@@ -214,25 +283,44 @@ class RunPlanTest(unittest.TestCase):
 
     def test_clic_que_el_sistema_rechaza_y_el_plan_lo_esperaba(self):
         ex = _fake_explorer(_Page(), messages=["La CURP es obligatoria"])
-        summary = ex.run_plan([{"login": "A"}, {"click": "Guardar"}, {"expect_rejected": "CURP"}])
+        summary = ex.run_plan(self.GUARDAR + [{"expect_rejected": "CURP", "comprueba": "g"}])
         records = [a.record() for a in ex.actions]
         self.assertEqual([r["result"] for r in records], ["ok", "rejected", "ok"])
         self.assertEqual(records[1]["detail"]["falla"], "negocio")
+        self.assertEqual((records[1]["detail"]["efecto"], records[2]["detail"]["comprueba"]), ("modifica", "g"))
         self.assertEqual(outcome(summary, records, ["http.jsonl"], plan_steps=3)["status"], "COMPLETO")
 
     def test_boton_que_no_se_encuentra_es_falla_del_explorador(self):
         ex = _fake_explorer(_Page(texts=["Guardado"]), clicks_ok=False)
-        summary = ex.run_plan([{"login": "A"}, {"click": "Guardar"}, {"expect_text": "Guardado"}])
+        summary = ex.run_plan(self.GUARDAR + [{"expect_text": "Guardado", "comprueba": "g"}, {"expect_route": "/inicio"}])
         records = [a.record() for a in ex.actions]
         self.assertEqual(records[1]["detail"]["falla"], "explorador")
-        self.assertEqual(outcome(summary, records, ["http.jsonl"], plan_steps=3)["status"], "PARCIAL")
+        self.assertEqual(outcome(summary, records, ["http.jsonl"], plan_steps=4)["status"], "PARCIAL")
 
     def test_comprobacion_que_no_se_cumple_es_falla_de_verificacion(self):
         ex = _fake_explorer(_Page(texts=[]))
-        summary = ex.run_plan([{"login": "A"}, {"click": "Guardar"}, {"expect_text": "Solicitud registrada"}])
+        summary = ex.run_plan(self.GUARDAR + [{"expect_text": "Solicitud registrada", "comprueba": "g"}])
         records = [a.record() for a in ex.actions]
         self.assertEqual(records[2]["detail"]["falla"], "verificacion")
         self.assertEqual(outcome(summary, records, ["http.jsonl"], plan_steps=3)["status"], "FALLIDO")
+
+    PLAN_CONSULTA = [{"login": "A"}, {"click_at": "#j_idt42", "efecto": "consulta"}, {"expect_text": "Bienvenido"}]
+
+    def test_consulta_que_termina_en_guardado_contradice_la_declaracion(self):
+        ex = _fake_explorer(_Page(texts=["Bienvenido"]))
+        shown = iter([[], ["Se guardó el registro"]])            # antes del clic, nada; después, el sistema dice que guardó
+        ex._messages = lambda: next(shown, ["Se guardó el registro"])
+        summary = ex.run_plan(self.PLAN_CONSULTA)
+        records = [a.record() for a in ex.actions]
+        self.assertEqual(records[1]["detail"]["falla"], "declaracion")
+        self.assertEqual(outcome(summary, records, ["http.jsonl"], plan_steps=3)["status"], "PARCIAL")
+
+    def test_un_aviso_que_ya_estaba_en_pantalla_no_cuenta(self):
+        ex = _fake_explorer(_Page(texts=["Bienvenido"]), messages=["Se guardó el registro"])  # estaba antes del clic
+        summary = ex.run_plan(self.PLAN_CONSULTA)
+        records = [a.record() for a in ex.actions]
+        self.assertNotIn("falla", records[1]["detail"])
+        self.assertEqual(outcome(summary, records, ["http.jsonl"], plan_steps=3)["status"], "COMPLETO")
 
 
 class ContextoPorRolTest(unittest.TestCase):

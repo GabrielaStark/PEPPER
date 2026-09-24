@@ -39,9 +39,13 @@ evidence/raw/explore.jsonl  si la sesión es del EXPLORADOR: una línea por acci
                           y las validaciones confirmadas por rechazo. `session.json` → `outcome` es
                           el veredicto: solo un recorrido COMPLETO se describe como completo; de uno
                           PARCIAL, FALLIDO o INTERRUMPIDO afirmas únicamente los pasos que tienen su
-                          comprobación cumplida (`detail.tipo` expect_*, result ok) y lo demás va a
-                          desconocidos. Un clic "ok" sin comprobación no prueba que el trámite exista.
-                          `detail.falla: explorador` es un tropiezo de la herramienta, no del sistema.
+                          comprobación cumplida y lo demás va a desconocidos. Una acción declarada
+                          `efecto: modifica` (con su `id`) queda demostrada solo si una comprobación
+                          con `comprueba: <ese id>` salió `ok`; comprobaciones de otras cosas no
+                          cuentan por ella. Un clic "ok" sin comprobación no prueba que el trámite
+                          exista. `detail.falla: explorador` es un tropiezo de la herramienta, no
+                          del sistema; `declaracion` dice que un clic declarado "consulta" terminó
+                          con un mensaje de guardado: trátalo como posible modificación.
 legacy/                   los artefactos tal cual (WAR, respaldo, NOTAS.md): para lo que el mapa no sacó
 schemas/functional-discovery.schema.json
 output/                   tu único destino de escritura: funcional.json y funcional.md
