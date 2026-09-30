@@ -1,0 +1,7 @@
+2026-09-22T16:00:10.123456789Z 2026-09-22 16:00:10.120  INFO 1 --- [           main] gob.demo.tramites.RecursosApplication    : Started RecursosApplication in 18.2 seconds (JVM running for 19.9)
+2026-09-22T16:00:31.001000000Z 2026-09-22 16:00:31.000 DEBUG 1 --- [nio-8099-exec-1] org.hibernate.SQL                        : select s.id, s.folio, s.estatus from solicitud s where s.folio=?
+2026-09-22T16:00:32.500000000Z 2026-09-22 16:00:32.500  WARN 1 --- [nio-8099-exec-2] g.d.t.service.SolicitudService           : Solicitud rechazada: el tipo de trámite no admite prórroga
+2026-09-22T16:00:33.000000000Z 2026-09-22 16:00:33.000 ERROR 1 --- [nio-8099-exec-3] o.a.c.c.C.[.[.[/].[dispatcherServlet]    : Servlet.service() for servlet [dispatcherServlet] threw exception
+2026-09-22T16:00:33.000100000Z java.lang.IllegalStateException: folio duplicado
+2026-09-22T16:00:33.000200000Z 	at gob.demo.tramites.service.SolicitudService.registrar(SolicitudService.java:77)
+2026-09-22T16:00:33.000300000Z 	... 14 more

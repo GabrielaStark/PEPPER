@@ -8,10 +8,11 @@ pantallas con sus botones y mensajes de validación. `pepper map` lo saca todo,
 igual cada vez, y lo deja en `system-map.json` más una carpeta `map/` legible
 que viaja dentro del paquete del discovery.
 
-Agnóstico por construcción (Principio 4 + perfiles como datos): el núcleo
-entiende un puñado de MECANISMOS de extracción; los patrones concretos (regex de
-tags, prefijos de paquete, claves de config, nombres de columnas de estado) los
-declara el perfil en `extractors.json`. Mecanismos:
+El núcleo no conoce sistemas; conoce FORMATOS (Principio 4, reformulado en la
+auditoría 2026-09-29): entiende un puñado de MECANISMOS de extracción, cada uno un
+lector de un formato registrado en `pepper/inspect/readers`; los patrones concretos
+(regex de tags, prefijos de paquete, claves de config, nombres de columnas de estado)
+los declara el perfil en `extractors.json`. Mecanismos:
 
   archive_url_scan       URLs externas dentro del artefacto (cualquier zip/tar)
   config_hosts           hosts/urls declarados en archivos de configuración
@@ -33,6 +34,9 @@ declara el perfil en `extractors.json`. Mecanismos:
   groovy_controller_actions  acciones de controladores Grails (closures y métodos)
                          → rutas por convención, con allowedMethods
   groovy_url_mappings    UrlMappings de Grails → rutas declaradas
+  regex_extractor        el genérico para un stack con fuente en texto (PHP, Django,
+                         Rails, Node…): regex con grupos nombrados sobre los miembros
+                         que el perfil señala → entrypoints, jobs o external_dependencies
 
 Fail-honest (como isolate): si falta una herramienta (javap) o un extractor no
 puede correr, el mapa se marca `complete=false` y lo dice en `coverage_gaps`.
@@ -54,9 +58,10 @@ import tempfile
 import zipfile
 from collections import Counter
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from pepper.inspect import jvm
+from pepper.inspect.readers import DUMP_MECHANISMS, MECHANISMS, SURFACES  # noqa: F401 — DUMP_MECHANISMS se reexporta
 
 MAP_NAME = "system-map.json"
 MAP_DIR = "map"
@@ -167,6 +172,10 @@ def _members(artifact: Path):
 
 
 _match_any = jvm.match_any
+# Nombres públicos para los lectores del paquete `readers`: los miembros de texto del artefacto
+# (zip o directorio) y el casado de un nombre contra los patrones del perfil.
+iter_members = _members
+match_any_pattern = jvm.match_any
 
 
 # ------------------------------------------------------------- mecanismos
@@ -201,7 +210,7 @@ def _guess_kind(host: str, spec: Dict[str, Any]) -> str:
 
 
 def _extract_config_hosts(artifact: Path, spec: Dict[str, Any], report: "MapReport") -> None:
-    """Hosts/urls en archivos de configuración declarados (line: key: value)."""
+    """Hosts/urls en archivos de configuración declarados (`clave: valor` de YAML o `clave=valor` de .properties)."""
     config_globs = spec.get("config_patterns", [r"application.*\.(yml|yaml|properties)$"])
     key_re = re.compile(spec.get("host_key_pattern", r"(?i)(url|host|smtp|uri|endpoint)"))
     secret_re = re.compile(r"(?i)pass|pwd|contrase|secret|token")
@@ -212,9 +221,13 @@ def _extract_config_hosts(artifact: Path, spec: Dict[str, Any], report: "MapRepo
             stripped = line.strip()
             if not stripped or stripped.startswith("#") or secret_re.search(stripped):
                 continue
-            if ":" not in stripped:
+            # `clave: valor` (YAML) o `clave=valor` (.properties): manda el separador que aparece primero,
+            # así `datasource.url=jdbc:postgresql://…` no parte en el `:` de la URL (auditoría 2026-09-29)
+            eq, colon = stripped.find("="), stripped.find(":")
+            if eq == -1 and colon == -1:
                 continue
-            key, _, value = stripped.partition(":")
+            separator = "=" if eq != -1 and (colon == -1 or eq < colon) else ":"
+            key, _, value = stripped.partition(separator)
             value = value.strip()
             # usuario:clave@host dentro de una URL (jdbc, postgres://): la clave no viaja al mapa
             value = re.sub(r"(?i)(://[^\s/:@]+:)[^\s@]+@", r"\1[REDACTADO]@", value)
@@ -498,10 +511,19 @@ def _extract_jvm_routes(artifact: Path, spec: Dict[str, Any], report: "MapReport
         outputs, tool_notes = jvm.javap_outputs(tools, classes, ["-p", "-v"])
         report.notes.extend(f"jvm_route_annotations: {n}" for n in tool_notes)
         _report_unreadable("jvm_route_annotations", classes, outputs, report)
+        before = (len(report.entrypoints), len(report.jobs))
         for fqn, _ in classes:
             out = outputs.get(fqn)
             if out:
                 _parse_javap(out, fqn.split(".")[-1], report, spec.get("job_signatures") or {})
+        if outputs and (len(report.entrypoints), len(report.jobs)) == before:
+            # Cero rutas no es "este sistema no tiene rutas": este lector solo conoce las anotaciones de
+            # Spring. Un WAR Java EE con JAX-RS (@Path/@GET) o servlets (@WebServlet) pasa por aquí sin
+            # dejar nada, y callarlo presentaría un mapa sin entradas como si fuera verdad (2026-09-30).
+            report.notes.append(
+                f"jvm_route_annotations: {len(outputs)} clase(s) leídas y ninguna trae una anotación que este lector "
+                "reconozca (@RequestMapping/@*Mapping y @Scheduled de Spring); si el stack declara rutas de otra forma "
+                "(JAX-RS @Path, @WebServlet, web.xml), NO están en el mapa")
 
 
 def _report_no_classes(mechanism: str, classes, class_root: str, artifact: Path, report: "MapReport") -> bool:
@@ -778,40 +800,10 @@ class MapReport:
         self.gaps.append(message)
 
 
-# Qué superficie del mapa alimenta cada mecanismo. Lo que ningún mecanismo del
-# perfil cubre no puede salir como "cero": sale como hueco declarado (D23).
-_MECHANISM_SURFACES: Dict[str, tuple] = {
-    "archive_url_scan": ("external_dependencies",),
-    "config_hosts": ("external_dependencies",),
-    "pg_dump_custom": ("data_stores", "catalogs"),
-    "sql_dump": ("data_stores", "catalogs"),
-    "jvm_route_annotations": ("entrypoints", "jobs"),
-    "jvm_class_inventory": ("classes",),
-    "view_templates": ("screens",),
-    "groovy_config_values": ("jobs",),
-    "groovy_controller_actions": ("entrypoints",),
-    "groovy_url_mappings": ("entrypoints",),
-}
-_SURFACES = ("entrypoints", "jobs", "external_dependencies", "data_stores", "catalogs", "classes", "screens")
-
-
-_MECHANISMS: Dict[str, Callable] = {
-    "archive_url_scan": lambda art, spec, rep, ctx: _extract_archive_urls(art, spec, rep),
-    "config_hosts": lambda art, spec, rep, ctx: _extract_config_hosts(art, spec, rep),
-    "pg_dump_custom": lambda art, spec, rep, ctx: _extract_pg_dump(spec, rep, ctx["dump"]),
-    "jvm_route_annotations": lambda art, spec, rep, ctx: _extract_jvm_routes(art, spec, rep, ctx["tools"]),
-    "jvm_class_inventory": lambda art, spec, rep, ctx: _extract_jvm_classes(art, spec, rep, ctx["tools"]),
-    "view_templates": lambda art, spec, rep, ctx: _extract_views(art, spec, rep),
-    "sql_dump": lambda art, spec, rep, ctx: _extract_sql_dump(spec, rep, ctx["dump"]),
-    "groovy_config_values": lambda art, spec, rep, ctx: _groovy().extract_config_values(art, spec, rep, ctx["tools"]),
-    "groovy_controller_actions": lambda art, spec, rep, ctx: _groovy().extract_controller_actions(art, spec, rep, ctx["tools"]),
-    "groovy_url_mappings": lambda art, spec, rep, ctx: _groovy().extract_url_mappings(art, spec, rep, ctx["tools"]),
-}
-
-
-def _groovy():
-    from pepper.inspect import groovy
-    return groovy
+# El despacho vive en UN registro (pepper/inspect/readers): cada mecanismo dice cómo corre,
+# qué superficies alimenta, si necesita el respaldo y si necesita javap. Lo que ningún
+# mecanismo del perfil cubre no puede salir como "cero": sale como hueco declarado (D23).
+# Hasta la auditoría 2026-09-29 eran tres tablas hermanas aquí, fáciles de desalinear.
 
 
 def build_map(artifact: Path, extractors: List[Dict[str, Any]], profile_id: Optional[str],
@@ -824,12 +816,12 @@ def build_map(artifact: Path, extractors: List[Dict[str, Any]], profile_id: Opti
     report = MapReport()
     for extractor in extractors:
         kind = extractor.get("mechanism")
-        handler = _MECHANISMS.get(kind)
-        if handler is None:
-            report.gap(f"mecanismo desconocido en el perfil: {kind!r}")
+        mechanism = MECHANISMS.get(kind)
+        if mechanism is None:
+            report.gap(f"mecanismo desconocido en el perfil: {kind!r} (los registrados: {', '.join(MECHANISMS)})")
             continue
         try:
-            handler(artifact, extractor, report, ctx)
+            mechanism.run(artifact, extractor, report, ctx)
         except Exception as error:  # noqa: BLE001 — un perfil es DATO: un patrón mal escrito no tira el mapa
             # Los perfiles los redacta un agente y los revisa una persona; una regex con el número de
             # grupos equivocado reventaba el mapa entero con un traceback. Se declara como hueco y se
@@ -839,8 +831,10 @@ def build_map(artifact: Path, extractors: List[Dict[str, Any]], profile_id: Opti
 
     covered = set()
     for extractor in extractors:
-        covered.update(_MECHANISM_SURFACES.get(extractor.get("mechanism"), ()))
-    for surface in _SURFACES:
+        mechanism = MECHANISMS.get(extractor.get("mechanism"))
+        if mechanism is not None:
+            covered.update(mechanism.covers(extractor))
+    for surface in SURFACES:
         if surface not in covered:
             report.gap(f"{surface}: ningún extractor del perfil sabe enumerarlos; "
                        f"la lista vacía NO significa que el sistema no tenga")
@@ -868,9 +862,6 @@ def build_map(artifact: Path, extractors: List[Dict[str, Any]], profile_id: Opti
 
 _MERGED_LISTS = ("entrypoints", "jobs", "external_dependencies", "data_stores",
                  "catalogs", "distributions", "classes", "screens")
-# Mecanismos que leen el respaldo, no el artefacto: en un sistema de varias piezas corren UNA vez,
-# con la pieza que habla con la base. En las demás no son un hueco: no les toca.
-DUMP_MECHANISMS = ("pg_dump_custom", "sql_dump")
 
 
 def extractors_without_dump(extractors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

@@ -1,0 +1,29 @@
+<!--
+  Fixture SINTÉTICO (2026-09-30): fragmento del standalone.xml de un WildFly con la forma del
+  que trae examples/legacy-demo, con contraseña ficticia. En un Java EE el datasource vive aquí,
+  no dentro del WAR; la persona lo deja junto al desplegable, en la carpeta del legacy.
+-->
+<subsystem xmlns="urn:jboss:domain:datasources:4.0">
+    <datasources>
+        <datasource jndi-name="java:jboss/datasources/SolicitudesDS"
+                    pool-name="SolicitudesDS"
+                    enabled="true"
+                    use-java-context="true">
+            <connection-url>jdbc:postgresql://srv-bd-01:5432/solicitudes</connection-url>
+            <driver>postgresql</driver>
+            <pool>
+                <min-pool-size>5</min-pool-size>
+                <max-pool-size>50</max-pool-size>
+            </pool>
+            <security>
+                <user-name>solicitudes_app</user-name>
+                <password>clave-ficticia-del-fixture</password>
+            </security>
+        </datasource>
+        <drivers>
+            <driver name="postgresql" module="org.postgresql">
+                <xa-datasource-class>org.postgresql.xa.PGXADataSource</xa-datasource-class>
+            </driver>
+        </drivers>
+    </datasources>
+</subsystem>

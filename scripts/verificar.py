@@ -212,6 +212,7 @@ def verifica_contratos():
 
     instancias = (
         list((RAIZ / "profiles").glob("*/profile.json"))
+        + list((RAIZ / "profiles").glob("*/extractors.json"))
         + list((RAIZ / "profiles").glob("*/parsers/*.json"))
         + list((RAIZ / "examples").rglob("session.json"))
         + list((RAIZ / "examples").rglob("funcional.json"))

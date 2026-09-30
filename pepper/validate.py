@@ -12,9 +12,10 @@ from typing import List, Optional
 
 from pepper import SCHEMAS_DIR
 
-SCHEMA_NAMES = ("event", "environment", "flow", "functional-discovery", "parser", "profile", "session", "system-map")
+SCHEMA_NAMES = ("event", "environment", "extractors", "flow", "functional-discovery", "parser", "profile", "session", "system-map")
 _BY_FILENAME = {
     "profile.json": "profile",
+    "extractors.json": "extractors",
     "session.json": "session",
     "environment.json": "environment",
     "flow.json": "flow",

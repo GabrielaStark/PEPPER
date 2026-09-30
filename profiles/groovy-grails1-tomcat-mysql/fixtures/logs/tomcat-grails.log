@@ -1,0 +1,13 @@
+2026-09-22T15:04:00.123456789Z 22-Sep-2026 15:04:00.100 INFO [main] org.apache.catalina.startup.Catalina.start Server startup in 45123 ms
+2026-09-22T15:04:05.001000000Z 2026-09-22 15:04:05,001 [http-bio-8080-exec-3] INFO  auth.AuthController  - Login attempt for role manager
+2026-09-22T15:04:05.050000000Z 2026-09-22 15:04:05,050 [http-bio-8080-exec-3] DEBUG hibernate.SQL  - select this_.id as id0_, this_.username as username0_ from user this_ where this_.username=?
+2026-09-22T15:04:05.060000000Z     and this_.active=1
+2026-09-22T15:04:06.000000000Z 2026-09-22 15:04:06,000 [http-bio-8080-exec-4] ERROR inventory.InventoryController  - Error saving inventory item
+2026-09-22T15:04:06.001000000Z org.springframework.dao.DataIntegrityViolationException: could not insert: [InventoryItem]
+2026-09-22T15:04:06.002000000Z 	at org.hibernate.exception.SQLStateConverter.convert(SQLStateConverter.java:96)
+2026-09-22T15:04:06.003000000Z Caused by: java.sql.SQLException: Duplicate entry 'ff80' for key 'PRIMARY'
+2026-09-22T15:04:07.000000000Z 2026-09-22 15:04:07,000 [http-bio-8080-exec-4] WARN  core.LocationService  - Validation failed for object 'Location'
+2026-09-22T15:04:07.001000000Z - Field error in object 'Location' on field 'name': rejected value [null]; codes [location.name.nullable]
+2026-09-22T15:04:08.000000000Z 
+2026-09-22T15:04:09.000000000Z 22-Sep-2026 15:04:09.000 SEVERE [http-bio-8080-exec-5] org.apache.catalina.core.StandardWrapperValve.invoke Servlet.service() for servlet [grails] threw exception
+2026-09-22T15:04:10.000000000Z Este println sin layout log4j no parsea y se declara

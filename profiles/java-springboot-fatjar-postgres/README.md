@@ -31,3 +31,33 @@ Sistema de **varios fat jars de Spring Boot** (backend, puerta de enlace, descub
 - [ ] Confirmar cómo se descubren entre sí en el original (Eureka, variables de entorno, un gateway con rutas fijas) y si el alias de red basta o hay que declarar desviaciones.
 - [ ] `pepper map` toma un artefacto a la vez: con varias piezas hoy se mapea la que habla con la base. Mapear todas y unir los mapas es trabajo del núcleo, no del perfil.
 - [ ] Probar ambos parsers contra logs reales de cada pieza.
+
+## Lo que antes estaba en `profile.json` y el núcleo no leía
+
+Movido aquí el 2026-09-30 (auditoría 2026-09-29): `rehydrate.steps`, `validation[]` y `collectors[].method|location|enable` eran documentación disfrazada de contrato — ningún código los leía como datos. El contenido se conserva tal cual, como prosa.
+
+### Receta de rehydrate, paso a paso
+
+1. leer legacy/NOTAS.md (qué es cada artefacto, cómo se hablan, versiones) y contrastar con lo que dicen los artefactos
+2. repartir los desplegables en piezas con `rehydrate.components.classify`: lo que ninguna regla reconozca se dice y se detiene, no se le inventa un papel
+3. leer el datasource de la pieza `backend` (rehydrate.components.datasource_role): de ahí salen la base, el usuario y la red que el sistema espera
+4. fabricar un servicio por pieza repitiendo `service_template` (por motor: java o static), cada una con su IP, su puerto y su alias dentro de la red interna
+5. verificar el aislamiento con `python3 -m pepper isolate <compose> --hosts <hosts>` ANTES de levantar
+6. levantar db y stub; restaurar el respaldo dentro de la base que el artefacto espera; re-apuntar al stub todo servidor foráneo
+7. levantar todas las piezas y el ingress; esperar el arranque de CADA pieza con su patrón (un front estático no dice 'Started')
+8. el ingress entra por la pieza que declare `ingress_role` (la puerta de enlace si la hay, si no el front, si no el único backend)
+9. escribir environment.json con una entrada por pieza (PARTIAL si hubo stubs) y validation.md con desviaciones
+
+### Colectores: de dónde sale cada fuente y cómo se activa
+
+| fuente | método | ubicación | cómo se activa | parser |
+|---|---|---|---|---|
+| `springboot` | container_stdout | evidence/<session_id>/containers/<pieza>.log (via `pepper collect`; una por pieza) | sin cambios en el artefacto: LOGGING_LEVEL_ORG_HIBERNATE_SQL=DEBUG y el perfil de configuración que el artefacto ya trae | `parsers/springboot-app.json` |
+| `postgresql` | container_stdout | evidence/<session_id>/containers/db.log (via `pepper collect`) | -c log_statement=all -c log_min_duration_statement=0 en el command del contenedor db, antes del arranque | `parsers/postgresql-log.json` |
+
+### Qué se comprueba tras el arranque
+
+- aislamiento verificado por el núcleo antes y después de levantar — `python3 -m pepper isolate <compose> --hosts <hosts externos del artefacto> --live`
+- cada pieza arrancó con su propio patrón: una validación por pieza en environment.json; si una no arranca, el entorno es FAILED
+- el ingress responde por la pieza de entrada: GET / por 127.0.0.1:<puerto del ingress>
+- las piezas se alcanzan entre sí por su alias de red y ninguna sale al stub durante el arranque

@@ -1,0 +1,18 @@
+# Configuración SINTÉTICA del fixture (2026-09-30): un fat jar de Spring Boot con un solo documento
+# y sin spring.profiles.active; hosts y credenciales ficticios.
+server:
+  port: 8099
+spring:
+  application:
+    name: recursos
+  datasource:
+    url: jdbc:postgresql://10.100.0.2:5432/tramites_prod
+    username: tramites
+    password: clave-ficticia-del-fixture
+eureka:
+  client:
+    serviceUrl:
+      defaultZone: http://descubrimiento:8097/eureka/
+notificaciones:
+  smtp:
+    host: smtp.correo.example

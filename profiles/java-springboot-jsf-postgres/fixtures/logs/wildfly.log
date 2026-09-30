@@ -1,0 +1,8 @@
+2026-09-02T18:34:53.476123456Z [0m[0m18:34:53,476 INFO  [gob.demo.nominas.Application] (ServerService Thread Pool -- 78) The following profiles are active: prod
+2026-09-02T18:35:10.000000000Z [0m[0m18:35:10,000 INFO  [org.jboss.as.server] (ServerService Thread Pool -- 44) WFLYSRV0010: Deployed "nominas-2.3.war" (runtime-name : "nominas-2.3.war")
+2026-09-02T18:36:30.218782839Z [0m[31m18:36:30,213 ERROR [io.undertow.request] (default task-1) UT005023: Exception handling request to /Vista/Login.jsf: javax.servlet.ServletException: no se pudo
+2026-09-02T18:36:30.218900000Z 	at javax.faces.webapp.FacesServlet.service(FacesServlet.java:451)
+2026-09-02T18:36:30.219000000Z Caused by: javax.faces.application.ViewExpiredException: viewId:/Vista/Login.jsf
+2026-09-02T18:36:30.219024797Z 
+2026-09-02T18:36:31.100000000Z [0m18:36:31,100 DEBUG [org.hibernate.SQL] (default task-2) select u.* from ctusuario u where u.dsusuario=?
+2026-09-02T18:36:40.000000000Z [0m[0m18:36:40,000 INFO  [gob.demo.nominas.controller.CitaController] (default task-2) Cita registrada con folio ficticio

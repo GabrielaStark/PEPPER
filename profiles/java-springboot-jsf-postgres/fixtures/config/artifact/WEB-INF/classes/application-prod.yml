@@ -1,0 +1,16 @@
+# Configuración SINTÉTICA del fixture (2026-09-30): la forma de un application-prod.yml de Spring Boot 1.5,
+# con hosts y credenciales ficticios. Es el ambiente que el artefacto "espera" y el que rehydrate fabrica.
+server:
+  port: 8089
+spring:
+  datasource:
+    url: jdbc:postgresql://10.42.7.2:5432/nominas_prod
+    username: nominas
+    password: clave-ficticia-del-fixture
+bus:
+  url: https://bus.institucion.example/
+mail:
+  smtp: smtp.correo.example
+  port: 587
+app:
+  rutaArchivos: /archivos/app

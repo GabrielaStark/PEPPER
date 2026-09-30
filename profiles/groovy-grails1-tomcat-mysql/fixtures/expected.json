@@ -1,0 +1,17 @@
+{
+  "notes": "Fixtures sintéticos, fieles al formato que cada parser declara (2026-09-30). Los logs llevan el prefijo RFC3339 de `docker logs --timestamps` que `pepper collect` antepone; las tres cabeceras de mysqld y un println sin layout log4j quedan sin parsear a propósito, como dice cada parser. El datasource de este stack está COMPILADO (DataSource.groovy → bytecode) y se lee con javap: no admite un fixture de configuración en texto; el lector está probado en tests/test_groovy.py.",
+  "logs": {
+    "tomcat-grails": {"events": 6, "unparsed": 1, "sql_tables": ["user"]},
+    "mysql": {"events": 6, "unparsed": 3, "sql_tables": ["user", "inventory_item"]}
+  },
+  "datasource": null,
+  "dump": {
+    "file": "almacen.sql",
+    "format": "sql_text",
+    "dbname": "almacen_prod",
+    "server_version": "5.7.36",
+    "tables": ["estatus", "movimiento", "user"],
+    "catalogs": ["estatus"],
+    "not_catalogs": ["user"]
+  }
+}

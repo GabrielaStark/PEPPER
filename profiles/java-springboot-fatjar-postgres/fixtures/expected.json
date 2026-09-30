@@ -1,0 +1,24 @@
+{
+  "notes": "Fixtures sintéticos (2026-09-30). Ambos logs son lo que `pepper collect` entrega de un contenedor: prefijo RFC3339 UTC de `docker logs --timestamps` delante de cada línea. El de `springboot` es una pieza (fat jar) con el layout por defecto de logback; su parser no llevaba el prefijo hasta este fixture y no casaba ninguna línea capturada. La configuración va dentro del fat jar (BOOT-INF/classes/application.yml), un solo documento sin perfiles activos → `default`. El respaldo lo genera fixtures/synthesize.py (pg_dump custom).",
+  "logs": {
+    "springboot": {"events": 4, "unparsed": 0, "sql_tables": ["solicitud"]},
+    "postgresql": {"events": 2, "unparsed": 0, "sql_tables": ["solicitud"]}
+  },
+  "datasource": {
+    "name": "default",
+    "engine": "postgresql",
+    "host": "10.100.0.2",
+    "port": 5432,
+    "db": "tramites_prod",
+    "username": "tramites"
+  },
+  "dump": {
+    "file": "respaldo.dump",
+    "format": "pg_dump_custom",
+    "dbname": "base_origen",
+    "server_version": "10.6",
+    "tables": ["ct_estatus", "ct_tipo_tramite", "usuario", "solicitud"],
+    "catalogs": ["ct_estatus", "ct_tipo_tramite"],
+    "not_catalogs": ["usuario", "solicitud"]
+  }
+}

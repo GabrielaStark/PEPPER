@@ -1,0 +1,4 @@
+2026-09-02T18:37:00.161673214Z 2026-09-02 18:37:00.161 UTC [117] appuser@nominas_prod LOG:  execute S_2: select c.* from ctcita c where c.dsestatus=$1
+2026-09-02T18:37:00.161679589Z 2026-09-02 18:37:00.161 UTC [117] appuser@nominas_prod DETAIL:  parameters: $1 = 'AGENDADA'
+2026-09-02T18:37:05.000000000Z 2026-09-02 18:37:05.000 UTC [117] appuser@nominas_prod LOG:  execute <unnamed>: insert into ctcita (llcita, dsestatus, fcalta) values ($1, $2, now())
+2026-09-02T18:37:05.000100000Z 2026-09-02 18:37:05.000 UTC [117] appuser@nominas_prod DETAIL:  parameters: $1 = '4002', $2 = 'AGENDADA'

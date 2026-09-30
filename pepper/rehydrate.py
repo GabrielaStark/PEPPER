@@ -25,10 +25,11 @@ no dice a qué conectarse, se escribe qué falta y se para.
 El motor de base es DATOS del perfil (Principio 4): `rehydrate.database` dice qué
 motor espera el artefacto, qué formato tiene su respaldo, con qué imagen corre, cómo
 se le pregunta (cliente, consulta de tablas, marca de restauración) y qué hacer si el
-datasource apunta a localhost. `rehydrate.datasource` dice cómo leer la configuración
-embebida (YAML de Spring, o Groovy compilado). El núcleo no sabe de PostgreSQL ni de
-MySQL: hasta 2026-09-21 sí sabía, y el tercer stack respondía BLOCKED con un motivo
-falso ("no dice a qué conectarse") por eso.
+datasource apunta a localhost. `rehydrate.datasource` dice cómo leer la configuración que
+trae el datasource: YAML de Spring, Groovy compilado, o —desde la auditoría 2026-09-29— un
+FORMATO genérico (`key_value`, `json`, `xml`) con `files`, `keys` y, si la URL no es JDBC,
+`url_pattern`. El núcleo no sabe de PostgreSQL ni de MySQL: hasta 2026-09-21 sí sabía, y el
+tercer stack respondía BLOCKED con un motivo falso ("no dice a qué conectarse") por eso.
 """
 
 from __future__ import annotations
@@ -50,6 +51,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from pepper import REPO_ROOT
+from pepper.inspect.readers import configfiles
 from pepper.profiles import Profile
 
 DEFAULT_PORT = 18080
@@ -61,7 +63,9 @@ _DUMP_SUFFIXES = (".dump", ".backup", ".sql")   # el perfil (`database.dump.suff
 _FILES_KEY_RE = re.compile(r"(?i)(ruta|path|dir|folder)")
 _FILES_KEY_EXCLUDE_RE = re.compile(r"(?i)redirect|direccion|context[-.]?path|servlet[-.]?path|classpath|url")
 _URL_RE = re.compile(r"https?://([A-Za-z0-9.-]+)(?::(\d+))?")
-_JDBC_RE = re.compile(r"jdbc:(\w+)://([A-Za-z0-9.-]+)(?::(\d+))?/([A-Za-z0-9_]+)")
+# Una referencia sin resolver en la contraseña: `${DB_PASS}` (Spring), `<%= ENV[…] %>` (Rails),
+# `%(x)s` (ini de Python). El artefacto espera algo que no trae; se pide, no se adivina.
+_UNRESOLVED_RE = re.compile(r"\$\{|<%=?|%\(\w+\)s")
 _SECRET_KEY_RE = re.compile(r"(?i)pass|pwd|secret|psw|token")
 
 
@@ -121,10 +125,36 @@ def split_documents(text: str) -> List[str]:
     return [d for d in docs if d.strip()]
 
 
+def _open_artifact(artifact: Path) -> zipfile.ZipFile:
+    """El desplegable abierto como zip (WAR/JAR/EAR), o BLOCKED diciendo qué es en realidad.
+
+    `zipfile.ZipFile` sobre un `.exe`, un tar o un archivo truncado reventaba con un traceback
+    en vez de un BLOCKED (auditoría 2026-09-29): el artefacto dicta el ambiente, y uno que no
+    se puede abrir es un insumo faltante con nombre, no un error de programa."""
+    try:
+        head = artifact.read_bytes()[:262] if artifact.is_file() else b""
+    except OSError as error:
+        raise Blocked(f"no se pudo leer el desplegable {artifact.name}: {error}")
+    try:
+        return zipfile.ZipFile(artifact)
+    except (zipfile.BadZipFile, OSError, IsADirectoryError) as error:
+        if head[257:262] == b"ustar" or head[:2] == b"\x1f\x8b":
+            forma = "un tar (o tar.gz), no un zip"
+        elif head[:2] == b"MZ":
+            forma = "un ejecutable de Windows (.exe/.dll), no un zip"
+        elif artifact.is_dir():
+            forma = "un directorio, no un archivo"
+        else:
+            forma = "no es un zip legible"
+        raise Blocked(f"el desplegable {artifact.name} {forma} ({type(error).__name__}: {str(error)[:80]}). "
+                      "Esta receta espera un WAR/JAR/EAR; si el stack empaca de otra forma, el perfil debe declararlo "
+                      "en rehydrate.artifact_suffixes y con lectores que entiendan ese formato")
+
+
 def read_artifact_configs(artifact: Path, patterns: List[str]) -> Dict[str, Dict[str, str]]:
     """{nombre-de-perfil: config} de cada archivo (y documento) de configuración dentro del artefacto."""
     configs: Dict[str, Dict[str, str]] = {}
-    with zipfile.ZipFile(artifact) as archive:
+    with _open_artifact(artifact) as archive:
         for name in sorted(archive.namelist()):
             if not any(re.search(p, name) for p in patterns):
                 continue
@@ -376,8 +406,8 @@ def classify_components(artifacts: List[Path], profile: Profile, subnet_base: st
         members = _member_names(artifact)
         try:
             configs = read_artifact_configs(artifact, patterns)
-        except (zipfile.BadZipFile, OSError):
-            configs = {}
+        except Blocked:
+            configs = {}   # una pieza que no se puede abrir no tiene configuración: quedará "sin clasificar", con nombre
         rule = next((r for r in rules if _rule_matches(r, artifact, members, configs)), None)
         if rule is None:
             sin_clasificar.append(artifact.name)
@@ -472,7 +502,7 @@ def _choose_server(artifact: Path, profile: Profile, notes_text: str) -> Tuple[s
     deviations: List[str] = []
     descriptors: Dict[str, List[str]] = recipe.get("descriptors") or {}
     images: Dict[str, Dict[str, str]] = recipe.get("server_images") or {}
-    with zipfile.ZipFile(artifact) as archive:
+    with _open_artifact(artifact) as archive:
         members = set(archive.namelist())
     present = [server for server, files in descriptors.items() if any(f in members for f in files)]
     # Solo cuentan los servidores de APLICACIÓN (los que el perfil sabe reconocer por descriptor):
@@ -618,27 +648,220 @@ def _groovy_datasource(artifact: Path, spec: Dict[str, Any], override: Optional[
     return chosen, candidates[chosen], deviations
 
 
-def discover_datasource(artifact: Path, recipe: Dict[str, Any],
-                        override: Optional[str] = None) -> Tuple[str, Dict[str, str], List[str], Dict[str, str]]:
-    """→ (perfil/entorno, configuración plana, desviaciones, {url, username, password}) según `rehydrate.datasource`."""
+def _spring_datasource(artifact: Path, recipe: Dict[str, Any], spec: Dict[str, Any], override: Optional[str],
+                       legacy_dir: Optional[Path]) -> Tuple[str, Dict[str, str], List[str], Dict[str, str]]:
+    configs = read_artifact_configs(artifact, recipe.get("config_patterns") or [r"application.*\.(yml|yaml|properties)$"])
+    if not configs:
+        raise Blocked("el artefacto no trae configuración embebida (application*.yml) y no se dio configuración externa")
+    name, cfg, deviations = choose_spring_profile(configs, override)
+    creds = {
+        "url": next(v for k, v in cfg.items() if k.endswith("datasource.url")),
+        "username": next(v for k, v in cfg.items() if k.endswith("datasource.username")),
+        "password": next(v for k, v in cfg.items() if k.endswith("datasource.password")),
+    }
+    return name, cfg, deviations, creds
+
+
+def _groovy_datasource_creds(artifact: Path, recipe: Dict[str, Any], spec: Dict[str, Any], override: Optional[str],
+                             legacy_dir: Optional[Path]) -> Tuple[str, Dict[str, str], List[str], Dict[str, str]]:
+    name, cfg, deviations = _groovy_datasource(artifact, spec, override)
+    keys = spec.get("keys") or {"url": "dataSource.url", "username": "dataSource.username", "password": "dataSource.password"}
+    return name, cfg, deviations, {k: cfg[keys[k]] for k in ("url", "username", "password")}
+
+
+# --- los lectores genéricos de configuración (auditoría 2026-09-29) ---------------------------
+# Un `.env` (Laravel), un `database.yml` (Rails), un `appsettings.json` (.NET), un `Web.config`
+# o un `standalone.xml` (WildFly) no son un framework que el núcleo tenga que aprender: son un
+# FORMATO (clave=valor, JSON, XML) más las claves que el perfil señala. El perfil declara
+# `datasource.files` (globs de miembros del artefacto o de archivos junto a él en legacy/) y
+# `datasource.keys` (qué clave es url/host/port/db/user/password/engine).
+
+# Qué campo del datasource puede señalar `datasource.keys`, y cómo se le llama al pedirlo.
+_DATASOURCE_KEYS = {"url": "URL del datasource", "host": "host de la base", "port": "puerto de la base",
+                    "db": "nombre de la base", "user": "usuario", "username": "usuario", "password": "contraseña",
+                    "engine": "motor"}
+_FLAT_READERS = {
+    "key_value": lambda text, name: configfiles.parse_key_value(text),
+    "json": configfiles.parse_json_flat,
+    "xml": configfiles.parse_xml_flat,
+}
+
+
+def _locate_config_files(artifact: Path, legacy_dir: Optional[Path], globs: List[str]) -> List[Tuple[str, str]]:
+    """[(nombre legible, contenido)] de los archivos que casan los globs: miembros del artefacto
+    (zip o directorio) y archivos bajo legacy/ (junto al desplegable), en orden determinístico."""
+    found: List[Tuple[str, str]] = []
+
+    def wanted(relative: str) -> bool:
+        base = relative.rsplit("/", 1)[-1]
+        return any(fnmatch(relative, g) or fnmatch(base, g) for g in globs)
+
+    if artifact.is_file() and zipfile.is_zipfile(artifact):
+        with zipfile.ZipFile(artifact) as archive:
+            for info in sorted(archive.infolist(), key=lambda i: i.filename):
+                if not info.is_dir() and wanted(info.filename) and info.file_size <= 4 * 1024 * 1024:
+                    found.append((f"{artifact.name}!{info.filename}", archive.read(info.filename).decode("utf-8", errors="replace")))
+    elif artifact.is_dir():
+        for path in sorted(artifact.rglob("*")):
+            relative = path.relative_to(artifact).as_posix()
+            if path.is_file() and not path.is_symlink() and wanted(relative):
+                found.append((f"{artifact.name}/{relative}", path.read_text(encoding="utf-8", errors="replace")))
+    if legacy_dir is not None and legacy_dir.is_dir():
+        for path in sorted(legacy_dir.rglob("*")):
+            relative = path.relative_to(legacy_dir).as_posix()
+            if path.is_file() and not path.is_symlink() and path.resolve() != artifact.resolve() and wanted(relative):
+                found.append((relative, path.read_text(encoding="utf-8", errors="replace")))
+    return found
+
+
+def _generic_datasource(kind: str, artifact: Path, spec: Dict[str, Any], override: Optional[str],
+                        legacy_dir: Optional[Path]) -> Tuple[str, Dict[str, str], List[str], Dict[str, str]]:
+    """key_value / json / xml → (archivos leídos, configuración plana, desviaciones, credenciales).
+
+    Fail-closed: cada clave que el perfil señala se busca en los archivos declarados; la que
+    falta se nombra con su archivo, y una clave con dos valores distintos en dos archivos es
+    ambigüedad (BLOCKED), no "el último gana". Nunca se adivina."""
+    if override is not None:
+        raise Blocked(f"--config-profile no aplica al mecanismo {kind}: los archivos declarados en datasource.files no "
+                      "tienen entornos; el perfil fija el entorno en datasource.keys (p. ej. production.host)")
+    globs = [g for g in (spec.get("files") or []) if isinstance(g, str) and g]
+    if not globs:
+        raise Blocked(f"el perfil declara datasource.mechanism = {kind} pero no `datasource.files`: no dice en qué archivos buscar")
+    keys: Dict[str, str] = dict(spec.get("keys") or {})
+    unknown = sorted(k for k in keys if k not in _DATASOURCE_KEYS)
+    if unknown:
+        raise Blocked(f"datasource.keys señala campos que el plan no conoce: {', '.join(unknown)} "
+                      f"(válidos: {', '.join(_DATASOURCE_KEYS)})")
+    if "username" in keys and "user" not in keys:
+        keys["user"] = keys.pop("username")
+    if not ("url" in keys or ("host" in keys and "db" in keys)):
+        raise Blocked(f"datasource.keys del mecanismo {kind} debe señalar `url` (o `host` y `db`), y `user`/`password` "
+                      f"si no viajan dentro de la URL; declara: {', '.join(sorted(keys)) or 'nada'}")
+    if "url" not in keys and ("user" not in keys or "password" not in keys):
+        raise Blocked(f"datasource.keys del mecanismo {kind} señala host y db pero no `user` y `password`: sin URL que los "
+                      f"traiga, tienen que venir en claves; declara: {', '.join(sorted(keys))}")
+    files = _locate_config_files(artifact, legacy_dir, globs)
+    if not files:
+        where = f"en {artifact.name}" + (f" ni en {legacy_dir}" if legacy_dir is not None else "")
+        raise Blocked(f"ninguno de los archivos de configuración que declara el perfil ({', '.join(globs)}) existe {where}: "
+                      "sin ellos no se sabe a qué base se conecta")
+    cfg: Dict[str, str] = {}
+    per_file: Dict[str, Dict[str, str]] = {}
+    for name, content in files:
+        try:
+            flat = _FLAT_READERS[kind](content, name)
+        except configfiles.ConfigError as error:
+            raise Blocked(str(error))
+        per_file[name] = flat
+        if kind == "xml":
+            # las claves del perfil son rutas con predicado, que un aplanado no representa
+            for field, path in keys.items():
+                try:
+                    value = configfiles.lookup_xml(content, path, name)
+                except configfiles.ConfigError as error:
+                    raise Blocked(str(error))
+                if value is not None:
+                    flat[path] = value
+        for key, value in flat.items():
+            cfg.setdefault(key, value)
+    creds: Dict[str, str] = {}
+    missing: List[str] = []
+    for field, key in keys.items():
+        values = {name: flat[key] for name, flat in per_file.items() if key in flat}
+        if not values:
+            missing.append(f"`{key}` ({_DATASOURCE_KEYS[field]})")
+            continue
+        if len(set(values.values())) > 1:
+            detalle = "; ".join(f"{name}: {value if field != 'password' else '[REDACTADO]'}" for name, value in values.items())
+            raise Blocked(f"la clave `{key}` ({_DATASOURCE_KEYS[field]}) tiene valores distintos en los archivos declarados "
+                          f"({detalle}): elegir uno sería adivinar el ambiente. Deja en datasource.files solo el del ambiente a reconstruir")
+        creds["username" if field == "user" else field] = next(iter(values.values()))
+    if missing:
+        raise Blocked(f"en {', '.join(per_file)} falta {', '.join(missing)}: la configuración no dice a qué conectarse. "
+                      "Consíguela, o corrige datasource.keys del perfil si la clave se llama distinto")
+    creds.setdefault("url", "")
+    return "+".join(name.rsplit("/", 1)[-1].rsplit("!", 1)[-1] for name in per_file), cfg, [], creds
+
+
+DATASOURCE_MECHANISMS = {
+    "spring_config": _spring_datasource,
+    "groovy_config": _groovy_datasource_creds,
+    "key_value": lambda art, recipe, spec, override, legacy: _generic_datasource("key_value", art, spec, override, legacy),
+    "json": lambda art, recipe, spec, override, legacy: _generic_datasource("json", art, spec, override, legacy),
+    "xml": lambda art, recipe, spec, override, legacy: _generic_datasource("xml", art, spec, override, legacy),
+}
+
+
+def discover_datasource(artifact: Path, recipe: Dict[str, Any], override: Optional[str] = None,
+                        legacy_dir: Optional[Path] = None) -> Tuple[str, Dict[str, str], List[str], Dict[str, str]]:
+    """→ (perfil/entorno, configuración plana, desviaciones, credenciales) según `rehydrate.datasource`.
+
+    Las credenciales traen siempre `url`, `username` y `password`; los lectores genéricos agregan
+    `host`, `port`, `db` y `engine` cuando la configuración los da por separado (entonces `url`
+    puede venir vacía). `datasource_facts` los convierte en el plan."""
     spec = recipe.get("datasource") or {"mechanism": "spring_config"}
     mechanism = spec.get("mechanism", "spring_config")
-    if mechanism == "spring_config":
-        configs = read_artifact_configs(artifact, recipe.get("config_patterns") or [r"application.*\.(yml|yaml|properties)$"])
-        if not configs:
-            raise Blocked("el artefacto no trae configuración embebida (application*.yml) y no se dio configuración externa")
-        name, cfg, deviations = choose_spring_profile(configs, override)
-        creds = {
-            "url": next(v for k, v in cfg.items() if k.endswith("datasource.url")),
-            "username": next(v for k, v in cfg.items() if k.endswith("datasource.username")),
-            "password": next(v for k, v in cfg.items() if k.endswith("datasource.password")),
-        }
-        return name, cfg, deviations, creds
-    if mechanism == "groovy_config":
-        name, cfg, deviations = _groovy_datasource(artifact, spec, override)
-        keys = spec.get("keys") or {"url": "dataSource.url", "username": "dataSource.username", "password": "dataSource.password"}
-        return name, cfg, deviations, {k: cfg[keys[k]] for k in ("url", "username", "password")}
-    raise Blocked(f"el perfil declara un mecanismo de datasource desconocido: {mechanism!r} (spring_config | groovy_config)")
+    reader = DATASOURCE_MECHANISMS.get(mechanism)
+    if reader is None:
+        raise Blocked(f"el perfil declara un mecanismo de datasource desconocido: {mechanism!r} "
+                      f"({' | '.join(DATASOURCE_MECHANISMS)})")
+    return reader(artifact, recipe, spec, override, legacy_dir)
+
+
+@dataclass
+class DatasourceFacts:
+    """A qué base se conecta el artefacto, ya interpretado: lo que el plan necesita."""
+    engine: str
+    host: str
+    port: int
+    db: str
+    user: str
+    password: str
+    url: str                 # la URL tal cual la trae la configuración ("" si vino en claves sueltas)
+    notes: List[str] = field(default_factory=list)
+
+
+def datasource_facts(creds: Dict[str, str], spec: Dict[str, Any], database: Dict[str, Any]) -> DatasourceFacts:
+    """Credenciales del lector → hechos del datasource, con la URL leída por la regex del perfil.
+
+    `datasource.url_pattern` (grupos nombrados engine/host/port/db y opcionales user/password)
+    reemplaza a la JDBC de siempre cuando el perfil la declara: `postgres://u:p@h:5432/db`,
+    `Server=h;Database=db;User Id=u;Password=p`, `mysql:host=h;dbname=db`. Lo que la URL no
+    trae se toma de las claves sueltas; lo que ninguno trae se pide, no se adivina."""
+    notes: List[str] = []
+    url = creds.get("url") or ""
+    parsed: Dict[str, str] = {}
+    try:
+        if url:
+            parsed = configfiles.parse_datasource_url(url, spec.get("url_pattern"))
+        elif spec.get("url_pattern"):
+            configfiles.compile_url_pattern(spec.get("url_pattern"))   # una regex rota del perfil se dice aunque no haya URL
+    except configfiles.ConfigError as error:
+        raise Blocked(str(error))
+    host = parsed.get("host") or creds.get("host") or ""
+    db = parsed.get("db") or creds.get("db") or ""
+    if not host or not db:
+        raise Blocked(f"la configuración del datasource no dice {'el host' if not host else 'el nombre de la base'}"
+                      + (f" (URL: {url!r})" if url else " y no trae URL") + ": no se sabe a qué conectarse")
+    user = creds.get("username") if creds.get("username") is not None else parsed.get("user")
+    password = creds.get("password") if creds.get("password") is not None else parsed.get("password")
+    if not user:
+        raise Blocked("la configuración del datasource no trae el usuario de la base: ni la URL lo lleva ni datasource.keys "
+                      "señala una clave `user`")
+    if password is None:
+        raise Blocked("la configuración del datasource no trae la contraseña de la base: ni la URL la lleva ni datasource.keys "
+                      "señala una clave `password`")
+    port_raw = parsed.get("port") or creds.get("port") or ""
+    try:
+        port = int(port_raw) if port_raw else int(database.get("default_port") or 0)
+    except ValueError:
+        raise Blocked(f"el puerto del datasource no es un número: {port_raw!r}")
+    engine = parsed.get("engine") or creds.get("engine") or ""
+    if not engine:
+        engine = str(database.get("engine") or "")
+        notes.append(f"la configuración del datasource no declara el motor; el perfil fabrica {engine} y con eso se levanta")
+    return DatasourceFacts(engine=engine, host=host, port=port, db=db, user=str(user), password=str(password),
+                           url=url, notes=notes)
 
 
 _NUMERIC_VERSION = re.compile(r"^\d+(?:\.\d+)*$")
@@ -740,11 +963,13 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
                 datasources = {}
                 for carrier in carriers:
                     try:
-                        _, _, _, creds_c = discover_datasource(carrier.artifact, recipe, config_profile)
+                        _, _, _, creds_c = discover_datasource(carrier.artifact, recipe, config_profile, legacy_dir)
                     except Blocked as error:
                         raise Blocked(f"la pieza `{carrier.name}` tiene el papel '{datasource_role}' y no se le pudo leer "
                                       f"el datasource: {error}")
-                    datasources.setdefault((creds_c["url"], creds_c["username"]), []).append(carrier)
+                    # la clave de agrupación: la URL, o host/base si la configuración vino en claves sueltas
+                    target = creds_c.get("url") or f"{creds_c.get('host', '?')}/{creds_c.get('db', '?')}"
+                    datasources.setdefault((target, creds_c["username"]), []).append(carrier)
                 if len(datasources) > 1:
                     detalle = "\n".join(
                         f"      · {', '.join(c.name for c in piezas)} → {url}  (usuario {user})"
@@ -766,25 +991,22 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
     if not database.get("engine"):
         raise Blocked(f"el perfil {profile.id} no declara `rehydrate.database` (motor, respaldo, imagen, sonda): "
                       "sin eso el núcleo no sabe qué base fabricar")
-    spring_profile, cfg, profile_deviations, creds = discover_datasource(artifact, recipe, config_profile)
-    url = creds["url"]
-    m = _JDBC_RE.search(url)
-    if not m:
-        raise Blocked(f"no entiendo la URL del datasource: {url!r}")
-    engine, host, port, db_name = m.group(1), m.group(2), int(m.group(3) or database.get("default_port") or 0), m.group(4)
+    spring_profile, cfg, profile_deviations, creds = discover_datasource(artifact, recipe, config_profile, legacy_dir)
+    facts_ds = datasource_facts(creds, recipe.get("datasource") or {}, database)
+    url, engine, host, port, db_name = facts_ds.url, facts_ds.engine, facts_ds.host, facts_ds.port, facts_ds.db
     expected_engine = database["engine"]
     if engine.lower() not in {expected_engine.lower(), *(e.lower() for e in database.get("engine_aliases") or [])}:
-        raise Blocked(f"el datasource es jdbc:{engine} y el perfil {profile.id} fabrica {expected_engine}: no es el perfil de este stack")
-    db_user = creds["username"]
-    db_password = creds["password"]
+        raise Blocked(f"el datasource es {engine} y el perfil {profile.id} fabrica {expected_engine}: no es el perfil de este stack")
+    db_user = facts_ds.user
+    db_password = facts_ds.password
     deviations: List[str] = list(profile_deviations)
     # El perfil puede declarar parámetros de la URL que el motor de esa versión rechaza (MySQL 5.7.36
     # no conoce `storage_engine`; con él el pool nunca conecta). Se quitan y queda como desviación:
     # el ambiente original tuvo que resolverlo con configuración externa que no está en legacy/.
     url, stripped = strip_url_params(url, (recipe.get("datasource") or {}).get("url_strip_params") or [])
     deviations += stripped
-    notes: List[str] = list(human_choices) + component_notes
-    if "${" in db_password:
+    notes: List[str] = list(human_choices) + component_notes + facts_ds.notes
+    if _UNRESOLVED_RE.search(db_password):
         raise Blocked(f"la contraseña del datasource es una referencia sin resolver ({db_password!r}): "
                       "el artefacto espera una variable de entorno que no trae; consíguela")
     shared_namespace = False
@@ -884,7 +1106,8 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
                 pass
             if h not in external and h != "localhost":
                 external.append(h)
-        if re.search(r"(?i)smtp|mail\.host|mail\.smtp", key) and re.fullmatch(r"[A-Za-z0-9.-]+\.[a-z]{2,}", value):
+        # `mail.host` (Spring), `MAIL_HOST` (.env), `mail-host`: el separador es del formato, no del negocio
+        if re.search(r"(?i)smtp|mail[._-]host|mail[._-]smtp", key) and re.fullmatch(r"[A-Za-z0-9.-]+\.[a-z]{2,}", value):
             if value not in external:
                 external.append(value)
     for key, value in cfg.items():
@@ -895,7 +1118,7 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
         notes.append("dependencias declaradas por IP directa (no se pueden aliasear al stub; fallan sin salir y sin registro): " + ", ".join(by_ip))
 
     start_class = ""
-    with zipfile.ZipFile(artifact) as archive:
+    with _open_artifact(artifact) as archive:
         if "META-INF/MANIFEST.MF" in archive.namelist():
             manifest = archive.read("META-INF/MANIFEST.MF").decode("utf-8", errors="replace")
             mm = re.search(r"Start-Class:\s*(\S+)", manifest)

@@ -1,0 +1,68 @@
+{
+  "extractor_version": "0.2.0",
+  "description": "Cómo `pepper map` saca lo que un WAR Java EE desplegado en WildFly con PostgreSQL ES. PATRONES HEREDADOS (2026-09-30) del perfil java-springboot-jsf-postgres donde aplican al mismo formato (WAR con WEB-INF/classes, vistas XHTML, respaldo pg_dump -Fc), sin corrida real contra un legacy de este stack: hasta la auditoría 2026-09-29 el perfil no tenía extractors.json y `pepper map` con él terminaba en exit 2 aunque `detect` lo eligiera para examples/legacy-demo. Límite honesto: `jvm_route_annotations` solo reconoce las anotaciones de Spring (@RequestMapping, @*Mapping, @Scheduled); las rutas JAX-RS (@Path/@GET) o de servlets (@WebServlet) de un WAR Java EE puro NO se enumeran, y el mapa lo anota.",
+  "extractors": [
+    {
+      "mechanism": "jvm_route_annotations",
+      "description": "Rutas @RequestMapping/@Get/@PostMapping y jobs @Scheduled del bytecode, vía javap. Heredado: un WAR Java EE con JAX-RS no las trae; si este mecanismo lee clases y no reconoce ninguna anotación, el mapa deja la nota.",
+      "class_root": "WEB-INF/classes",
+      "package_prefixes": ["controller/", "rest/", "web/", "cron/", "schedule", "job"],
+      "job_signatures": {}
+    },
+    {
+      "mechanism": "jvm_class_inventory",
+      "description": "Por clase propia: métodos públicos, constantes static final y cadenas del bytecode (mensajes, estados, JPQL). Incluye los jars propios de WEB-INF/lib. Los prefijos son los del legacy-demo (rest, service, dao, model) más los heredados.",
+      "class_root": "WEB-INF/classes",
+      "include_own_libs": true,
+      "package_prefixes": ["controller/", "rest/", "web/", "service/", "dao/", "model/", "beans/", "repository/", "cron/", "utils/"],
+      "class_kinds": {
+        "recurso REST": "\\.rest\\.",
+        "pantalla (controller/bean)": "\\.(controller|web|beans)\\.",
+        "servicio": "\\.service\\.",
+        "acceso a datos": "\\.(dao|repository)\\.",
+        "modelo": "\\.model\\.",
+        "job": "\\.cron\\.",
+        "constantes": "(?i)constantes|constants"
+      },
+      "max_strings_per_class": 80
+    },
+    {
+      "mechanism": "view_templates",
+      "description": "Pantallas JSF/Facelets (*.xhtml): título, encabezados, campos, botones y su acción, mensajes de validación, condiciones `rendered` e inclusiones; resuelve #{lbl['clave']} con el bundle. Heredado tal cual del perfil JSF; un WAR sin vistas XHTML da cero pantallas y el hueco lo dice la superficie `screens` solo si ningún otro mecanismo la cubre.",
+      "member_patterns": ["\\.xhtml$"],
+      "exclude_patterns": ["WEB-INF/plantillas/", "Template", "layout\\.xhtml$", "site_min"],
+      "bundle_patterns": ["WEB-INF/classes/.*messages.*\\.properties$"],
+      "bundle_ref_pattern": "#\\{lbl\\['(?P<key>[^']+)'\\]\\}"
+    },
+    {
+      "mechanism": "config_hosts",
+      "description": "Hosts/URLs en la configuración: *.properties del WAR o junto a él, persistence.xml y el standalone*.xml del servidor (en un Java EE el datasource vive ahí, no en el WAR).",
+      "config_patterns": ["\\.properties$", "standalone.*\\.xml$", "persistence\\.xml$"],
+      "host_key_pattern": "(?i)(url|host|smtp|uri|endpoint)"
+    },
+    {
+      "mechanism": "archive_url_scan",
+      "description": "URLs externas incrustadas en configuración, vistas y bytecode.",
+      "member_patterns": ["\\.(yml|yaml|properties|xml|xhtml|class)$"],
+      "exclude_host_patterns": [
+        "w3\\.org", "xmlns", "springframework", "apache\\.org", "jboss", "java\\.sun\\.com", "sun\\.com", "slf4j",
+        "primefaces", "jquery", "localhost", "example\\.com", "cdn\\.", "cdnjs\\.", "jsdelivr", "cloudflare",
+        "googleapis", "gstatic", "fontawesome", "bootstrapcdn"
+      ],
+      "kind_hints": {
+        "smtp": ["smtp", "^mail\\."],
+        "rest": ["\\d+\\.\\d+\\.\\d+\\.\\d+", "api\\."],
+        "web": ["gob\\.mx"]
+      }
+    },
+    {
+      "mechanism": "pg_dump_custom",
+      "description": "El respaldo de PostgreSQL (formato custom) leído en Python: tablas con conteo y columnas, funciones y triggers con cuerpo, vistas, catálogos completos (tablas chicas sin personas) y distribuciones de columnas de estado. Heredado; los patrones de catálogo son los genéricos del núcleo más los del perfil JSF.",
+      "catalog_max_rows": 300,
+      "catalog_exclude_patterns": ["(?i)usuario|user|persona|trabajador|empleado|cliente|ciudadano|citizen|contacto|proveedor|beneficiario|empresa"],
+      "state_column_pattern": "(?i)estatus|status|estado$|^tipo|_tipo|tipo_|nivel|sector|rol$",
+      "date_column_pattern": "(?i)^fecha|^fc[a-z]|_fecha|fecha$|_date$|^date_|date$",
+      "distribution_top": 15
+    }
+  ]
+}
