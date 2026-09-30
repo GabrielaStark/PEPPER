@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: "3.9"
       - run: pip install -r requirements-dev.txt
-      - name: Chromium para la prueba hermética del ingress (en CI es obligatorio: sin él la prueba falla)
+      - name: "Chromium para la prueba hermética del ingress (en CI es obligatorio; sin él la prueba falla)"
         run: python3 -m playwright install --with-deps chromium
       # `javap` para el mapa de un artefacto JVM y `javac` para compilar el servicio del E2E de Docker.
       - uses: actions/setup-java@v4
