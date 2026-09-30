@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT))
 from pepper.correlate.parsers import HttpProxyParser  # noqa: E402
 from pepper.proxy import CORRELATION_HEADER, ProxyServer, Recorder  # noqa: E402
 from pepper.session import Session  # noqa: E402
+from tests.entorno import exige_sockets_loopback  # noqa: E402
 
 
 class _UpstreamHandler(BaseHTTPRequestHandler):
@@ -117,6 +118,7 @@ def _serve(server):
 class ProxyTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        exige_sockets_loopback()   # sin permiso para abrir sockets, se salta con motivo (en CI, falla)
         cls.upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UpstreamHandler)
         cls.upstream.daemon_threads = True
         _serve(cls.upstream)
@@ -556,6 +558,7 @@ class NavegacionHermeticaTest(unittest.TestCase):
             if os.environ.get("PEPPER_CI"):
                 raise AssertionError("en CI la prueba hermética es obligatoria: falta playwright")
             raise unittest.SkipTest("necesita playwright")
+        exige_sockets_loopback()
         cls.upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UpstreamHandler)
         cls.upstream.daemon_threads = True
         _serve(cls.upstream)

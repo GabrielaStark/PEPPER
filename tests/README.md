@@ -5,7 +5,7 @@ python3 -m unittest discover -s tests          # todo
 python3 -m unittest discover -s tests -v       # con detalle
 ```
 
-Solo biblioteca estándar (`unittest`); `jsonschema` y `pyyaml` habilitan las comprobaciones de forma contra los contratos y del compose rendido (sin ellos, esos tests se saltan); la prueba hermética del navegador necesita Chromium de Playwright. En CI (`PEPPER_CI=1`) nada se salta: sin la herramienta, falla.
+Solo biblioteca estándar (`unittest`); `jsonschema` y `pyyaml` habilitan las comprobaciones de forma contra los contratos y del compose rendido (sin ellos, esos tests se saltan); la prueba hermética del navegador necesita Chromium de Playwright. En CI (`PEPPER_CI=1`) nada se salta: sin la herramienta, falla. Las pruebas que abren sockets (stub, proxy, un caso del aislamiento) piden permiso primero con `tests/entorno.py`: en una máquina que no deja abrir sockets se omiten con motivo, en CI fallan (revisión externa 2026-09-30).
 
 ## Qué cubren
 

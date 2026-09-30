@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from pepper.isolate import check_static, render  # noqa: E402
+from tests.entorno import exige_sockets_unix  # noqa: E402
 
 _HARD = {"cap_drop": ["NET_RAW"], "security_opt": ["no-new-privileges:true"]}
 AISLADO = {
@@ -314,6 +315,7 @@ class CapacidadesTest(Base):
         # el mismo directorio con un socket adentro deja de valer
         import os
         import socket
+        exige_sockets_unix()   # sin permiso para crear sockets Unix, esta mitad se salta con motivo (en CI, falla)
         cwd = os.getcwd()
         os.chdir(self.compose_dir / "stub")
         try:

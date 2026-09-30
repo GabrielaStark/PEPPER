@@ -16,10 +16,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from pepper.stub import StubConnection, StubServer, classify  # noqa: E402
+from tests.entorno import exige_sockets_loopback  # noqa: E402
 
 
 class StubTest(unittest.TestCase):
     def setUp(self):
+        exige_sockets_loopback()   # sin permiso para abrir sockets, se salta con motivo (en CI, falla)
         self.server = StubServer(("127.0.0.1", 0), StubConnection)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.out = io.StringIO()
