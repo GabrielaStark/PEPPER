@@ -8,10 +8,11 @@ pantallas con sus botones y mensajes de validación. `pepper map` lo saca todo,
 igual cada vez, y lo deja en `system-map.json` más una carpeta `map/` legible
 que viaja dentro del paquete del discovery.
 
-Agnóstico por construcción (Principio 4 + perfiles como datos): el núcleo
-entiende un puñado de MECANISMOS de extracción; los patrones concretos (regex de
-tags, prefijos de paquete, claves de config, nombres de columnas de estado) los
-declara el perfil en `extractors.json`. Mecanismos:
+El núcleo no conoce sistemas; conoce FORMATOS (Principio 4, reformulado en la
+auditoría 2026-09-29): entiende un puñado de MECANISMOS de extracción, cada uno un
+lector de un formato registrado en `pepper/inspect/readers`; los patrones concretos
+(regex de tags, prefijos de paquete, claves de config, nombres de columnas de estado)
+los declara el perfil en `extractors.json`. Mecanismos:
 
   archive_url_scan       URLs externas dentro del artefacto (cualquier zip/tar)
   config_hosts           hosts/urls declarados en archivos de configuración
@@ -54,9 +55,10 @@ import tempfile
 import zipfile
 from collections import Counter
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from pepper.inspect import jvm
+from pepper.inspect.readers import DUMP_MECHANISMS, MECHANISMS, SURFACES  # noqa: F401 — DUMP_MECHANISMS se reexporta
 
 MAP_NAME = "system-map.json"
 MAP_DIR = "map"
@@ -747,40 +749,10 @@ class MapReport:
         self.gaps.append(message)
 
 
-# Qué superficie del mapa alimenta cada mecanismo. Lo que ningún mecanismo del
-# perfil cubre no puede salir como "cero": sale como hueco declarado (D23).
-_MECHANISM_SURFACES: Dict[str, tuple] = {
-    "archive_url_scan": ("external_dependencies",),
-    "config_hosts": ("external_dependencies",),
-    "pg_dump_custom": ("data_stores", "catalogs"),
-    "sql_dump": ("data_stores", "catalogs"),
-    "jvm_route_annotations": ("entrypoints", "jobs"),
-    "jvm_class_inventory": ("classes",),
-    "view_templates": ("screens",),
-    "groovy_config_values": ("jobs",),
-    "groovy_controller_actions": ("entrypoints",),
-    "groovy_url_mappings": ("entrypoints",),
-}
-_SURFACES = ("entrypoints", "jobs", "external_dependencies", "data_stores", "catalogs", "classes", "screens")
-
-
-_MECHANISMS: Dict[str, Callable] = {
-    "archive_url_scan": lambda art, spec, rep, ctx: _extract_archive_urls(art, spec, rep),
-    "config_hosts": lambda art, spec, rep, ctx: _extract_config_hosts(art, spec, rep),
-    "pg_dump_custom": lambda art, spec, rep, ctx: _extract_pg_dump(spec, rep, ctx["dump"]),
-    "jvm_route_annotations": lambda art, spec, rep, ctx: _extract_jvm_routes(art, spec, rep, ctx["tools"]),
-    "jvm_class_inventory": lambda art, spec, rep, ctx: _extract_jvm_classes(art, spec, rep, ctx["tools"]),
-    "view_templates": lambda art, spec, rep, ctx: _extract_views(art, spec, rep),
-    "sql_dump": lambda art, spec, rep, ctx: _extract_sql_dump(spec, rep, ctx["dump"]),
-    "groovy_config_values": lambda art, spec, rep, ctx: _groovy().extract_config_values(art, spec, rep, ctx["tools"]),
-    "groovy_controller_actions": lambda art, spec, rep, ctx: _groovy().extract_controller_actions(art, spec, rep, ctx["tools"]),
-    "groovy_url_mappings": lambda art, spec, rep, ctx: _groovy().extract_url_mappings(art, spec, rep, ctx["tools"]),
-}
-
-
-def _groovy():
-    from pepper.inspect import groovy
-    return groovy
+# El despacho vive en UN registro (pepper/inspect/readers): cada mecanismo dice cómo corre,
+# qué superficies alimenta, si necesita el respaldo y si necesita javap. Lo que ningún
+# mecanismo del perfil cubre no puede salir como "cero": sale como hueco declarado (D23).
+# Hasta la auditoría 2026-09-29 eran tres tablas hermanas aquí, fáciles de desalinear.
 
 
 def build_map(artifact: Path, extractors: List[Dict[str, Any]], profile_id: Optional[str],
@@ -793,12 +765,12 @@ def build_map(artifact: Path, extractors: List[Dict[str, Any]], profile_id: Opti
     report = MapReport()
     for extractor in extractors:
         kind = extractor.get("mechanism")
-        handler = _MECHANISMS.get(kind)
-        if handler is None:
-            report.gap(f"mecanismo desconocido en el perfil: {kind!r}")
+        mechanism = MECHANISMS.get(kind)
+        if mechanism is None:
+            report.gap(f"mecanismo desconocido en el perfil: {kind!r} (los registrados: {', '.join(MECHANISMS)})")
             continue
         try:
-            handler(artifact, extractor, report, ctx)
+            mechanism.run(artifact, extractor, report, ctx)
         except Exception as error:  # noqa: BLE001 — un perfil es DATO: un patrón mal escrito no tira el mapa
             # Los perfiles los redacta un agente y los revisa una persona; una regex con el número de
             # grupos equivocado reventaba el mapa entero con un traceback. Se declara como hueco y se
@@ -808,8 +780,10 @@ def build_map(artifact: Path, extractors: List[Dict[str, Any]], profile_id: Opti
 
     covered = set()
     for extractor in extractors:
-        covered.update(_MECHANISM_SURFACES.get(extractor.get("mechanism"), ()))
-    for surface in _SURFACES:
+        mechanism = MECHANISMS.get(extractor.get("mechanism"))
+        if mechanism is not None:
+            covered.update(mechanism.covers(extractor))
+    for surface in SURFACES:
         if surface not in covered:
             report.gap(f"{surface}: ningún extractor del perfil sabe enumerarlos; "
                        f"la lista vacía NO significa que el sistema no tenga")
@@ -837,9 +811,6 @@ def build_map(artifact: Path, extractors: List[Dict[str, Any]], profile_id: Opti
 
 _MERGED_LISTS = ("entrypoints", "jobs", "external_dependencies", "data_stores",
                  "catalogs", "distributions", "classes", "screens")
-# Mecanismos que leen el respaldo, no el artefacto: en un sistema de varias piezas corren UNA vez,
-# con la pieza que habla con la base. En las demás no son un hueco: no les toca.
-DUMP_MECHANISMS = ("pg_dump_custom", "sql_dump")
 
 
 def extractors_without_dump(extractors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
