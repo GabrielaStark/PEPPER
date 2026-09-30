@@ -1,21 +1,24 @@
 ---
 name: perfil-stack
-description: "Constitución de los perfiles de PEPPER: cómo se redacta un perfil (profile.json) y sus parsers declarativos para un stack tecnológico, cómo se valida contra los contratos y cómo pasa de borrador a validado. Todo el conocimiento de un stack entra como datos; el núcleo nunca aprende una tecnología."
+description: "Constitución de los perfiles de PEPPER: cómo se redacta un perfil (profile.json) y sus parsers declarativos para un stack tecnológico, cómo se valida contra los contratos y cómo pasa de borrador a validado. Todo el conocimiento de un stack entra como datos; el núcleo conoce formatos, no sistemas."
 allowed-tools: Read, Grep, Glob, Write, Bash(python3:*)
 ---
 
 # Perfil de stack — la constitución de los perfiles
 
-Un **perfil** es todo el conocimiento específico de un stack, empaquetado como datos en `profiles/<id>/`. Es lo que permite a PEPPER aspirar a cualquier legacy sin que el núcleo crezca por tecnología: un stack nuevo es un JSON nuevo, no código nuevo.
+Un **perfil** es todo el conocimiento específico de un stack, empaquetado como datos en `profiles/<id>/`. El núcleo conoce **formatos** (bytecode JVM, Groovy compilado, YAML de Spring, `pg_dump` custom, SQL en texto, plantillas y configuración como texto, `.env`/JSON/XML) y un perfil parametriza esos lectores: un sistema nuevo de un formato conocido es un perfil nuevo, sin código; un formato que el núcleo no lee es un lector genérico nuevo en el núcleo (con pruebas y schema) **y** el perfil que lo usa. Cuánto cuesta cada caso está medido en `docs/documentacion/PERFILES.md`.
 
 ## 1. Anatomía de un perfil
 
 ```text
 profiles/<id>/
-├── profile.json          contrato: schemas/profile.schema.json
-├── parsers/<fuente>.json un parser declarativo por fuente (schemas/parser.schema.json)
-├── compose.template.yml  plantilla de orquestación de la receta (cuando exista)
-└── README.md             estado, pendientes para validarse
+├── profile.json            contrato: schemas/profile.schema.json
+├── extractors.json         qué lectores del mapa corren y con qué patrones (schemas/extractors.schema.json)
+├── parsers/<fuente>.json   un parser declarativo por fuente (schemas/parser.schema.json)
+├── compose.template.yml    plantilla de orquestación de la receta
+├── restore.template.sh     cómo entra el respaldo a la base del contenedor
+├── fixtures/               logs, configuración y respaldo sintéticos + expected.json (tests/test_perfiles.py los corre en CI)
+└── README.md               qué cubre, qué decide la receta, qué falta para validarse
 ```
 
 `profile.json` declara cuatro cosas:
@@ -78,7 +81,7 @@ Las piezas y cuándo se usan:
 
 ## 4. La receta de rehydrate
 
-`rehydrate.steps` es la lista ordenada y legible de lo que hay que hacer para levantar el stack; `compose.template.yml` es su forma ejecutable con variables `{{…}}` que Rehydrate sustituye a partir de los artefactos. Reglas:
+La receta es ejecutable, no prosa: `compose.template.yml` y `restore.template.sh` con variables `{{…}}` que Rehydrate sustituye —una sola pasada, cada valor validado por su forma— a partir de lo que el núcleo leyó del artefacto (`datasource`), del respaldo (`database`) y de `NOTAS.md` (`server_images`). Lo que una persona necesita saber de la receta (qué decide, qué desviaciones declara, qué le falta) va al `README.md` del perfil; hasta la auditoría 2026-09-29 existía `rehydrate.steps`, una lista en prosa que ningún código leía, y se quitó del contrato. Reglas:
 
 - **Fidelidad**: las versiones son las del legacy (detectadas en artefactos o notas), nunca "la última".
 - **Observabilidad de antemano**: la receta activa lo que Observe necesita antes del arranque (`log_statement=all`, nivel DEBUG de la app, proxy delante del puerto).
@@ -88,7 +91,7 @@ Las piezas y cuándo se usan:
 
 ```text
 Inspect encuentra un stack sin perfil
-  → el agente redacta profiles/<id>/ con status "draft" (señales, receta, colectores, validaciones, parsers)
+  → el agente redacta profiles/<id>/ con status "draft" (señales, extractores, receta, colectores, parsers, fixtures)
   → un humano lo revisa y lo prueba contra ese legacy (Rehydrate + Observe + Correlate)
   → si funciona, status "validated" → habilita el escalón 1 para el siguiente legacy con ese stack
 ```
@@ -97,15 +100,17 @@ Un perfil `draft` corre, y el resultado lo declara como borrador. Un perfil `val
 
 ## 6. Reglas
 
-1. **Un perfil nunca modifica el núcleo.** Si un stack "necesita" tocar el correlacionador, el defecto está en el núcleo y se corrige ahí, de forma genérica.
+1. **Un perfil no lleva Python ni conocimiento de un sistema.** Si un stack necesita un lector que el núcleo no tiene (otro formato de respaldo, otro bytecode), el lector entra al núcleo como formato genérico —con pruebas, su entrada en el schema y su fila en PERFILES.md— y el perfil lo parametriza. Ningún nombre de cliente, host, paquete raíz ni dominio de negocio entra al núcleo; lo específico de un sistema es dato del perfil, y lo específico de una instalación no va ni al perfil.
 2. **Cada señal de detección cita un artefacto real** del legacy que la motivó. Señales inventadas producen falsos positivos en el siguiente legacy.
 3. **Los ids son kebab-case** (`^[a-z0-9-]+$`) y describen el stack: `java-wildfly-postgres`, `dotnet-iis-sqlserver`, `php-apache-mysql`.
-4. **Todo borrador valida** contra su contrato antes de entregarse: `python3 -m pepper validate profiles/<id>/profile.json profiles/<id>/parsers/*.json`.
+4. **Todo borrador valida** contra sus contratos antes de entregarse: `python3 -m pepper validate profiles/<id>/profile.json profiles/<id>/extractors.json profiles/<id>/parsers/*.json`, y trae `fixtures/` que `python3 -m unittest tests.test_perfiles` ejecuta (contrato en `profiles/README.md`).
 5. **Sin perfil no hay bloqueo**: si no hay tiempo de redactarlo, el legacy va al escalón 2 (colectores genéricos) o 3 (inspección). Redactar el perfil es la inversión que convierte ese legacy en el escalón 1 del siguiente.
 
 ## Checklist de auto-validación de un perfil
 
-- [ ] `profile.json` valida contra `schemas/profile.schema.json`; cada parser contra `schemas/parser.schema.json`.
+- [ ] `profile.json` valida contra `schemas/profile.schema.json`; `extractors.json` contra `schemas/extractors.schema.json`; cada parser contra `schemas/parser.schema.json`.
+- [ ] `fixtures/expected.json` existe y `tests.test_perfiles` pasa para este perfil: logs sin líneas sin parsear (o las declaradas), datasource leído de `fixtures/config/`, respaldo sintético leído, y —si el fuente viaja en el desplegable— `map` con las rutas, jobs, hosts y pantallas que el perfil promete.
+- [ ] Nada del fixture es real: ni filas, ni hosts, ni credenciales; `expected.json › notes` lo dice.
 - [ ] `status` es `draft` (solo un humano lo cambia a `validated`, tras probarlo).
 - [ ] Cada señal de detección apunta a algo que existe en los artefactos de este legacy.
 - [ ] `required_inputs` lista lo que de verdad bloquea; nada de la receta asume un insumo inexistente.
@@ -120,5 +125,6 @@ Un perfil `draft` corre, y el resultado lo declara como borrador. Un perfil `val
 - ❌ Modernizar versiones "de paso".
 - ❌ Inventar un datasource, una URL o una contraseña porque "así suele ser".
 - ❌ Reglas de ruido amplias (`.*INFO.*`) que descartan evidencia real.
-- ❌ Poner lógica de un stack en el núcleo en vez de en el perfil.
+- ❌ Poner lógica de un sistema en el núcleo en vez de en el perfil (un lector genérico de un formato sí va al núcleo; un nombre de paquete, un host o una regla de negocio, jamás).
+- ❌ Un perfil sin fixtures, o un fixture copiado de un legacy real sin anonimizar.
 - ❌ Marcar `validated` sin haber levantado y observado un legacy real con ese perfil.

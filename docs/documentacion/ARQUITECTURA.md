@@ -63,6 +63,8 @@ Lectores del núcleo (por formato), patrones del perfil:
 | `sql_dump` | lo mismo para SQL en texto (mysqldump, mariadb-dump, pg_dump plano) | lector en una pasada, sin motor | dialectos MySQL y PostgreSQL |
 | `config_hosts`, `archive_url_scan` | hosts externos | configuración y URLs incrustadas | ninguno (patrones) |
 
+Los mecanismos viven en un registro (`pepper/inspect/readers/MECHANISMS`): una fila por lector dice cómo corre, qué superficies alimenta y si necesita el respaldo o `javap`; `extractors.json` tiene contrato (`schemas/extractors.schema.json`) y `pepper map` lo valida antes de correr. El datasource de `rehydrate` también se lee por formato: `spring_config` (YAML/properties de Spring), `groovy_config` (bytecode), y los genéricos `key_value` (`.env`, `.properties`, `.ini`, YAML plano), `json` y `xml`, con `files` + `keys` y una `url_pattern` opcional para URLs que no son JDBC. El desplegable puede ser un zip o una carpeta (`rehydrate.artifact_kind`); una carpeta viaja al contenedor empacada como un solo archivo `legacy.tar` junto al compose (D45).
+
 Fail-honest: si falta `javap`, el respaldo no es del formato declarado, o ningún extractor cubre una superficie, el mapa sale `complete: false` con `coverage_gaps`. Sin datos personales ni secretos: las tablas de personas se cuentan pero no se vuelcan; columnas y renglones con pinta de credencial o de dato personal se redactan (por nombre, en español e inglés, y por patrón de valor); las cadenas del bytecode que parezcan credenciales o cuentas se omiten; los cuerpos de vistas, funciones y triggers pasan por el redactor.
 
 ## El perímetro

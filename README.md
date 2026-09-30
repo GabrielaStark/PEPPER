@@ -65,7 +65,7 @@ Camino completo: [`docs/documentacion/QUICKSTART.md`](docs/documentacion/QUICKST
 - **Los agentes** (`.claude/`): `/pepper` y `/pepper-observe`; el subagente `descubridor-funcional` escribe el documento desde el paquete controlado; `inspector-legacy` redacta perfiles cuando ninguno aplica. Sus constituciones son las skills. Y el guardia de datos (`scripts/guardia_datos.py`), que acota lo que el agente puede leer.
 - **Los contratos** (`schemas/`): la interfaz entre todo; cualquier pieza es reemplazable mientras respete su schema.
 
-Arquitectura: [`ARQUITECTURA.md`](docs/documentacion/ARQUITECTURA.md) · perfiles: [`PERFILES.md`](docs/documentacion/PERFILES.md) · por qué: [`DECISIONES.md`](docs/documentacion/DECISIONES.md) · comandos del núcleo: [`REFERENCIA.md`](docs/documentacion/REFERENCIA.md) · problemas: [`TROUBLESHOOTING.md`](docs/documentacion/TROUBLESHOOTING.md) · la auditoría que motivó esta versión: [`AUDITORIA-2026-09-29.md`](docs/documentacion/AUDITORIA-2026-09-29.md).
+Arquitectura: [`ARQUITECTURA.md`](docs/documentacion/ARQUITECTURA.md) · perfiles: [`PERFILES.md`](docs/documentacion/PERFILES.md) · por qué: [`DECISIONES.md`](docs/documentacion/DECISIONES.md) · comandos del núcleo: [`REFERENCIA.md`](docs/documentacion/REFERENCIA.md) · problemas: [`TROUBLESHOOTING.md`](docs/documentacion/TROUBLESHOOTING.md) · la auditoría que motivó esta versión: [`AUDITORIA-2026-09-29.md`](docs/documentacion/AUDITORIA-2026-09-29.md) · qué cambió: [`CHANGELOG.md`](CHANGELOG.md).
 
 ## La regla de oro
 
@@ -109,7 +109,9 @@ El juguete esconde tres cosas: una regla no documentada, una mentira en el manua
 | Perfil `java-springboot-jsf-postgres` | `draft`; corrió el pipeline entero contra un legacy real (mapa, levantar, explorar, descubrir) |
 | Perfil `java-springboot-fatjar-postgres` | `draft`; varias piezas; probado con artefactos sintéticos y Docker real en CI, nunca contra un sistema real |
 | Perfil `java-wildfly-postgres` | `draft`; parsers y extractores heredados sin corrida real |
-| Pendientes | una familia no-JVM corrida contra un legacy real; un sistema con **una base por servicio**; .NET Framework, escritorio y COBOL (lectores y destino de ejecución nuevos); un camino con modelo local |
+| Perfil `php-apache-mysql` | `draft`; la primera familia que no es JVM y la primera sin una línea de Python: detección, datasource en `.env`, rutas, jobs, pantallas y respaldo con lectores genéricos; el fuente viaja como carpeta. Redactado sin legacy real: fixtures sintéticos en CI |
+| Versión | `0.2.0` (`pepper --version`); qué cambió y qué hallazgo cierra cada cambio: [`CHANGELOG.md`](CHANGELOG.md) |
+| Pendientes | `php-apache-mysql` corrido contra un legacy real (hoy solo fixtures); un sistema con **una base por servicio**; .NET Framework, escritorio y COBOL (lectores y destino de ejecución nuevos); un camino con modelo local |
 
 ## Contribuir
 

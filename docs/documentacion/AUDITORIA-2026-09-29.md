@@ -133,3 +133,22 @@ Primero lo que reformula promesas (barato, y sin esto la próxima auditoría vue
 ## 6. Lo que esta auditoría no pudo hacer
 
 Sin daemon de Docker aquí: los hallazgos sobre `isolate --live`, redes internas, Podman, OrbStack y `iptables:false` están razonados sobre el código y sobre el comportamiento documentado de Docker, no ejecutados; se marcan así arriba. Sin Chromium con red: la clase de bypasses del navegador (meta refresh, entidades, sin content-type) se demostró contra el proxy en Python, no contra un navegador real. No se corrió el pipeline contra un legacy real. No se verificó si el repositorio `stark` es público. Las cifras de líneas de código son del árbol de hoy y pueden cambiar con un commit.
+
+---
+
+## 7. Estado tras la versión 0.2.0 (2026-09-30)
+
+Esta sección la escribió el mismo agente que implementó los cierres, en la misma sesión: vale como mapa de qué se tocó, no como auditoría independiente (§1.d). Cada cambio se puede comprobar en [`CHANGELOG.md`](../../CHANGELOG.md), en D38–D45 de [`DECISIONES.md`](DECISIONES.md) y en la suite.
+
+| § | Hallazgo | Estado | Dónde se comprueba |
+|---|---|---|---|
+| 2.1, 5.7 | aislamiento verificado por lista negra, después de arrancar, sin `down` en FAILED, sin sonda | cerrado: sonda desde la red interna, `create` → inspección → `start`, `stop` en FAILED, `docker info` como precondición, plantillas endurecidas, sustitución validada | `tests/test_isolate.py`, `tests/test_rehydrate.py`, E2E de CI |
+| 2.1, 5.8 | el navegador de producción no tenía los flags de su prueba hermética; `/pepper-observe` en el navegador de la persona | cerrado: `--host-resolver-rules`, `service_workers="block"`, CSP con WebRTC bloqueado, meta refresh con parser de HTML, HTML sin `Content-Type`; observe sobre `explore --observe --headed` | `tests/test_explore.py`, `tests/test_proxy.py` |
+| 2.2, 5.10 | "el núcleo no conoce tecnologías" era falso; un perfil costaba Python | reformulado (formatos) y cerrado por construcción: registro de lectores, `regex_extractor`, datasource `key_value`/`json`/`xml`, contrato de `extractors.json`, fixtures por perfil, `php-apache-mysql` con cero Python | D44, `tests/test_perfiles.py`, `tests/test_regex_extractor.py`, `tests/test_datasource.py` |
+| 2.3, 5.6 | el orquestador es un modelo remoto y leía el legacy fuera del gate; `authorize` sin persona | reformulado (Principio 10, THREAT-MODEL) y acotado: guardia de datos fail-closed, `authorize` solo en terminal con `AUTORIZO`, lo no inspeccionable no viaja, llave HMAC por sistema, Export escanea `output/` | D39, D40, `tests/test_guardia.py`, `tests/test_boundary.py`, `tests/test_export.py` |
+| 2.4 | Export "verifica" prosa que no puede verificar | reformulado: trazabilidad, no verdad (Principio 2) | `PRINCIPIOS.md`, `pepper/export` |
+| 1.c, 5.9 | documentación que contradecía al código pasaba CI | cerrado: `verificar.py` compara CLI ↔ REFERENCIA, tabla de perfiles ↔ disco, rutas canónicas, contratos de perfiles | D42, `scripts/verificar.py` |
+| 3, 5.5 | `rm -rf .git`, sin versión, sin CHANGELOG, sin SECURITY/CONTRIBUTING | cerrado: `pepper init`, `pepper --version` 0.2.0, CHANGELOG, SECURITY.md, CONTRIBUTING.md | D43, `tests/test_init.py` |
+| 5 (bugs) | los veinte puntuales | cerrados, cada uno con su prueba de regresión; la lista está en CHANGELOG › "Bugs puntuales" | la suite (531 pruebas) |
+
+Lo que sigue abierto y se dice: el orquestador sigue siendo un modelo remoto (el guardia acota qué lee, no quién lee); ningún perfil nuevo corrió contra un legacy real en esta versión (`php-apache-mysql` es `draft` con fixtures sintéticos); Windows sin WSL2, Podman y OrbStack siguen sin probar; y esta tabla la debe leer alguien que no sea quien la escribió.
