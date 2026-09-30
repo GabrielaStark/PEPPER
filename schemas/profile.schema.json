@@ -11,8 +11,7 @@
     "status",
     "detection",
     "rehydrate",
-    "collectors",
-    "validation"
+    "collectors"
   ],
   "additionalProperties": false,
   "properties": {
@@ -170,13 +169,6 @@
         "compose_template": {
           "type": "string",
           "description": "Ruta (relativa al perfil) de la plantilla docker-compose u orquestación equivalente."
-        },
-        "steps": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Pasos de la receta en orden, legibles por humanos y ejecutables por el runner del núcleo."
         },
         "restore_template": {
           "type": "string",
@@ -574,12 +566,11 @@
     },
     "collectors": {
       "type": "array",
-      "description": "Fuentes de evidencia específicas del stack y cómo activarlas. Los colectores genéricos (proxy HTTP, contenedores, logs de BD) los aporta el núcleo y no se declaran aquí.",
+      "description": "Fuentes de evidencia del stack que `pepper correlate` normaliza con un parser del perfil. Los colectores genéricos (proxy HTTP, explorador) los aporta el núcleo y no se declaran aquí. Cómo se activa cada fuente (niveles de log, general log, sidecars) vive en el compose del perfil y se explica en su README, no aquí: hasta la auditoría 2026-09-29 este contrato declaraba method/location/enable, que ningún código leía como datos.",
       "items": {
         "type": "object",
         "required": [
-          "source",
-          "method"
+          "source"
         ],
         "additionalProperties": false,
         "properties": {
@@ -587,48 +578,13 @@
             "type": "string",
             "description": "Nombre de la fuente tal como aparecerá en event.source, p. ej. wildfly."
           },
-          "method": {
+          "file": {
             "type": "string",
-            "enum": [
-              "log_file",
-              "container_stdout",
-              "command",
-              "endpoint"
-            ],
-            "description": "Cómo se obtiene la evidencia."
-          },
-          "location": {
-            "type": "string",
-            "description": "Ruta del log, comando o endpoint según el método."
-          },
-          "enable": {
-            "type": "string",
-            "description": "Cómo activar/subir el nivel de esta fuente antes del arranque (la ventaja del entorno rehidratado)."
+            "description": "Archivo que `pepper collect`/`pepper explore` capturan bajo evidence/<sid>/ y que este colector normaliza: containers/<servicio>.log (stdout) o containers/<servicio>.err.log (stderr); admite glob fnmatch (containers/*.log para una pieza por servicio). Sin él, el colector casa solo si `source` es el nombre del servicio del compose."
           },
           "parser": {
             "type": "string",
             "description": "Ruta (relativa al perfil) del parser que normaliza esta fuente a event.schema.json."
-          }
-        }
-      }
-    },
-    "validation": {
-      "type": "array",
-      "description": "Comprobaciones específicas del stack tras el arranque. Alimentan environment.validations.",
-      "items": {
-        "type": "object",
-        "required": [
-          "check"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "check": {
-            "type": "string",
-            "description": "Qué comprobar, p. ej. 'deployment del WAR en estado OK'."
-          },
-          "command": {
-            "type": "string",
-            "description": "Comando o petición que lo verifica, cuando es automatizable."
           }
         }
       }

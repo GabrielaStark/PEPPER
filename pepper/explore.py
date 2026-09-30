@@ -713,6 +713,27 @@ class Explorer:
         return {"steps": len(plan), "ok": ok, "failed": failed}
 
 
+def collector_source(collectors: List[Dict[str, Any]], captured: str, service: str) -> Optional[str]:
+    """Qué colector del perfil normaliza el archivo capturado `captured` (containers/app.log) del servicio `service`.
+
+    Primero el `file` exacto, luego un `file` con comodines (containers/*.log: una pieza por
+    servicio), y al final el colector cuyo `source` es el nombre del servicio. Hasta la auditoría
+    2026-09-29 se casaba buscando el nombre del archivo dentro de la prosa de `location`."""
+    from fnmatch import fnmatch
+
+    for collector in collectors:
+        if collector.get("file") == captured:
+            return collector.get("source")
+    for collector in collectors:
+        pattern = collector.get("file")
+        if pattern and any(ch in pattern for ch in "*?[") and fnmatch(captured, pattern):
+            return collector.get("source")
+    for collector in collectors:
+        if collector.get("source") == service:
+            return collector.get("source")
+    return None
+
+
 def config_problems(config: Dict[str, Any]) -> List[str]:
     """Qué le falta a explore.json para poder correr; vacío si está completo. Antes un KeyError
     a mitad del arranque era todo lo que veía el humano."""

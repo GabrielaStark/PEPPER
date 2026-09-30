@@ -18,14 +18,13 @@ profiles/<id>/
 └── README.md             estado, pendientes para validarse
 ```
 
-`profile.json` declara cinco cosas:
+`profile.json` declara cuatro cosas:
 
 | Sección | Qué contiene | Ejemplo (java-wildfly-postgres) |
 |---|---|---|
 | `detection.signals` | señales con peso para reconocer el stack en un directorio de artefactos: `file_exists`, `file_content`, `extension`, `directory`; `min_score` decide | `*.war` (+2), `standalone*.xml` (+3), `urn:jboss:domain` dentro (+3) |
-| `rehydrate` | `required_inputs` (sin ellos → BLOCKED), `optional_inputs`, `compose_template`, `steps` en orden | WAR o código compilable; respaldo de BD; configuración de datasource |
-| `collectors` | fuentes de evidencia del stack: `source`, `method`, `location`, `enable` (cómo subir el nivel antes del arranque), `parser` | `server.log` de WildFly con DEBUG para los paquetes de la app |
-| `validation` | comprobaciones tras el arranque; alimentan `environment.validations` | deployment `OK`, datasource `test-connection-in-pool` |
+| `rehydrate` | `required_inputs` (sin ellos → BLOCKED), `optional_inputs`, `compose_template`, `restore_template`, `datasource`, `database`, `server_images`, `descriptors` — la receta ejecutable; los pasos en prosa van al README del perfil | WAR o código compilable; respaldo de BD; configuración de datasource |
+| `collectors` | fuentes de evidencia del stack: `source`, `file` (el archivo que `pepper collect` captura bajo `evidence/<sid>/`, p. ej. `containers/app.log`) y `parser`; cómo se activa cada fuente vive en el compose y se explica en el README | `containers/app.log` de WildFly → `parsers/wildfly-server.json` |
 | `status` | `draft` o `validated` | |
 
 Los colectores genéricos (proxy HTTP, stdout/stderr de contenedores, log del motor de BD) los aporta el núcleo y no se declaran.

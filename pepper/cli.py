@@ -299,7 +299,7 @@ def _cmd_explore(args: argparse.Namespace) -> int:
     import time as _time
     from datetime import datetime
 
-    from pepper.explore import Explorer, operator_note, write_session
+    from pepper.explore import Explorer, collector_source, operator_note, write_session
     from pepper.isolate import check_live, check_static, resolve_compose
     from pepper.observe import collect
     from pepper.profiles import load_profile
@@ -411,11 +411,7 @@ def _cmd_explore(args: argparse.Namespace) -> int:
             collectors.append({"source": "http-proxy", "kind": "generic", "file": rel,
                                "note": "stdout del ingress (pepper/proxy.py): una línea JSON por petición y por respuesta; origen del correlation_id; incluye direction=blocked del navegador."})
             continue
-        source = None
-        for collector in (profile.data.get("collectors", []) if profile else []):
-            if rel.split("/")[-1] in (collector.get("location") or "") or collector.get("source") == item["service"]:
-                source = collector["source"]
-                break
+        source = collector_source(profile.data.get("collectors", []) if profile else [], rel, item["service"])
         if source:
             collectors.append({"source": source, "kind": "profile", "file": rel,
                                "note": f"docker logs --timestamps del servicio {item['service']} (prefijo RFC3339 UTC de Docker)."})
