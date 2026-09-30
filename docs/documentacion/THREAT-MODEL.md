@@ -37,7 +37,7 @@ accidentes, que ocurrieron o pudieron ocurrir:
 | El legacy llama a producción | una vista con `dblink` consultó la base real por la VPN (D19) | red `internal`, servidores foráneos re-apuntados al stub, sumidero DNS por servicio, todo host externo con alias al stub | `isolate` estático y en vivo; la sonda desde la red interna intenta salir y tiene que fracasar |
 | El navegador del explorador o de una persona sale por fuera de los contenedores | un `<object>` cargó un servidor real (D25) | CSP con todo destino `'self'` y `webrtc 'block'`, guardián inyectado, `Location` y `meta refresh` reescritos; el explorador corre Chromium con el resolver cerrado (`--host-resolver-rules`), sin service workers, sin prefetch; `/pepper-observe` usa ESE navegador, no el de la persona | prueba hermética con Chromium real en CI; `isolate --live` exige la política en la respuesta |
 | Un ingress impostor o evidencia fabricada | `alpine sh -c exfiltrar` llamado `ingress` daba verde (D22) | identidad del ingress (imagen, sin entrypoint, argv exacto, un montaje `:ro` con el hash de `proxy.py`); manifest interno y externo con hashes | `isolate`, Export |
-| El daemon no aísla como el compose promete | Podman por socket compatible, `iptables: false`, Windows containers | `docker info` como precondición (solo Linux; rootless declarado); la sonda desde la red interna es la que decide, no la lectura del compose | `isolate --live` |
+| El daemon no aísla como el compose promete | Podman por socket compatible, `iptables: false`, Windows containers | `docker info` como precondición (solo Linux; rootless declarado); la sonda desde la red interna es la que decide, no la lectura del compose: internet o un nombre público alcanzables es fuga; el host alcanzable es aviso con puertos | `isolate --live` |
 | Ejecución de datos del artefacto en las plantillas | un rol del respaldo con `$(…)` corría en el contenedor de restauración | cada valor de plantilla validado por su forma y sustituido en una pasada; `cap_drop: NET_RAW`, `no-new-privileges` en cada servicio | `rehydrate` (BLOCKED), `isolate` |
 | El agente lee el respaldo o la evidencia cruda y eso viaja al proveedor del modelo | `/pepper` mandaba consultar la base desechable con `psql` | el guardia de datos: hook `PreToolUse` que bloquea `legacy/` (salvo listar y textos limpios), `evidence/*/{screens,http.jsonl,containers,raw}`, `pepper-out/*/correlated`, `.env`, compose y restore rendidos, `docker exec/logs db`, clientes SQL; `roles[].user_sql` resuelve las claves de usuario dentro del contenedor | `tests/test_guardia.py` |
 | El paquete lleva el respaldo entero | lo no inspeccionable viajaba con solo autorizarlo | lo que el escáner no puede leer NO viaja (`excluded_uninspected`), salvo `--include-uninspected` con autorización por archivo | `tests/test_boundary.py` |
@@ -65,8 +65,10 @@ accidentes, que ocurrieron o pudieron ocurrir:
 - **La red de contenedores se verifica en Docker sobre Linux** (Docker Engine, Docker Desktop). Podman,
   OrbStack, Rancher Desktop, WSL2 en modo `mirrored` y daemons con `iptables: false` no están probados;
   la sonda desde dentro es lo único que dice si de verdad no sale nada. Windows containers: no.
-- **El host es alcanzable desde la red interna en Docker < 28**: un servicio que escuche en `0.0.0.0`
-  en la máquina lo alcanzaría el legacy. La sonda lo detecta y lo reporta.
+- **El host es alcanzable desde la red interna.** Docker deja pasar el tráfico de una red `internal`
+  hacia la IP del bridge del host: un servicio que escuche en `0.0.0.0` en la máquina (una base local,
+  un proxy de desarrollo, el `sshd` de un runner) lo alcanzaría el legacy. La sonda lo detecta y lo
+  reporta como aviso con los puertos; no es una salida de la máquina, pero sí hay que saberlo.
 - **Los transcripts de Claude Code** guardan cada salida de herramienta fuera del workspace; `down -v`
   y borrar la herramienta no los tocan. En sesiones en la nube viven fuera de la máquina.
 - **Legal.** PEPPER procesa datos personales de producción y, en modo remoto, los transfiere a un

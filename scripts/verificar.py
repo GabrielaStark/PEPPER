@@ -10,9 +10,18 @@ Valida todo lo verificable por máquina en el repo:
   4. Nombres de comandos/agentes/skills citados en prosa existen en disco.
   5. Los scripts Python (núcleo, scripts, tests) compilan.
   6. Los contratos son JSON Schema válidos y las instancias del repo validan.
+  7. Cada `python3 -m pepper <comando> --bandera` citado en la documentación existe en el CLI
+     (comando y banderas), y cada comando del CLI está en REFERENCIA.md.
+  8. La tabla de perfiles (PERFILES.md, profiles/README.md) coincide con `profiles/` en id y estado.
+  9. Rutas canónicas: `explore.json` vive en `pepper-out/`, nunca se cita en `docs/pepper/`.
+
+Los puntos 7–9 existen porque la documentación contradecía al código en verde (auditoría 2026-09-29):
+un comando en CLAUDE.md mandaba explore.json a docs/pepper/, la tabla de perfiles listaba 2 de 4 y
+TROUBLESHOOTING describía un fallback que el código ya no tenía.
 
 Uso: python3 scripts/verificar.py   →   exit 0 = verde.
 """
+import argparse
 import ast
 import json
 import re
@@ -63,7 +72,7 @@ def parse_frontmatter(texto):
     return datos
 sys.path.insert(0, str(RAIZ))
 ERRORES = []
-IGNORAR = {".git", "pepper-out", "__pycache__", "node_modules", "analysis", "legacy", "evidence"}
+IGNORAR = {".git", "pepper-out", "__pycache__", "node_modules", "analysis", "legacy", "evidence", "worktrees"}
 # El PRODUCTO del workspace (lo que PEPPER escribe sobre el legacy) no es la
 # herramienta: se verifica la herramienta, no los reportes de quien la usa.
 IGNORAR_RUTAS = ("docs/pepper",)
@@ -215,6 +224,88 @@ def verifica_contratos():
             error(f"{p.relative_to(RAIZ)}: {e}")
 
 
+_COMANDO_CITADO = re.compile(r"python3 -m pepper (\w[\w-]*)([^\n`]*)")
+_BANDERA = re.compile(r"(?<![\w-])(--[a-z][a-z0-9-]*)")
+_DOCS_CON_COMANDOS = ("README.md", "AGENTS.md", "CLAUDE.md", "docs/documentacion", ".claude", "profiles", "pepper/README.md",
+                      "tests/README.md", "examples")
+
+
+def _cli():
+    sys.path.insert(0, str(RAIZ))
+    from pepper.cli import build_parser
+
+    parser = build_parser()
+    comandos = {}
+    for accion in parser._actions:
+        if isinstance(accion, argparse._SubParsersAction):
+            for nombre, sub in accion.choices.items():
+                banderas = set()
+                for a in sub._actions:
+                    banderas.update(o for o in a.option_strings if o.startswith("--"))
+                comandos[nombre] = banderas
+    return comandos
+
+
+def verifica_comandos():
+    """Lo que la documentación dice que se puede teclear, se puede teclear."""
+    try:
+        comandos = _cli()
+    except Exception as e:  # noqa: BLE001
+        error(f"no pude construir el CLI para comparar la documentación: {e}")
+        return
+    referencia = (RAIZ / "docs/documentacion/REFERENCIA.md").read_text(encoding="utf-8")
+    for nombre in sorted(comandos):
+        if f"python3 -m pepper {nombre}" not in referencia:
+            error(f"docs/documentacion/REFERENCIA.md: el comando `{nombre}` del CLI no aparece")
+    for p in archivos_md():
+        rel = p.relative_to(RAIZ).as_posix()
+        if not rel.startswith(_DOCS_CON_COMANDOS):
+            continue
+        for m in _COMANDO_CITADO.finditer(p.read_text(encoding="utf-8")):
+            nombre, resto = m.group(1), m.group(2)
+            if nombre in ("…", "...") or nombre not in comandos:
+                if nombre not in ("…", "..."):
+                    error(f"{rel}: cita `pepper {nombre}`, que el CLI no tiene")
+                continue
+            for bandera in _BANDERA.findall(resto):
+                if bandera not in comandos[nombre]:
+                    error(f"{rel}: `pepper {nombre}` no tiene la bandera {bandera}")
+
+
+_FILA_PERFIL = re.compile(r"^\|\s*\[?`?([a-z0-9-]+)`?(?:\]\([^)]*\))?\s*\|\s*\**`?(draft|validated)`?\**\s*\|", re.M)
+
+
+def verifica_perfiles():
+    """La tabla de perfiles de la documentación es la de disco: mismos ids, mismo estado."""
+    en_disco = {}
+    for perfil in sorted((RAIZ / "profiles").glob("*/profile.json")):
+        try:
+            datos = json.loads(perfil.read_text(encoding="utf-8"))
+        except ValueError:
+            continue
+        en_disco[datos.get("id", perfil.parent.name)] = datos.get("status", "?")
+    for doc in ("docs/documentacion/PERFILES.md", "profiles/README.md"):
+        texto = (RAIZ / doc).read_text(encoding="utf-8")
+        en_doc = {m.group(1): m.group(2) for m in _FILA_PERFIL.finditer(texto)}
+        for pid, estado in en_disco.items():
+            if pid not in en_doc:
+                error(f"{doc}: el perfil `{pid}` existe en profiles/ y no está en la tabla")
+            elif en_doc[pid] != estado:
+                error(f"{doc}: el perfil `{pid}` está `{estado}` en disco y `{en_doc[pid]}` en la tabla")
+        for pid in en_doc:
+            if pid not in en_disco:
+                error(f"{doc}: la tabla lista `{pid}`, que no existe en profiles/")
+
+
+def verifica_rutas_canonicas():
+    """explore.json lleva la contraseña de prueba: vive en pepper-out/, y ningún documento puede mandarlo a docs/pepper/."""
+    for p in archivos_md():
+        rel = p.relative_to(RAIZ).as_posix()
+        for numero, linea in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+            if "docs/pepper/explore.json" in linea and "nunca" not in linea.lower() and "no " not in linea.lower():
+                error(f"{rel}:{numero}: cita docs/pepper/explore.json; explore.json vive en pepper-out/")
+
+
 def main():
     verifica_frontmatter()
     verifica_fences()
@@ -222,12 +313,16 @@ def main():
     verifica_nombres()
     verifica_scripts()
     verifica_contratos()
+    verifica_comandos()
+    verifica_perfiles()
+    verifica_rutas_canonicas()
     if ERRORES:
         print(f"❌ verificar.py: {len(ERRORES)} problema(s)")
         for e in ERRORES:
             print(f"  - {e}")
         sys.exit(1)
-    print("✅ PEPPER verificado: frontmatters, fences, links, nombres, scripts y contratos en orden.")
+    print("✅ PEPPER verificado: frontmatters, fences, links, nombres, scripts, contratos, comandos citados, "
+          "tabla de perfiles y rutas canónicas en orden.")
 
 
 if __name__ == "__main__":

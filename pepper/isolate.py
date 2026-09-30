@@ -1020,14 +1020,18 @@ def _judge_probe(results: Dict[str, str], report: Report) -> None:
         report.add("ok", "sonda desde la red interna: ningún paquete sale (TCP y UDP a internet fallan, "
                          "un nombre público no resuelve)")
     gateway = {k: v for k, v in results.items() if k.startswith("gateway")}
-    reachable = [k for k, v in gateway.items() if v == "connected"]
+    reachable = [k.split(":", 1)[1] for k, v in gateway.items() if v == "connected"]
     answered = [k for k, v in gateway.items() if v == "refused"]
+    # El host es la propia máquina: que el legacy lo alcance no es una salida, pero sí es algo que
+    # la persona tiene que saber (una base local, un proxy de desarrollo, el sshd del runner de CI:
+    # el primer E2E lo encontró en el puerto 22). Aviso con los puertos; fuga solo lo que sale.
     if reachable:
-        report.add("error", f"un servicio del host escucha y es alcanzable desde la red interna: {', '.join(reachable)}",
-                   "el legacy alcanzaría ese servicio del host (una base local, un proxy de desarrollo)")
+        report.add("warn", f"un servicio del host escucha y es alcanzable desde la red interna (puertos {', '.join(reachable)})",
+                   "Docker deja pasar el tráfico de una red interna hacia la IP del bridge del host: mientras el legacy corra, "
+                   "que nada que importe escuche en 0.0.0.0 en esta máquina")
     elif answered:
         report.add("warn", "el host responde (RST) desde la red interna: un servicio que escuche en 0.0.0.0 sería alcanzable",
-                   "Docker 28+ bloquea el tráfico de una red interna hacia el host; en versiones anteriores no")
+                   "Docker deja pasar el tráfico de una red interna hacia la IP del bridge del host")
     else:
         report.add("ok", "sonda hacia el host: el host no responde desde la red interna")
 

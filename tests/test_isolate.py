@@ -563,7 +563,8 @@ class SondaTest(unittest.TestCase):
         self.assertEqual(report.verdict, "FAILED")
         report = Report()
         _judge_probe({"1.1.1.1:53": "timeout", "gateway:5432": "connected", "dns:example.com": "unresolved"}, report)
-        self.assertTrue(any("servicio del host" in f.check for f in report.errors))
+        self.assertEqual(report.verdict, "VERIFIED")   # el host es la propia máquina: aviso, no fuga
+        self.assertTrue(any("servicio del host" in f.check and "5432" in f.check for f in report.warnings))
         report = Report()
         _judge_probe({"1.1.1.1:53": "timeout", "gateway:22": "refused", "dns:example.com": "unresolved"}, report)
         self.assertEqual(report.verdict, "VERIFIED")

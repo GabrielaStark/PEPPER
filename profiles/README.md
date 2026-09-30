@@ -23,5 +23,7 @@ profiles/<id>/
 
 | id | estado | nota |
 |---|---|---|
+| [groovy-grails1-tomcat-mysql](groovy-grails1-tomcat-mysql/) | validated | Grails 1.x, Tomcat, MySQL; el ciclo completo contra un legacy real y una persona confirmó el documento |
 | [java-springboot-jsf-postgres](java-springboot-jsf-postgres/) | draft | corrió el ciclo entero contra un legacy real: extractores del mapa, receta de rehydrate, lectura de formularios, parsers |
-| [java-wildfly-postgres](java-wildfly-postgres/) | draft | el primero; parsers de WildFly y PostgreSQL, sin extractores |
+| [java-springboot-fatjar-postgres](java-springboot-fatjar-postgres/) | draft | varias piezas contra una base; artefactos sintéticos y Docker real (es el perfil del E2E de CI) |
+| [java-wildfly-postgres](java-wildfly-postgres/) | draft | el primero; parsers de WildFly y PostgreSQL |

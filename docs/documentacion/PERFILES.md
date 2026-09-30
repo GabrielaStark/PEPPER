@@ -52,5 +52,7 @@ el siguiente legacy con ese stack cae en el escalón 1
 
 | id | estado | nota |
 |---|---|---|
-| `java-springboot-jsf-postgres` | draft | el que corrió el primer legacy real de punta a punta; trae extractores completos |
-| `java-wildfly-postgres` | draft | el primero; parsers de WildFly y PostgreSQL, sin extractores |
+| `groovy-grails1-tomcat-mysql` | validated | Grails 1.x sobre Tomcat con MySQL: el primero sin PostgreSQL y el primero promovido, tras correr el ciclo completo contra un legacy real (2026-09-22) |
+| `java-springboot-jsf-postgres` | draft | Spring Boot con JSF desplegado en WildFly y PostgreSQL: corrió el ciclo completo contra un legacy real; extractores completos |
+| `java-springboot-fatjar-postgres` | draft | varias piezas (fat jars y un front estático) contra una base PostgreSQL; probado con artefactos sintéticos y Docker real, nunca contra un sistema real |
+| `java-wildfly-postgres` | draft | el primero: parsers de WildFly y PostgreSQL |

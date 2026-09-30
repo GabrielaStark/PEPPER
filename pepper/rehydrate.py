@@ -1262,7 +1262,7 @@ def _create_verified_and_start(out_dir: Path, compose_path: Path, plan: Plan, va
     started = _compose(out_dir, "start", *services)
     if started.returncode != 0:
         return {"check": f"docker compose start {' '.join(services)}", "result": "fail", "detail": started.stderr[-400:]}
-    validations.append({"check": f"{', '.join(services)}: creados, inspeccionados según Docker y arrancados", "result": "pass",
+    validations.append({"check": f"{', '.join(services) or 'servicios auxiliares'}: creados, inspeccionados según Docker y arrancados", "result": "pass",
                         "detail": f"{len([f for f in report.findings if f.level == 'ok'])} comprobaciones antes de arrancar"})
     return None
 
