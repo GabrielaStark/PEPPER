@@ -453,6 +453,22 @@ def _cmd_map(args: argparse.Namespace) -> int:
         if not spec_path.is_file():
             print(f"pepper map: el perfil {profile.id} no declara extractors.json", file=sys.stderr)
             return 2
+        # El contrato antes de correr: una clave mal escrita (`member_pattern`, `patterns`) caía en un
+        # default en silencio y el mapa salía "completo" con lo que el default alcanzara (auditoría 2026-09-29).
+        try:
+            from pepper.validate import validate_file
+            problemas = validate_file(spec_path, "extractors")
+        except ImportError:
+            problemas = []
+            print("pepper map: sin jsonschema no se validó extractors.json contra su contrato (pip install jsonschema)", file=sys.stderr)
+        except ValueError as error:
+            problemas = [str(error)]
+        if problemas:
+            print(f"pepper map: {spec_path} no cumple schemas/extractors.schema.json:", file=sys.stderr)
+            for problema in problemas:
+                print(f"    {problema}", file=sys.stderr)
+            print("  corrige el extractors.json del perfil (cada mecanismo admite solo las claves que lee)", file=sys.stderr)
+            return 2
         extractors = _json.loads(spec_path.read_text(encoding="utf-8")).get("extractors", [])
     else:
         print("pepper map: sin --profile no hay extractores; el mapa saldría vacío", file=sys.stderr)
@@ -679,8 +695,8 @@ def build_parser() -> argparse.ArgumentParser:
     explore.add_argument("--margin", type=int, default=30, help="margen de captura a cada lado (default 30)")
 
     validate = commands.add_parser("validate", help="valida archivos contra los contratos de schemas/")
-    validate.add_argument("files", type=Path, nargs="+", help="profile.json, parsers/*.json, session.json, environment.json, flow.json, events.jsonl, system-map.json, funcional.json")
-    validate.add_argument("--schema", choices=("event", "environment", "flow", "functional-discovery", "parser", "profile", "session", "system-map"), help="fuerza el schema (si el nombre del archivo no lo delata)")
+    validate.add_argument("files", type=Path, nargs="+", help="profile.json, extractors.json, parsers/*.json, session.json, environment.json, flow.json, events.jsonl, system-map.json, funcional.json")
+    validate.add_argument("--schema", choices=("event", "environment", "extractors", "flow", "functional-discovery", "parser", "profile", "session", "system-map"), help="fuerza el schema (si el nombre del archivo no lo delata)")
 
     isolate = commands.add_parser("isolate", help="verifica que un entorno rehidratado no pueda alcanzar nada externo")
     isolate.add_argument("compose", type=Path, help="docker-compose.yml del entorno rehidratado")

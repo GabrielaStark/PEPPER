@@ -71,10 +71,7 @@
         "WEB-INF/classes/application.*\\.(yml|yaml|properties)$",
         "application.*\\.(yml|yaml|properties)$"
       ],
-      "host_key_pattern": "(?i)(url|host|smtp|uri|endpoint|bus|renapo|calculadora|editor)",
-      "patterns": [
-        "^BOOT-INF/classes/application.*\\.(yml|yaml|properties)$"
-      ]
+      "host_key_pattern": "(?i)(url|host|smtp|uri|endpoint|bus|renapo|calculadora|editor)"
     },
     {
       "mechanism": "archive_url_scan",
