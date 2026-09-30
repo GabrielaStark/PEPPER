@@ -25,10 +25,11 @@ no dice a qué conectarse, se escribe qué falta y se para.
 El motor de base es DATOS del perfil (Principio 4): `rehydrate.database` dice qué
 motor espera el artefacto, qué formato tiene su respaldo, con qué imagen corre, cómo
 se le pregunta (cliente, consulta de tablas, marca de restauración) y qué hacer si el
-datasource apunta a localhost. `rehydrate.datasource` dice cómo leer la configuración
-embebida (YAML de Spring, o Groovy compilado). El núcleo no sabe de PostgreSQL ni de
-MySQL: hasta 2026-09-21 sí sabía, y el tercer stack respondía BLOCKED con un motivo
-falso ("no dice a qué conectarse") por eso.
+datasource apunta a localhost. `rehydrate.datasource` dice cómo leer la configuración que
+trae el datasource: YAML de Spring, Groovy compilado, o —desde la auditoría 2026-09-29— un
+FORMATO genérico (`key_value`, `json`, `xml`) con `files`, `keys` y, si la URL no es JDBC,
+`url_pattern`. El núcleo no sabe de PostgreSQL ni de MySQL: hasta 2026-09-21 sí sabía, y el
+tercer stack respondía BLOCKED con un motivo falso ("no dice a qué conectarse") por eso.
 """
 
 from __future__ import annotations

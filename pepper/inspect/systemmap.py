@@ -189,7 +189,7 @@ def _guess_kind(host: str, spec: Dict[str, Any]) -> str:
 
 
 def _extract_config_hosts(artifact: Path, spec: Dict[str, Any], report: "MapReport") -> None:
-    """Hosts/urls en archivos de configuración declarados (line: key: value)."""
+    """Hosts/urls en archivos de configuración declarados (`clave: valor` de YAML o `clave=valor` de .properties)."""
     config_globs = spec.get("config_patterns", [r"application.*\.(yml|yaml|properties)$"])
     key_re = re.compile(spec.get("host_key_pattern", r"(?i)(url|host|smtp|uri|endpoint)"))
     secret_re = re.compile(r"(?i)pass|pwd|contrase|secret|token")
