@@ -14,6 +14,6 @@ Primer perfil de PEPPER. Existe para probar la tubería completa de punta a punt
 
 ## Para pasar a `validated`
 
-- [ ] `compose.template.yml` (WildFly + PostgreSQL + proxy de PEPPER, versiones parametrizadas). El [entorno de referencia del fixture](../../examples/legacy-demo/expected/reference-environment/) es el punto de partida.
+- [ ] `compose.template.yml` (WildFly + PostgreSQL + proxy de PEPPER, versiones parametrizadas). El punto de partida es la plantilla del perfil `java-springboot-jsf-postgres`, que ya levanta WildFly aislado.
 - [ ] Rehydrate completo del legacy-demo con las validaciones en verde.
 - [ ] Capturar evidencia real del legacy-demo levantado y contrastarla con la sintética de `raw-evidence/`; corregir la sintética (o los parsers) donde difieran.

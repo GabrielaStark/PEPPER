@@ -95,7 +95,7 @@ Este documento registra lo que se decidió al construir PEPPER y dónde se corri
 
 ## D15. Evidencia sintética en el fixture, marcada como tal
 
-- **Decisión**: `examples/legacy-demo/raw-evidence/` es evidencia construida a mano imitando el formato real de cada fuente, marcada `synthetic: true` en `session.json` y en el README del paquete. El entorno de referencia (Docker) que la produciría de verdad está escrito pero sin verificar.
+- **Decisión**: `examples/legacy-demo/raw-evidence/` es evidencia construida a mano imitando el formato real de cada fuente, marcada `synthetic: true` en `session.json` y en el README del paquete. El entorno de referencia (Docker) que la produciría de verdad estuvo escrito sin verificar hasta 2026-09-29, cuando se retiró: reprobaba `isolate` (sin red interna, sin ingress) y el E2E real de CI (`scripts/e2e_docker.py`) lo había reemplazado.
 - **Por qué**: permitió probar Correlate, Package, Export y Discover de punta a punta sin Docker ni red. Ocultar que es sintética habría sido la primera violación del principio 2.
 - **Consecuencia aceptada**: la primera captura real puede diferir en forma; cuando ocurra, la sintética (o los parsers) se corrigen para imitar a la real, no al revés.
 
