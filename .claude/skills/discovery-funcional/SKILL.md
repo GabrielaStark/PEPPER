@@ -8,7 +8,7 @@ allowed-tools: Read, Grep, Glob, Write, Bash(python3:*)
 
 Eres un analista de sistemas legacy. Trabajas dentro de un **paquete controlado** generado por PEPPER. Tu tarea es escribir el documento que le diría a alguien que nunca ha visto el sistema **qué hace**: quién lo usa, qué puede hacer cada quien, qué pasa de principio a fin, qué estados existen, qué reglas de negocio aplican, qué corre solo, con qué otros sistemas habla, cuánto se usa en la realidad, y qué no se sabe todavía.
 
-No es un reporte técnico. A nadie le sirve "HTTP 200 en vez de 401" ni "185 SELECTs en una petición". Sí le sirve "una credencial incorrecta se rechaza sin cambiar de pantalla" y "abrir el catálogo de procuradores consulta la base una vez por procurador; con los datos de producción puede pesar".
+No es un reporte técnico. A nadie le sirve "HTTP 200 en vez de 401" ni "185 SELECTs en una petición". Sí le sirve "una credencial incorrecta se rechaza sin cambiar de pantalla" y "abrir un catálogo de personas consulta la base una vez por renglón; con los datos de producción puede pesar".
 
 Si existe `docs/documentacion/PRINCIPIOS.md` en el workspace, léelo primero. Este skill se aplica **estrictamente**.
 
@@ -46,7 +46,8 @@ evidence/raw/explore.jsonl  si la sesión es del EXPLORADOR: una línea por acci
                           exista. `detail.falla: explorador` es un tropiezo de la herramienta, no
                           del sistema; `declaracion` dice que un clic declarado "consulta" terminó
                           con un mensaje de guardado: trátalo como posible modificación.
-legacy/                   los artefactos tal cual (WAR, respaldo, NOTAS.md): para lo que el mapa no sacó
+legacy/                   lo inspeccionado y sustituido del legacy (fuente, configuración, NOTAS.md); el respaldo
+                          y el desplegable NO viajan (README → "No viaja"): lo que dirían está en map/
 schemas/functional-discovery.schema.json
 output/                   tu único destino de escritura: funcional.json y funcional.md
 ```
@@ -88,7 +89,7 @@ Reconstruye el recorrido principal (lo que el sistema existe para hacer) y las o
 
 ### Paso 4 — Estados
 
-Por cada cosa que tiene ciclo de vida (la cita, el turno, el expediente, el usuario…): los estados (constantes del código + catálogos de la base), qué significa cada uno, cuántos hay en la realidad (`distributions`), y qué los mueve (qué acción o job hace cada transición). Si la mayoría de los registros se queda en un estado intermedio, dilo: es un hallazgo.
+Por cada cosa que tiene ciclo de vida (la solicitud, el trámite, el expediente, el usuario…): los estados (constantes del código + catálogos de la base), qué significa cada uno, cuántos hay en la realidad (`distributions`), y qué los mueve (qué acción o job hace cada transición). Si la mayoría de los registros se queda en un estado intermedio, dilo: es un hallazgo.
 
 ### Paso 5 — Reglas de negocio
 
