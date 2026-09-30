@@ -328,7 +328,7 @@
         "datasource": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Cómo leer la configuración embebida que dice a qué base se conecta el artefacto. spring_config: application*.yml/properties (config_patterns). groovy_config: DataSource.groovy compilado (Grails), reconstruido del bytecode con javap.",
+          "description": "Cómo leer la configuración que dice a qué base se conecta el artefacto. spring_config: application*.yml/properties (config_patterns). groovy_config: DataSource.groovy compilado (Grails), reconstruido del bytecode con javap. key_value / json / xml (auditoría 2026-09-29): lectores genéricos de FORMATO — un .env, .properties, .ini o YAML plano; un appsettings.json; un Web.config o standalone.xml — sobre los archivos de `files`, con las claves de `keys`. El núcleo no aprende el framework: el perfil señala el archivo y la clave.",
           "required": [
             "mechanism"
           ],
@@ -337,7 +337,10 @@
               "type": "string",
               "enum": [
                 "spring_config",
-                "groovy_config"
+                "groovy_config",
+                "key_value",
+                "json",
+                "xml"
               ]
             },
             "class_root": {
@@ -366,12 +369,24 @@
               },
               "description": "groovy_config: entornos preferidos, en orden (production, prod)."
             },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "description": "key_value/json/xml: globs (fnmatch, sobre la ruta relativa o el nombre) de los archivos donde vive el datasource: miembros del artefacto (`.env`, `BOOT-INF/classes/*.properties`, `appsettings*.json`) o archivos junto al desplegable en legacy/ (`configuration/standalone*.xml`). Todos los que casen se leen; una clave con valores distintos en dos de ellos es BLOCKED, no 'el último gana'."
+            },
             "keys": {
               "type": "object",
               "additionalProperties": {
                 "type": "string"
               },
-              "description": "groovy_config: claves de url/username/password dentro del entorno (dataSource.url…)."
+              "description": "Qué clave de la configuración es cada cosa. groovy_config: url/username/password dentro del entorno (dataSource.url…). key_value/json/xml: url (o host y db), user, password, y opcionales port y engine; el valor es la clave punteada (`DB_HOST`, `production.host`, `ConnectionStrings.Default`) o, en xml, la ruta (`configuration/connectionStrings/add[@name=Default]/@connectionString`). Obligatorio para esos tres mecanismos."
+            },
+            "url_pattern": {
+              "type": "string",
+              "description": "Regex (sintaxis Python) con grupos nombrados `host` y `db` (obligatorios) y `engine`, `port`, `user`, `password` (opcionales) que lee la URL del datasource cuando no es JDBC: `postgres://u:p@h:5432/db`, `Server=h;Database=db;User Id=u;Password=p`, `mysql:host=h;dbname=db`. Sin ella se usa la JDBC de siempre (jdbc:motor://host[:puerto]/base). Aplica a cualquier mecanismo."
             },
             "url_strip_params": {
               "type": "array",
