@@ -58,6 +58,8 @@ Solo biblioteca estándar (`unittest`); `jsonschema` habilita las comprobaciones
 
 **`test_tools.py`** — `pepper detect` y `pepper validate`: señales dentro de WARs **y de tarballs** (la herramienta no asume stack), modo encima-del-repo, errores claros.
 
+**`test_init.py`** — `pepper init`: el workspace aparte del clon (enlace `pepper/` válido, `.pepper-home`, la herramienta copiada, `legacy/NOTAS.md`, el `.gitignore` del workspace, sin `.git`); se niega sobre un directorio con contenido o dentro del clon; `--force` recopia la herramienta sin tocar `legacy/`, `docs/pepper/`, `pepper-out/` ni `evidence/`. Desde el workspace, por subprocess: `--version` y `REPO_ROOT` resuelven a la instalación, `detect` evalúa sus perfiles, `demo` deja su salida en el workspace, el guardia copiado bloquea igual. La herramienta copiada no cuenta como legacy para `detect .` ni para `package --legacy .`. Y `rehydrate` planea con `legacy/` fuera de `REPO_ROOT`: las rutas de los volúmenes quedan relativas al compose y `check_static` las acepta.
+
 **`test_collect.py`** — el colector genérico de contenedores, con un `docker` fingido que devuelve logs enlatados y anota sus invocaciones:
 
 - layout de salida (`http.jsonl` del ingress sin contaminar por su stderr; `containers/*.log` y `*.err.log`);

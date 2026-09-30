@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -259,8 +260,7 @@ class Plan:
         return self.db_tool_version.split(".")[0]
 
     def variables(self, out_dir: Path) -> Dict[str, str]:
-        rel = lambda p: Path(*([".."] * len(out_dir.resolve().relative_to(REPO_ROOT).parts))) / p.resolve().relative_to(REPO_ROOT) \
-            if _under(p, REPO_ROOT) and _under(out_dir, REPO_ROOT) else p.resolve()
+        rel = lambda p: _relative_to(p, out_dir)
         return {
             "stack_name": self.stack_name, "subnet": self.subnet,
             "db_engine": self.db_engine, "db_version": self.db_version, "db_tool_version": self.db_tool_version,
@@ -1142,11 +1142,23 @@ def render_components(plan: Plan, profile: Profile, out_dir: Path, variables: Di
     return "\n".join(rendered)
 
 
-def _relative_to(path: Path, out_dir: Path) -> Path:
-    """La ruta del artefacto tal como la ve el compose (relativa si ambos viven bajo el repo)."""
-    if _under(path, REPO_ROOT) and _under(out_dir, REPO_ROOT):
-        return Path(*([".."] * len(out_dir.resolve().relative_to(REPO_ROOT).parts))) / path.resolve().relative_to(REPO_ROOT)
-    return path.resolve()
+def _relative_to(path: Path, out_dir: Path) -> str:
+    """La ruta del artefacto o del respaldo tal como la ve el compose.
+
+    Relativa al directorio del compose (`../../legacy/app.war`) cuando los dos viven en el mismo
+    workspace — el que marca `.claude/commands/pepper.md` o `.pepper-home`, sea un workspace de
+    `pepper init`, el clon de la herramienta o el repo del legacy con PEPPER encima — y absoluta
+    si no. Antes solo relativizaba bajo `REPO_ROOT`: con el workspace aparte del clon, `legacy/`
+    ya no está bajo la instalación. `pepper isolate` acepta las dos formas: son archivos
+    concretos, no directorios del host."""
+    from pepper.workspace import find_root
+
+    root = find_root(out_dir) or (REPO_ROOT if _under(out_dir, REPO_ROOT) else None)
+    if root is not None and _under(path, root):
+        relative = os.path.relpath(str(path.resolve()), str(out_dir.resolve()))
+        # `legacy/x.war` sin `./` sería un volumen nombrado para Compose, no un bind
+        return relative if relative.startswith("../") else "./" + relative
+    return str(path.resolve())
 
 
 def render(plan: Plan, profile: Profile, out_dir: Path) -> List[Path]:

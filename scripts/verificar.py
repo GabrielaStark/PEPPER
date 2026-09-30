@@ -68,7 +68,7 @@ IGNORAR = {".git", "pepper-out", "__pycache__", "node_modules", "analysis", "leg
 # herramienta: se verifica la herramienta, no los reportes de quien la usa.
 IGNORAR_RUTAS = ("docs/pepper",)
 # Tokens con forma de nombre que no son comandos/agentes/skills.
-TOLERADOS = {"pepper-out", "pepper-discovery", "pepper-proxy", "pepper-stub"}
+TOLERADOS = {"pepper-out", "pepper-discovery", "pepper-proxy", "pepper-stub", "pepper-home"}
 
 
 def error(msg):
