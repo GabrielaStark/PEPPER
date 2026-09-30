@@ -34,6 +34,9 @@ los declara el perfil en `extractors.json`. Mecanismos:
   groovy_controller_actions  acciones de controladores Grails (closures y métodos)
                          → rutas por convención, con allowedMethods
   groovy_url_mappings    UrlMappings de Grails → rutas declaradas
+  regex_extractor        el genérico para un stack con fuente en texto (PHP, Django,
+                         Rails, Node…): regex con grupos nombrados sobre los miembros
+                         que el perfil señala → entrypoints, jobs o external_dependencies
 
 Fail-honest (como isolate): si falta una herramienta (javap) o un extractor no
 puede correr, el mapa se marca `complete=false` y lo dice en `coverage_gaps`.
@@ -148,6 +151,10 @@ def _members(artifact: Path):
 
 
 _match_any = jvm.match_any
+# Nombres públicos para los lectores del paquete `readers`: los miembros de texto del artefacto
+# (zip o directorio) y el casado de un nombre contra los patrones del perfil.
+iter_members = _members
+match_any_pattern = jvm.match_any
 
 
 # ------------------------------------------------------------- mecanismos

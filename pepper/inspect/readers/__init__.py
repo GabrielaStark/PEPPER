@@ -107,6 +107,11 @@ def _groovy_url_mappings(artifact: Path, spec: Dict[str, Any], report: Any, ctx:
     groovy.extract_url_mappings(artifact, spec, report, ctx.get("tools") or {})
 
 
+def _regex_extractor(artifact: Path, spec: Dict[str, Any], report: Any, ctx: Dict[str, Any]) -> None:
+    from pepper.inspect.readers import regex_extractor
+    regex_extractor.extract(artifact, spec, report)
+
+
 def _table(*mechanisms: Mechanism) -> Dict[str, Mechanism]:
     return {m.name: m for m in mechanisms}
 
@@ -132,6 +137,9 @@ MECHANISMS: Dict[str, Mechanism] = _table(
               description="acciones de controladores Grails → rutas por convención"),
     Mechanism("groovy_url_mappings", _groovy_url_mappings, ("entrypoints",), needs_javap=True,
               description="UrlMappings de Grails → rutas declaradas"),
+    Mechanism("regex_extractor", _regex_extractor, (), surface_from_spec="surface",
+              description="regex con grupos nombrados sobre miembros de texto → entrypoints, jobs o external_dependencies "
+                          "(la superficie la declara el perfil en `surface`)"),
 )
 
 # Los que leen el respaldo, no el artefacto: en un sistema de varias piezas corren UNA vez,
