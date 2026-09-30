@@ -1,4 +1,4 @@
-"""Línea de comandos: `pepper detect | map | validate | isolate | proxy | collect | correlate | package | authorize | export | demo`."""
+"""Línea de comandos: `pepper init | detect | map | validate | isolate | proxy | collect | correlate | package | authorize | export | demo`."""
 
 from __future__ import annotations
 
@@ -618,6 +618,29 @@ def _cmd_authorize(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_init(args: argparse.Namespace) -> int:
+    from pepper.init import InitError, create_workspace
+    from pepper.workspace import version_line
+
+    try:
+        report = create_workspace(args.directory, force=args.force)
+    except InitError as error:
+        print(f"pepper init: {error}", file=sys.stderr)
+        return 2
+    root = args.directory.resolve()
+    print(f"init · {'actualizado' if args.force else 'workspace'} · {root}")
+    print(f"  {version_line(root).splitlines()[0]}")
+    for line in report:
+        print(line)
+    print()
+    print("Siguientes pasos:")
+    print(f"  1. copia el desplegable y el respaldo a {root / 'legacy'}/")
+    print("  2. escribe una línea en legacy/NOTAS.md con lo que sepas (\"producción es WildFly 21\" ahorra una desviación)")
+    print(f"  3. cd {root} && claude      # abre Claude Code EN el workspace; adentro: /pepper")
+    print("  (sin git ni remoto: nada de aquí tiene a dónde subirse; si quieres versionar docs/pepper/, haz `git init` tú)")
+    return 0
+
+
 def _cmd_demo(args: argparse.Namespace) -> int:
     from pepper.correlate import run
     from pepper.package import assemble
@@ -658,6 +681,7 @@ def _cmd_demo(args: argparse.Namespace) -> int:
 
 
 COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
+    "init": _cmd_init,
     "correlate": _cmd_correlate,
     "package": _cmd_package,
     "export": _cmd_export,
@@ -674,14 +698,31 @@ COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
 }
 
 
+class _Version(argparse.Action):
+    """`--version` se calcula al pedirlo, no al construir el parser: consulta git y `.pepper-home`."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        from pepper.workspace import version_line
+
+        print(version_line())
+        parser.exit()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pepper",
         description="PEPPER — descubrimiento dinámico de sistemas legacy.",
     )
-    parser.add_argument("--version", action="version", version=f"pepper {__version__}")
+    parser.add_argument("--version", action=_Version, nargs=0,
+                        help=f"pepper {__version__}, con el commit de la instalación y, en un workspace de `pepper init`, cuál es")
     commands = parser.add_subparsers(dest="command", metavar="comando")
     commands.required = True
+
+    init = commands.add_parser("init", help="crea un workspace aparte del clon: legacy/, docs/pepper/, la herramienta copiada y un enlace al núcleo")
+    init.add_argument("directory", type=Path, help="dónde crear el workspace (debe no existir o estar vacío; fuera del clon de PEPPER)")
+    init.add_argument("--force", action="store_true",
+                      help="en un workspace existente, vuelve a copiar la herramienta (.claude/, CLAUDE.md, AGENTS.md, templates/, "
+                           "el guardia, el enlace y .pepper-home) sin tocar legacy/, docs/pepper/, pepper-out/ ni evidence/")
 
     correlate = commands.add_parser("correlate", help="normaliza, reduce y correlaciona evidencia cruda")
     correlate.add_argument("evidence", type=Path, help="directorio con session.json y los archivos de sus colectores")
