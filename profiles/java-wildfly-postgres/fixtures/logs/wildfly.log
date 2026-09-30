@@ -1,0 +1,18 @@
+2026-08-25 13:20:32,441 INFO  [org.jboss.as.connector.subsystems.datasources] (ServerService Thread Pool -- 44) WFLYJCA0001: Bound data source [java:jboss/datasources/SolicitudesDS]
+2026-08-25 13:20:35,010 DEBUG [io.undertow.request] (default task-3) GET /health
+2026-08-25 13:20:40,118 DEBUG [org.jboss.jca.core.connectionmanager.pool] (Periodic Validation) Periodic validation: pool SolicitudesDS, connections checked: 5
+2026-08-25 13:20:44,401 INFO  [gob.demo.solicitudes.service.ApplicationService] (default task-1) Registering application for citizen 1003
+2026-08-25 13:20:44,602 WARN  [gob.demo.solicitudes.service.ApplicationService] (default task-1) Citizen 1003 rejected, status: SUSPENDED
+2026-08-25 13:20:44,631 DEBUG [io.undertow.request] (default task-1) POST /api/applications -> 409
+2026-08-25 13:20:50,012 DEBUG [io.undertow.request] (default task-4) GET /health
+2026-08-25 13:20:55,120 DEBUG [org.jboss.jca.core.connectionmanager.pool] (Periodic Validation) Periodic validation: pool SolicitudesDS, connections checked: 5
+2026-08-25 13:21:01,512 INFO  [gob.demo.solicitudes.service.ApplicationService] (default task-2) Registering application for citizen 1001
+2026-08-25 13:21:01,802 INFO  [gob.demo.solicitudes.service.ApplicationService] (default task-2) Folio generated: SOL-2026-000042
+2026-08-25 13:21:02,104 INFO  [gob.demo.solicitudes.service.ApplicationService] (default task-2) Application SOL-2026-000042 registered for citizen 1001
+2026-08-25 13:21:02,151 DEBUG [io.undertow.request] (default task-2) POST /api/applications -> 201
+2026-08-25 13:21:05,011 DEBUG [io.undertow.request] (default task-5) GET /health
+2026-08-25 13:21:10,122 DEBUG [org.jboss.jca.core.connectionmanager.pool] (Periodic Validation) Periodic validation: pool SolicitudesDS, connections checked: 5
+2026-08-25 13:21:20,013 DEBUG [io.undertow.request] (default task-6) GET /health
+2026-08-25 13:21:25,124 DEBUG [org.jboss.jca.core.connectionmanager.pool] (Periodic Validation) Periodic validation: pool SolicitudesDS, connections checked: 5
+2026-08-25 13:21:35,014 DEBUG [io.undertow.request] (default task-7) GET /health
+2026-08-25 13:21:40,126 DEBUG [org.jboss.jca.core.connectionmanager.pool] (Periodic Validation) Periodic validation: pool SolicitudesDS, connections checked: 5

@@ -154,13 +154,23 @@ def parse_xml_flat(text: str, filename: str = "") -> Dict[str, str]:
 _SEGMENT = re.compile(r"^(?P<tag>[\w.-]+)(?:\[@(?P<attr>[\w.:-]+)=(?P<value>[^\]]*)\])?$")
 
 
+def _matches(element: ET.Element, segment: "re.Match[str]") -> bool:
+    if _local(element.tag) != segment.group("tag"):
+        return False
+    return not segment.group("attr") or element.attrib.get(segment.group("attr")) == segment.group("value")
+
+
 def lookup_xml(text: str, path: str, filename: str = "") -> Optional[str]:
     """Ruta simple: `configuration/connectionStrings/add[@name=Default]/@connectionString`.
 
     Segmentos separados por `/`; `tag[@attr=valor]` filtra hermanos por atributo; un último
-    segmento `@attr` devuelve el atributo, si no, el texto del elemento. Los espacios de
-    nombres se ignoran (se compara el nombre local). None si la ruta no existe."""
+    segmento `@attr` devuelve el atributo, si no, el texto del elemento. Con `//` al inicio el
+    primer segmento se busca en cualquier nivel (`//datasources/datasource/connection-url` sirve
+    tanto para un standalone.xml completo como para un fragmento). Los espacios de nombres se
+    ignoran (se compara el nombre local). None si la ruta no existe; ConfigError si casan varios
+    elementos: elegir uno sería adivinar, el perfil agrega un predicado `[@attr=valor]`."""
     root = _parse_xml(text, filename)
+    anywhere = path.startswith("//")
     segments = [s for s in path.strip("/").split("/") if s]
     if not segments:
         raise ConfigError(f"ruta XML vacía para {filename or 'el XML'}")
@@ -170,26 +180,25 @@ def lookup_xml(text: str, path: str, filename: str = "") -> Optional[str]:
     if not segments:
         raise ConfigError(f"la ruta XML {path!r} no nombra ningún elemento")
     first = _SEGMENT.match(segments[0])
-    if not first or _local(root.tag) != first.group("tag"):
+    if not first:
+        raise ConfigError(f"segmento de ruta XML no reconocido: {segments[0]!r} (se admite `tag` o `tag[@attr=valor]`)")
+    if anywhere:
+        current: List[ET.Element] = [e for e in root.iter() if _matches(e, first)]
+    else:
+        current = [root] if _matches(root, first) else []
+    if not current:
         return None
-    if first.group("attr") and root.attrib.get(first.group("attr")) != first.group("value"):
-        return None
-    current: List[ET.Element] = [root]
     for segment in segments[1:]:
         m = _SEGMENT.match(segment)
         if not m:
             raise ConfigError(f"segmento de ruta XML no reconocido: {segment!r} (se admite `tag` o `tag[@attr=valor]`)")
-        following: List[ET.Element] = []
-        for element in current:
-            for child in element:
-                if _local(child.tag) != m.group("tag"):
-                    continue
-                if m.group("attr") and child.attrib.get(m.group("attr")) != m.group("value"):
-                    continue
-                following.append(child)
-        current = following
+        current = [child for element in current for child in element if _matches(child, m)]
         if not current:
             return None
+    if len(current) > 1:
+        # dos <datasource> en un standalone.xml (ExampleDS y el de la app): el primero no es "el" datasource
+        raise ConfigError(f"la ruta XML {path!r} casa {len(current)} elementos en {filename or 'el XML'}: elegir uno sería "
+                          "adivinar; agrega un predicado [@atributo=valor] (p. ej. datasource[@pool-name=…]) que deje uno solo")
     element = current[0]
     if attribute is not None:
         return element.attrib.get(attribute)

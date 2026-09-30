@@ -1,0 +1,7 @@
+2026-09-02 12:34:56.789  INFO 1 --- [           main] gob.demo.nominas.Application             : Started Application in 23.4 seconds (JVM running for 25.1)
+2026-09-02 12:35:01.001 DEBUG 1 --- [nio-8080-exec-1] org.hibernate.SQL                        : select u.* from ctusuario u where u.dsusuario=?
+2026-09-02 12:35:02.500  WARN 1 --- [nio-8080-exec-2] g.d.n.controller.CitaController          : Cita rechazada: el trabajador no está activo
+2026-09-02 12:35:03.000 ERROR 1 --- [nio-8080-exec-3] o.a.c.c.C.[.[.[/].[dispatcherServlet]    : Servlet.service() for servlet [dispatcherServlet] threw exception
+java.lang.NullPointerException: null
+	at gob.demo.nominas.service.CitaService.registrar(CitaService.java:42)
+	... 12 more

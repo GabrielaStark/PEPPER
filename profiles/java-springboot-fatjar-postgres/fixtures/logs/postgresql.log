@@ -1,0 +1,4 @@
+2026-09-22T16:00:31.010000000Z 2026-09-22 16:00:31.010 UTC [88] tramites@tramites_prod LOG:  execute S_1: select s.id, s.folio, s.estatus from solicitud s where s.folio=$1
+2026-09-22T16:00:31.010100000Z 2026-09-22 16:00:31.010 UTC [88] tramites@tramites_prod DETAIL:  parameters: $1 = 'TR-2026-000101'
+2026-09-22T16:00:34.000000000Z 2026-09-22 16:00:34.000 UTC [88] tramites@tramites_prod LOG:  execute <unnamed>: insert into solicitud (id, folio, estatus, fecha_registro) values ($1, $2, $3, now())
+2026-09-22T16:00:34.000100000Z 2026-09-22 16:00:34.000 UTC [88] tramites@tramites_prod DETAIL:  parameters: $1 = '9001', $2 = 'TR-2026-000102', $3 = 'REGISTRADA'

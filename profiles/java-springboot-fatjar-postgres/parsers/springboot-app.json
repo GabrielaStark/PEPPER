@@ -1,28 +1,68 @@
 {
   "parser_version": "0.1.0",
   "source": "springboot",
-  "description": "Log de una aplicacion Spring Boot 1.5 con el layout por defecto de logback. El patron esta tomado de la propiedad FILE_LOG_PATTERN de org/springframework/boot/logging/logback/defaults.xml dentro de spring-boot-1.5.2.RELEASE.jar: '%d{yyyy-MM-dd HH:mm:ss.SSS} %5p ${PID} --- [%t] %-40.40logger{39} : %m%n%wEx'. Aplica cuando la aplicacion no trae logback.xml propio.",
-  "line_pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3})\\s+(?P<severity>[A-Z]+)\\s+(?P<pid>\\d+)?\\s*---\\s+\\[(?P<thread>[^\\]]*)\\]\\s+(?P<logger>\\S+)\\s+:\\s(?P<message>.*)$",
-  "timestamp": { "group": "timestamp", "format": "%Y-%m-%d %H:%M:%S.%f" },
+  "description": "stdout de una pieza Spring Boot capturado con `pepper collect` (docker logs --timestamps): el timestamp autoritativo es el prefijo RFC3339 UTC de Docker; el reloj propio de la app queda en metadata.app_ts. Detrás del prefijo va el layout por defecto de logback, tomado de la propiedad FILE_LOG_PATTERN de org/springframework/boot/logging/logback/defaults.xml: '%d{yyyy-MM-dd HH:mm:ss.SSS} %5p ${PID} --- [%t] %-40.40logger{39} : %m%n%wEx'. Aplica cuando la aplicacion no trae logback.xml propio. Hasta el 2026-09-30 el patrón no llevaba el prefijo de Docker y no casaba ninguna línea que su propio colector (containers/*.log) entrega; lo hizo visible el fixture del perfil.",
+  "line_pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z)\\s+(?P<app_ts>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3})\\s+(?P<severity>[A-Z]+)\\s+(?P<pid>\\d+)?\\s*---\\s+\\[(?P<thread>[^\\]]*)\\]\\s+(?P<logger>\\S+)\\s+:\\s(?P<message>.*)$",
+  "timestamp": {
+    "group": "timestamp"
+  },
   "fields": {
-    "component": { "from": "logger", "transform": "last_segment" },
-    "message": { "from": "message" },
+    "component": {
+      "from": "logger",
+      "transform": "last_segment"
+    },
+    "message": {
+      "from": "message"
+    },
     "severity": {
       "from": "severity",
-      "map": { "TRACE": "debug", "DEBUG": "debug", "INFO": "info", "WARN": "warn", "ERROR": "error", "FATAL": "fatal" },
+      "map": {
+        "TRACE": "debug",
+        "DEBUG": "debug",
+        "INFO": "info",
+        "WARN": "warn",
+        "ERROR": "error",
+        "FATAL": "fatal"
+      },
       "default": "info"
     },
-    "metadata.thread": { "from": "thread", "transform": "strip" },
-    "metadata.pid": { "from": "pid" },
-    "metadata.logger": { "from": "logger" }
+    "metadata.thread": {
+      "from": "thread",
+      "transform": "strip"
+    },
+    "metadata.pid": {
+      "from": "pid"
+    },
+    "metadata.logger": {
+      "from": "logger"
+    },
+    "metadata.app_ts": {
+      "from": "app_ts"
+    }
   },
   "event_type": {
     "default": "log",
     "rules": [
-      { "when": { "field": "logger", "matches": "^org\\.hibernate\\.SQL$" }, "value": "sql" },
-      { "when": { "field": "message", "matches": "Exception|APPLICATION FAILED TO START" }, "value": "exception" }
+      {
+        "when": {
+          "field": "logger",
+          "matches": "^org\\.hibernate\\.SQL$"
+        },
+        "value": "sql"
+      },
+      {
+        "when": {
+          "field": "message",
+          "matches": "Exception|APPLICATION FAILED TO START"
+        },
+        "value": "exception"
+      }
     ]
   },
-  "continuation": { "pattern": "^(\\s+at |Caused by: |\\s+Suppressed: |\\s+\\.\\.\\. \\d+ more|\\t)" },
-  "affinity": ["thread"]
+  "continuation": {
+    "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z\\s+(\\s+at |Caused by: |\\s+Suppressed: |\\s+\\.\\.\\. \\d+ more|\\t|[a-zA-Z_$][\\w$]*(\\.[a-zA-Z_$][\\w$]*)+(Exception|Error|Throwable)(: |$)|$)"
+  },
+  "affinity": [
+    "thread"
+  ]
 }

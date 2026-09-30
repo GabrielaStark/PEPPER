@@ -1,0 +1,25 @@
+{
+  "notes": "Fixtures sintéticos, fieles al formato de la primera corrida real (2026-09-02): prefijo RFC3339 de `docker logs --timestamps` y códigos ANSI en la consola de WildFly, log de PostgreSQL con %m [%p] %u@%d y DETAIL de parámetros. El log de `springboot` es el modo java -jar (archivo, sin prefijo de Docker); la línea que abre una traza (`java.lang.NullPointerException: null`) no casa la continuación de ese parser y queda sin parsear: es el límite conocido del parser, no del fixture. El respaldo lo genera fixtures/synthesize.py (formato custom de pg_dump, binario, no se versiona).",
+  "logs": {
+    "wildfly": {"events": 5, "unparsed": 0, "sql_tables": ["ctusuario"]},
+    "postgresql": {"events": 2, "unparsed": 0, "sql_tables": ["ctcita"]},
+    "springboot": {"events": 4, "unparsed": 1, "sql_tables": ["ctusuario"]}
+  },
+  "datasource": {
+    "name": "prod",
+    "engine": "postgresql",
+    "host": "10.42.7.2",
+    "port": 5432,
+    "db": "nominas_prod",
+    "username": "nominas"
+  },
+  "dump": {
+    "file": "respaldo.dump",
+    "format": "pg_dump_custom",
+    "dbname": "base_origen",
+    "server_version": "10.6",
+    "tables": ["ctroles", "ctestatus", "trabajador", "cita"],
+    "catalogs": ["ctroles", "ctestatus"],
+    "not_catalogs": ["trabajador", "cita"]
+  }
+}

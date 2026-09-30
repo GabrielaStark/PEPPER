@@ -140,6 +140,19 @@ class JsonYXmlTest(unittest.TestCase):
         self.assertEqual(configfiles.lookup_xml(STANDALONE, "subsystem/datasources/datasource[@pool-name=SolicitudesDS]/connection-url"),
                          "jdbc:postgresql://srv-bd-01:5432/solicitudes")
         self.assertEqual(configfiles.lookup_xml(STANDALONE, "subsystem/datasources/datasource/security/user-name"), "solicitudes_app")
+        # `//` busca el primer segmento en cualquier nivel: el mismo perfil sirve para un standalone.xml completo y un fragmento
+        completo = "<server><profile>" + STANDALONE + "</profile></server>"
+        self.assertEqual(configfiles.lookup_xml(completo, "//datasources/datasource/connection-url"),
+                         "jdbc:postgresql://srv-bd-01:5432/solicitudes")
+        self.assertEqual(configfiles.lookup_xml(STANDALONE, "//datasources/datasource/connection-url"),
+                         "jdbc:postgresql://srv-bd-01:5432/solicitudes")
+        self.assertIsNone(configfiles.lookup_xml(completo, "//nada/connection-url"))
+        # dos <datasource> (ExampleDS y el de la app): el primero no es "el" datasource; se pide un predicado
+        dos = STANDALONE.replace("</datasource>", "</datasource><datasource pool-name=\"ExampleDS\"><connection-url>jdbc:h2:mem:x</connection-url></datasource>")
+        with self.assertRaisesRegex(configfiles.ConfigError, "casa 2 elementos.*predicado"):
+            configfiles.lookup_xml(dos, "//datasources/datasource/connection-url", "standalone.xml")
+        self.assertEqual(configfiles.lookup_xml(dos, "//datasources/datasource[@pool-name=SolicitudesDS]/connection-url"),
+                         "jdbc:postgresql://srv-bd-01:5432/solicitudes")
         flat = configfiles.parse_xml_flat(WEB_CONFIG)
         self.assertEqual(flat["configuration/connectionStrings/add/@name"], "Default")
         self.assertEqual(flat["configuration/connectionStrings/add[1]/@name"], "Otra", "los hermanos repetidos se indexan")

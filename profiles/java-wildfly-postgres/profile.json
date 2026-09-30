@@ -105,7 +105,17 @@
       }
     },
     "datasource": {
-      "mechanism": "spring_config"
+      "mechanism": "xml",
+      "files": [
+        "standalone*.xml",
+        "configuration/standalone*.xml",
+        "*-ds.xml"
+      ],
+      "keys": {
+        "url": "//datasources/datasource/connection-url",
+        "user": "//datasources/datasource/security/user-name",
+        "password": "//datasources/datasource/security/password"
+      }
     }
   },
   "collectors": [

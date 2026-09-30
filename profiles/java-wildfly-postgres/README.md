@@ -8,7 +8,7 @@ Primer perfil de PEPPER. Existe para probar la tubería completa de punta a punt
 
 | Archivo | Estado |
 |---|---|
-| `profile.json` | detección, receta, colectores — valida contra `schemas/profile.schema.json` |
+| `profile.json` | detección, receta, colectores — valida contra `schemas/profile.schema.json`. `rehydrate.datasource` es `xml` sobre `standalone*.xml` / `*-ds.xml` junto al WAR (2026-09-30): en un Java EE el datasource vive en el servidor, no en el WAR; antes decía `spring_config`, copiado de otro stack |
 | `extractors.json` | **heredado, sin corrida real** (2026-09-30): `jvm_route_annotations`, `jvm_class_inventory`, `view_templates` (XHTML), `config_hosts` (properties, standalone*.xml, persistence.xml), `archive_url_scan`, `pg_dump_custom`; patrones copiados de `java-springboot-jsf-postgres` donde el formato es el mismo |
 | `parsers/wildfly-server-log.json` | probado: `server.log` con formato por defecto, stack traces como continuación, ruido de pool |
 | `parsers/postgresql-log.json` | probado: `log_statement=all`, parámetros de las líneas `DETAIL` fusionados en la sentencia |
