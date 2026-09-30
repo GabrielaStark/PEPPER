@@ -26,6 +26,7 @@ profiles/<id>/fixtures/
 │                           el colector es el stdout de un contenedor
 ├── config/artifact/…       archivos de configuración tal como viven DENTRO del desplegable (la prueba los empaca en un zip)
 ├── config/junto/…          archivos que la persona deja junto al desplegable (p. ej. configuration/standalone.xml)
+├── source/…  (o un zip)    un desplegable sintético con fuente (rutas, vistas, crontab) para `expected.json › map`
 ├── dump/<respaldo>         un respaldo sintético chico en texto (sql_text), versionado
 └── synthesize.py           genera lo que no se versiona (un pg_dump custom es binario) en el directorio que
                             recibe como argumento; puede importar `write_custom_dump` de tests/test_systemmap.py
@@ -38,13 +39,17 @@ profiles/<id>/fixtures/
   "logs": {"<source>": {"events": 6, "unparsed": 1, "sql_tables": ["user"]}},
   "datasource": {"name": "prod", "engine": "postgresql", "host": "10.42.7.2", "port": 5432, "db": "nominas_prod", "username": "nominas"},
   "dump": {"file": "respaldo.dump", "format": "pg_dump_custom", "dbname": "base_origen", "server_version": "10.6",
-           "tables": ["ctroles", "cita"], "catalogs": ["ctroles"], "not_catalogs": ["trabajador"]}
+           "tables": ["ctroles", "cita"], "catalogs": ["ctroles"], "not_catalogs": ["trabajador"]},
+  "map": {"artifact": "source", "entrypoints": {"min": 14, "rest_min": 2, "paths": ["/login"]},
+          "jobs": {"min": 6, "names": ["tramites:vencer"]}, "external_dependencies": ["smtp.ejemplo.gob"],
+          "screens": ["resources/views/tramites/index.blade.php"], "gaps": ["classes"]}
 }
 ```
 
 - `logs`: por cada archivo, las líneas sin parsear deben ser exactamente `unparsed` (0 si se omite) y, si se declaran, los eventos `events` y las tablas `sql_tables` que el SQL debe reconocer. Un fixture sin un solo evento no demuestra nada.
 - `datasource`: `discover_datasource` + `datasource_facts` sobre `config/` deben dar exactamente eso; la contraseña (ficticia) debe existir y **nunca** se escribe en `expected.json`. `null` cuando el datasource del stack no vive en texto (Groovy compilado) y no hay `config/`.
 - `dump`: `read_dump_facts` y el mecanismo del mapa de ese formato (`pg_dump_custom` o `sql_dump`, con los patrones del `extractors.json` del perfil) deben dar la base de origen, la versión, esas tablas, y volcar como catálogo las de `catalogs` pero nunca las de `not_catalogs` (personas, tablas grandes).
+- `map` (opcional; obligado cuando el fuente viaja en el desplegable): los extractores del perfil que no leen el respaldo, sobre `fixtures/<artifact>` (una carpeta de fuente sintética o un zip), deben enumerar al menos `min` entrypoints con esas `paths` (y `rest_min` de tipo `rest_endpoint`), al menos `min` jobs con esos `names`, esos hosts externos y esas pantallas; y los únicos huecos del mapa deben ser los de `gaps` (lo que el perfil no cubre a propósito, p. ej. `classes` en un stack sin bytecode). Es la prueba de que un stack entró con datos.
 
 Ninguna fila, host ni credencial de los fixtures puede ser real: son sintéticos y lo dicen en `expected.json › notes`.
 

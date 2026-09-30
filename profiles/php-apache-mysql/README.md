@@ -56,7 +56,7 @@ Lo que no se enumera de antemano, y se dice como hueco: las páginas `.php` suel
 
 ## Fixtures
 
-`fixtures/` trae lo que la suite (`tests/test_perfiles.py`) necesita para probar el perfil sin un legacy real: líneas de log sintéticas fieles a cada parser (`logs/`), un fuente mínimo con `.env`, `routes/web.php`, una vista Blade y un formulario clásico (`source/`), y `expected.json` con lo que cada lector debe encontrar. Son inventados; no describen ningún sistema.
+`fixtures/` trae lo que la suite (`tests/test_perfiles.py`) necesita para probar el perfil sin un legacy real: líneas de log sintéticas fieles a cada parser (`logs/apache-php.log`, `logs/mysql.log`), el `.env` que el datasource debe leer (`config/artifact/.env`), un fuente mínimo Laravel + PHP clásico con `.env`, `routes/web.php` y `routes/api.php`, el scheduler, un crontab, una vista Blade y un formulario clásico (`source/`), el generador del respaldo mysqldump (`synthesize.py`) y `expected.json` con lo que cada lector debe encontrar: 11 eventos de Apache/PHP, 13 del general log con `users` y `tramites` reconocidas, el datasource, 6 tablas con dos catálogos, y 14 entrypoints, 6 jobs, 3 hosts y una pantalla del mapa. Son inventados; no describen ningún sistema. El E2E de Docker usa otro fixture, más chico y ejecutable (`examples/e2e-php/`).
 
 ## Qué le falta para `validated`
 
