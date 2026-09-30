@@ -65,6 +65,6 @@ La versión que responde a la auditoría 2026-09-29. Antes de ella PEPPER era `0
 - El orquestador sigue siendo un modelo remoto: el guardia acota lo que lee, no cambia quién lee (Principio 10, THREAT-MODEL).
 - Windows sin WSL2, Podman y OrbStack siguen sin probar.
 
-## 0.1.0 — 2026-09-07 → 2026-09-28
+## 0.1.0 — 2026-09-02 → 2026-09-28
 
 El desarrollo inicial: cuatro perfiles (tres JVM/PostgreSQL, uno Grails/MySQL validado contra un legacy real), el ciclo completo mapa → levantar → explorar → correlacionar → empaquetar → descubrir → exportar, 37 decisiones y las auditorías previas cuyos cierres registra `DECISIONES.md` (D22, D24, D30, D35–D37).
