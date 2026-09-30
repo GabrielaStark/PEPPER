@@ -48,7 +48,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Set
 
 from pepper import REPO_ROOT
 from pepper.inspect.readers import configfiles
@@ -59,6 +59,10 @@ DEFAULT_PORT = 18080
 # declara en `rehydrate.artifact_suffixes`: qué cuenta como desplegable es del perfil,
 # no del núcleo — si no, el front de un sistema es invisible (2026-09-15).
 _ARTIFACT_SUFFIXES = (".war", ".ear", ".jar")
+# Un desplegable puede ser un archivo (zip: WAR/JAR/EAR o lo que `artifact_suffixes` declare) o una
+# CARPETA bajo legacy/ (PHP, Node con fuente, un dist estático): `rehydrate.artifact_kind`.
+_ARTIFACT_KINDS = ("archive", "directory")
+_SKIP_DIR_NAMES = {".git", "__MACOSX", "__pycache__", "node_modules"}
 _DUMP_SUFFIXES = (".dump", ".backup", ".sql")   # el perfil (`database.dump.suffixes`) manda; esto es el default
 _FILES_KEY_RE = re.compile(r"(?i)(ruta|path|dir|folder)")
 _FILES_KEY_EXCLUDE_RE = re.compile(r"(?i)redirect|direccion|context[-.]?path|servlet[-.]?path|classpath|url")
@@ -462,22 +466,70 @@ def ingress_component(components: List[Component], spec: Dict[str, Any],
     raise Blocked("ninguna pieza puede ser la puerta de entrada del ingress (no hay gateway, frontend ni backend)")
 
 
+def _dir_size(path: Path) -> int:
+    total = 0
+    for child in path.rglob("*"):
+        if child.is_file() and not child.is_symlink():
+            total += child.stat().st_size
+    return total
+
+
+def _artifact_member_names(artifact: Path) -> Set[str]:
+    """Los miembros del desplegable, venga como zip o como carpeta: rutas relativas POSIX.
+
+    Así `descriptors` del perfil se comprueban igual (`META-INF/context.xml` en un WAR,
+    `public/index.php` en una carpeta de PHP) sin que el resto del plan sepa qué forma tiene."""
+    if artifact.is_dir():
+        from pepper.workspace import is_tool_path, tool_paths
+        tool = tool_paths(artifact)
+        names: Set[str] = set()
+        for path in artifact.rglob("*"):
+            relative = path.relative_to(artifact)
+            if any(part in _SKIP_DIR_NAMES for part in relative.parts) or is_tool_path(path, tool):
+                continue
+            if path.is_file() or path.is_symlink():
+                names.add(relative.as_posix())
+        return names
+    with _open_artifact(artifact) as archive:
+        return set(archive.namelist())
+
+
 def find_all_inputs(legacy_dir: Path, artifact_suffixes: Optional[Tuple[str, ...]] = None,
-                    dump_suffixes: Optional[Tuple[str, ...]] = None) -> Tuple[List[Path], List[Path]]:
+                    dump_suffixes: Optional[Tuple[str, ...]] = None,
+                    artifact_kind: Optional[str] = None) -> Tuple[List[Path], List[Path]]:
     """TODOS los desplegables y TODOS los respaldos, de mayor a menor.
 
     Un legacy no siempre es un desplegable: puede ser tres servicios y un front (un
     sistema de microservicios), o un backend y un panel aparte. Quedarse con el más
     grande y callar los demás es exactamente la clase de silencio que esta herramienta
     no se permite: quien llama decide qué usa, pero tiene que SABER qué había.
+
+    Con `artifact_kind = "directory"` (PHP, Node con fuente, un dist estático) el desplegable
+    es cada carpeta directamente bajo legacy/ (no oculta, no de la herramienta); los archivos
+    sueltos ahí (NOTAS.md, el respaldo) no cuentan como desplegable.
     """
+    kind = artifact_kind or "archive"
+    if kind not in _ARTIFACT_KINDS:
+        raise Blocked(f"el perfil declara rehydrate.artifact_kind = {kind!r}; se admite {' | '.join(_ARTIFACT_KINDS)}")
     suffixes = tuple(s.lower() for s in (artifact_suffixes or _ARTIFACT_SUFFIXES))
     dump_sfx = tuple(s.lower() for s in (dump_suffixes or _DUMP_SUFFIXES))
-    artifacts = sorted((p for p in legacy_dir.iterdir() if p.suffix.lower() in suffixes),
-                       key=lambda p: -p.stat().st_size)
-    dumps = sorted((p for p in legacy_dir.iterdir() if p.suffix.lower() in dump_sfx),
+    if kind == "directory":
+        from pepper.workspace import is_tool_path, tool_paths
+        tool = tool_paths(legacy_dir)
+        artifacts = sorted((p for p in legacy_dir.iterdir()
+                            if p.is_dir() and not p.name.startswith(".") and p.name not in _SKIP_DIR_NAMES
+                            and not is_tool_path(p, tool)),
+                           key=lambda p: -_dir_size(p))
+    else:
+        artifacts = sorted((p for p in legacy_dir.iterdir() if p.is_file() and p.suffix.lower() in suffixes),
+                           key=lambda p: -p.stat().st_size)
+    dumps = sorted((p for p in legacy_dir.iterdir() if p.is_file() and p.suffix.lower() in dump_sfx),
                    key=lambda p: -p.stat().st_size)
     if not artifacts:
+        if kind == "directory":
+            raise Blocked(f"no hay carpeta de fuente en {legacy_dir}: este perfil espera el desplegable como CARPETA "
+                          "(rehydrate.artifact_kind = directory), p. ej. legacy/<sistema>/ con su configuración adentro. "
+                          "Un zip del fuente se descomprime ahí antes")
         raise Blocked(f"no hay desplegable ({'/'.join(suffixes)}) en {legacy_dir}")
     if not dumps:
         raise Blocked(f"no hay respaldo de la base en {legacy_dir} (se buscan {'/'.join(dump_sfx)})")
@@ -502,8 +554,7 @@ def _choose_server(artifact: Path, profile: Profile, notes_text: str) -> Tuple[s
     deviations: List[str] = []
     descriptors: Dict[str, List[str]] = recipe.get("descriptors") or {}
     images: Dict[str, Dict[str, str]] = recipe.get("server_images") or {}
-    with _open_artifact(artifact) as archive:
-        members = set(archive.namelist())
+    members = _artifact_member_names(artifact)
     present = [server for server, files in descriptors.items() if any(f in members for f in files)]
     # Solo cuentan los servidores de APLICACIÓN (los que el perfil sabe reconocer por descriptor):
     # una nota que diga "la base es postgres 12" no puede convertir al app en un contenedor de
@@ -523,8 +574,12 @@ def _choose_server(artifact: Path, profile: Profile, notes_text: str) -> Tuple[s
     if not major:
         raise Blocked(f"NOTAS.md no dice la versión de {server} y el artefacto no la trae: por fidelidad no se adivina. "
                       f"Escribe en legacy/NOTAS.md cuál corre en producción (p. ej. \"{server} {sorted(k for k in table if k.isdigit())[-1] if any(k.isdigit() for k in table) else 'N'}\")")
-    # el comodín solo rinde una versión declarada; sin versión no hay `tomcat:{major}` que valga
-    image = table.get(major) or table.get("*", "").replace("{major}", major)
+    # La versión completa manda cuando el perfil la distingue (php:7.4-apache no es php:7-apache):
+    # exacta, luego mayor.menor, luego mayor; el comodín solo rinde una versión declarada
+    # (`{version}` la completa, `{major}` la mayor): sin versión no hay `tomcat:{major}` que valga.
+    minor = ".".join(version.split(".")[:2])
+    image = (table.get(version) or table.get(minor) or table.get(major)
+             or table.get("*", "").replace("{major}", major).replace("{version}", version))
     if not image:
         # Elegir "la mayor de la tabla" levantaba un servidor distinto del original y presentaba
         # la evidencia como del legado (auditoría 2026-09-21, P1-02). Una versión que el perfil
@@ -890,7 +945,8 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
     recipe_early = profile.data.get("rehydrate", {})
     database: Dict[str, Any] = recipe_early.get("database") or {}
     dump_suffixes = tuple((database.get("dump") or {}).get("suffixes") or ())
-    artifacts, dumps = find_all_inputs(legacy_dir, recipe_early.get("artifact_suffixes"), dump_suffixes or None)
+    artifacts, dumps = find_all_inputs(legacy_dir, recipe_early.get("artifact_suffixes"), dump_suffixes or None,
+                                       recipe_early.get("artifact_kind"))
     artifact = artifacts[0]
     human_choices: List[str] = []
     if dump_choice is not None:
@@ -1118,11 +1174,12 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
         notes.append("dependencias declaradas por IP directa (no se pueden aliasear al stub; fallan sin salir y sin registro): " + ", ".join(by_ip))
 
     start_class = ""
-    with _open_artifact(artifact) as archive:
-        if "META-INF/MANIFEST.MF" in archive.namelist():
-            manifest = archive.read("META-INF/MANIFEST.MF").decode("utf-8", errors="replace")
-            mm = re.search(r"Start-Class:\s*(\S+)", manifest)
-            start_class = mm.group(1) if mm else ""
+    if artifact.is_file():   # una carpeta de fuente no lleva MANIFEST: el paquete es "app"
+        with _open_artifact(artifact) as archive:
+            if "META-INF/MANIFEST.MF" in archive.namelist():
+                manifest = archive.read("META-INF/MANIFEST.MF").decode("utf-8", errors="replace")
+                mm = re.search(r"Start-Class:\s*(\S+)", manifest)
+                start_class = mm.group(1) if mm else ""
     package = ".".join(start_class.split(".")[:3]) if start_class else "app"
     app_package_env = package.upper().replace(".", "_").replace("-", "_")
     files_root = next((v for k, v in cfg.items()
@@ -1384,12 +1441,46 @@ def _relative_to(path: Path, out_dir: Path) -> str:
     return str(path.resolve())
 
 
+def pack_directory(source: Path, target: Path) -> Path:
+    """La carpeta del fuente empacada como UN archivo tar junto al compose (`legacy.tar`).
+
+    `isolate` no admite montar un directorio del host en un contenedor (expone todo lo que
+    contenga, sockets de control incluidos) y esa regla no se relaja por un stack: el
+    contenedor recibe un archivo `:ro` y lo desempaca en su propio sistema de archivos, así el
+    legacy sigue siendo solo lectura y lo que el sistema escriba muere con el contenedor. Sin
+    comprimir (es una copia local), sin seguir enlaces (un enlace a /etc no viaja como /etc),
+    sin `.git` ni sockets, y con permisos 0600: la carpeta lleva la configuración con credenciales."""
+    import tarfile
+
+    from pepper.workspace import is_tool_path, tool_paths
+    tool = tool_paths(source)
+    with tarfile.open(target, "w", dereference=False) as tar:
+        for path in sorted(source.rglob("*")):
+            relative = path.relative_to(source)
+            if any(part in _SKIP_DIR_NAMES for part in relative.parts) or is_tool_path(path, tool):
+                continue
+            if path.is_socket() or path.is_fifo():
+                continue
+            if path.is_file() or path.is_symlink() or path.is_dir():
+                tar.add(path, arcname=relative.as_posix(), recursive=False)
+    target.chmod(0o600)
+    return target
+
+
 def render(plan: Plan, profile: Profile, out_dir: Path) -> List[Path]:
     recipe = profile.data.get("rehydrate", {})
     out_dir.mkdir(parents=True, exist_ok=True)
     variables = plan.variables(out_dir)
     variables["components"] = render_components(plan, profile, out_dir, variables)
     written: List[Path] = []
+    if plan.artifact.is_dir():
+        # El desplegable es una carpeta (rehydrate.artifact_kind = directory): viaja al contenedor
+        # como un solo archivo escrito por PEPPER junto al compose, nunca como directorio del host.
+        written.append(pack_directory(plan.artifact, out_dir / "legacy.tar"))
+        variables["war_path"] = "./legacy.tar"
+        note = f"la carpeta `{plan.artifact.name}` se empaca como legacy.tar junto al compose y el contenedor la desempaca en su propio sistema de archivos (el legacy no se toca)"
+        if note not in plan.notes:
+            plan.notes.append(note)
     for key, target in (("compose_template", "docker-compose.yml"), ("restore_template", "restore.sh")):
         template_name = recipe.get(key)
         if not template_name:

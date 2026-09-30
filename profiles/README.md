@@ -52,7 +52,7 @@ Ninguna fila, host ni credencial de los fixtures puede ser real: son sintéticos
 
 - `status: "draft"` = redactado (a menudo por el agente al inspeccionar), sin que una persona lo haya promovido; **corre igual**, y `environment.json` / `funcional.md` lo declaran.
 - `status: "validated"` = una persona lo vio correr de punta a punta contra un legacy real y lo marcó.
-- Un perfil nunca requiere cambios en el núcleo. Si parece necesitarlos, el defecto está en el núcleo.
+- Un perfil no lleva Python ni conocimiento de un sistema. Si un stack necesita un lector que el núcleo no tiene, el lector entra al núcleo como formato genérico (con pruebas y schema) y el perfil lo parametriza; ningún nombre de cliente, host ni dominio de negocio entra al núcleo (PERFILES.md).
 - Fidelidad primero: las recetas reproducen versiones originales, no modernizan.
 
 ## Perfiles
@@ -63,3 +63,4 @@ Ninguna fila, host ni credencial de los fixtures puede ser real: son sintéticos
 | [java-springboot-jsf-postgres](java-springboot-jsf-postgres/) | draft | corrió el ciclo entero contra un legacy real: extractores del mapa, receta de rehydrate, lectura de formularios, parsers |
 | [java-springboot-fatjar-postgres](java-springboot-fatjar-postgres/) | draft | varios fat jars de Spring Boot y un front estático contra una base; artefactos sintéticos y Docker real (es el perfil del E2E de CI) |
 | [java-wildfly-postgres](java-wildfly-postgres/) | draft | el primero; parsers de WildFly y PostgreSQL; extractores heredados del perfil JSF sin corrida real (no enumera rutas JAX-RS) |
+| [php-apache-mysql](php-apache-mysql/) | draft | PHP 7/8 con Apache y MySQL, datasource en `.env`; la primera familia que no es JVM y la primera sin una línea de Python; redactado sin legacy real, con fixtures sintéticos (el fuente viaja como carpeta: `artifact_kind = directory`) |

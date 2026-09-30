@@ -317,6 +317,14 @@
           "minItems": 1,
           "description": "Qué extensiones cuentan como desplegable en este stack (default: .war/.ear/.jar). Un front que viaja en .zip o .tgz se declara aquí; si no, es invisible para el plan."
         },
+        "artifact_kind": {
+          "type": "string",
+          "enum": [
+            "archive",
+            "directory"
+          ],
+          "description": "Qué forma tiene el desplegable: `archive` (default; un zip: WAR/JAR/EAR o lo que artifact_suffixes declare) o `directory` (una carpeta directamente bajo legacy/: PHP, Node con fuente, un dist estático). Una carpeta se empaca como legacy.tar junto al compose para que el contenedor reciba un archivo :ro, nunca un directorio del host (D45)."
+        },
         "datasource": {
           "type": "object",
           "additionalProperties": false,

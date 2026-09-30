@@ -1,0 +1,167 @@
+# Plantilla de orquestación — perfil php-apache-mysql (BORRADOR).
+# Rehydrate sustituye {{...}} con lo que el legacy trae (D17) y con NOTAS.md (D18).
+#
+# Lo que esta plantilla hace cumplir por construcción:
+#   - Red INTERNA (D19): sin salida. Solo el ingress toca la red `edge` para publicar en 127.0.0.1.
+#   - El fuente del legacy es SOLO LECTURA (Principio 3): rehydrate lo empaca como legacy.tar (un
+#     archivo :ro junto al compose; isolate no admite directorios del host, D45) y el app lo
+#     desempaca en su propio sistema de archivos al arrancar, porque PHP y Apache escriben
+#     (storage/, cache/, sesiones, subidas). Lo que el sistema escriba muere con el contenedor.
+#   - El `.env` del legacy apunta la base a localhost (lo normal en un servidor de una sola máquina):
+#     el app corre en la pila de red de `db` (network_mode: service:db) y localhost:3306 dentro del
+#     app ES la base. Si apunta a un nombre, `db` lleva ese nombre como alias. No se inventa un host.
+#     Consecuencia: el app no tiene IP propia; su puerto 80 vive en {{db_ip}}.
+#   - Todo host externo del legacy resuelve por alias al `stub` (responde error y registra).
+#   - `dns:` a un sumidero de la subred interna en cada servicio (D22).
+#   - Observabilidad de antemano: general log de MySQL (sentencias con valores) y el access/error log
+#     de Apache por stdout/stderr, que es a donde la imagen oficial ya los manda.
+#   - Al terminar: `docker compose down -v --remove-orphans`.
+
+name: {{stack_name}}-rehydrate
+
+networks:
+  legacy:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: {{subnet}}
+          gateway: {{gateway_ip}}
+  edge:
+    driver: bridge                     # SOLO el ingress (Docker no publica puertos desde una red internal)
+volumes:
+  db-data:
+
+services:
+  db:
+    image: {{db_image}}                # la versión del respaldo ("Server version" en su cabecera), vía rehydrate.database.images
+    cap_drop: [NET_RAW]                # la red interna no es la única capa: sin tramas crudas al bridge
+    security_opt: [no-new-privileges:true]
+    platform: ${PEPPER_PLATFORM}      # la dicta el registro: amd64 emulado si la imagen exigida no existe para esta máquina
+    dns: [{{dns_sink}}]
+    environment:
+      MYSQL_DATABASE: {{db_name}}              # el nombre que dice el .env del legacy (DB_DATABASE), no el del respaldo
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}      # en .env de pepper-out/ (no se versiona); restore.sh crea al usuario del legacy con la misma clave
+    command:
+      - --general-log=1
+      - --general-log-file=/var/lib/mysql/general.log   # MySQL 5.7 exige un archivo regular (rechaza /proc/self/fd/1 y /dev/stdout); `dblog` lo saca por stdout
+      - --log-output=FILE
+      - --log-timestamps=UTC
+      # charset/collation, sql_mode y default_authentication_plugin de producción: DESCONOCIDOS
+      # (pregunta abierta). Se deja el default de la imagen y se declara como desviación.
+    networks:
+      legacy:
+        ipv4_address: {{db_ip}}
+        aliases: {{db_alias}}              # el nombre del DB_HOST del .env, si no era localhost
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+
+  # Restaura un respaldo SQL DE LA BASE DE LA APLICACIÓN dentro de {{db_name}} y crea al usuario
+  # que el .env declara (DB_USERNAME) con la clave del .env. Si el respaldo es el esquema de sistema
+  # `mysql`, restore.sh se niega. Una vez: docker compose --profile restore run --rm restore
+  restore:
+    image: {{db_tool_image}}
+    cap_drop: [NET_RAW]                # la red interna no es la única capa: sin tramas crudas al bridge
+    security_opt: [no-new-privileges:true]
+    platform: ${PEPPER_PLATFORM}      # la dicta el registro: amd64 emulado si la imagen exigida no existe para esta máquina
+    dns: [{{dns_sink}}]
+    profiles: ["restore"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      MYSQL_PWD: ${DB_PASSWORD}
+      DB_HOST: {{db_ip}}
+      DB_NAME: {{db_name}}
+      DB_USER: {{db_user}}
+    networks: [legacy]
+    volumes:
+      - {{dump_path}}:/dump/backup.sql:ro
+      - ./restore.sh:/restore.sh:ro
+    entrypoint: ["/bin/sh", "/restore.sh"]
+
+  # El general log de MySQL no puede ir a stdout (5.7 rechaza dispositivos como general_log_file):
+  # va a un archivo del volumen y este sidecar lo saca por SU stdout → `pepper collect` → dblog.log.
+  dblog:
+    image: python:3-alpine
+    cap_drop: [NET_RAW]                # la red interna no es la única capa: sin tramas crudas al bridge
+    security_opt: [no-new-privileges:true]
+    dns: [{{dns_sink}}]
+    command: ["sh", "-c", "while [ ! -f /var/lib/mysql/general.log ]; do sleep 1; done; exec tail -n +1 -F /var/lib/mysql/general.log"]
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [legacy]
+    volumes:
+      - db-data:/var/lib/mysql:ro
+
+  stub:
+    image: python:3-alpine
+    cap_drop: [NET_RAW]                # la red interna no es la única capa: sin tramas crudas al bridge
+    security_opt: [no-new-privileges:true]
+    dns: [{{dns_sink}}]
+    command: ["python3", "-u", "/stub/stub.py", "--ports", "{{stub_ports}}"]
+    networks:
+      legacy:
+        ipv4_address: {{stub_ip}}
+        aliases: {{external_hosts}}    # p. ej. smtp.ejemplo.gob, api.pagos.ejemplo.com…
+    volumes:
+      - ./stub:/stub:ro
+
+  app:
+    image: {{server_image}}            # php:<versión de NOTAS.md>-apache (rehydrate.server_images.php); mod_php, como el servidor original
+    cap_drop: [NET_RAW]                # la red interna no es la única capa: sin tramas crudas al bridge
+    security_opt: [no-new-privileges:true]
+    platform: ${PEPPER_PLATFORM}      # la dicta el registro: amd64 emulado si la imagen exigida no existe para esta máquina
+    network_mode: "service:db"         # localhost:3306 del .env = la base (ver cabecera)
+    depends_on:
+      db:
+        condition: service_healthy
+      stub:
+        condition: service_started
+    volumes:
+      - {{war_path}}:/legacy.tar:ro    # la carpeta del fuente, empacada por rehydrate como UN archivo (D45), solo lectura
+    # Desempaca el fuente en la raíz de Apache (la copia es del contenedor: el legacy no se toca) y
+    # sirve desde public/ si el proyecto lo trae (Laravel, Symfony, CodeIgniter 4), si no desde la
+    # raíz (PHP clásico con index.php arriba). mod_rewrite se habilita porque un .htaccess lo espera:
+    # sin él las rutas "bonitas" dan 404 y el sistema observado no sería el original.
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        rm -rf /var/www/html/* /var/www/html/.[!.]* 2>/dev/null || true
+        tar -xf /legacy.tar -C /var/www/html
+        chown -R www-data:www-data /var/www/html
+        if [ -f /var/www/html/public/index.php ]; then
+          sed -ri 's!/var/www/html!/var/www/html/public!g' /etc/apache2/sites-available/000-default.conf /etc/apache2/apache2.conf
+          echo "pepper: DocumentRoot = /var/www/html/public (el proyecto trae public/index.php)"
+        else
+          echo "pepper: DocumentRoot = /var/www/html (sin public/index.php: PHP clásico)"
+        fi
+        a2enmod rewrite >/dev/null
+        exec apache2-foreground
+
+  # El ingress ES el proxy HTTP de PEPPER (pepper/proxy.py copiado a ./proxy/). El app no tiene IP
+  # propia: su 80 vive en el namespace de db, así que el upstream es {{db_ip}}:80.
+  ingress:
+    image: python:3-alpine
+    cap_drop: [NET_RAW]                # la red interna no es la única capa: sin tramas crudas al bridge
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m                    # el proxy guarda cada respuesta en memoria: un stream sin fin no tumba la máquina
+    restart: unless-stopped            # y si cae, vuelve: sin ingress no hay puerta verificada
+    dns: [{{dns_sink}}]
+    command: ["python3", "-u", "/pepper-proxy.py", "--listen", "0.0.0.0:8080", "--upstream", "{{db_ip}}:80"]
+    depends_on:
+      app:
+        condition: service_started
+    networks: [legacy, edge]
+    ports:
+      - "127.0.0.1:{{host_port}}:8080"   # SOLO localhost (H-04)
+    volumes:
+      - ./proxy/proxy.py:/pepper-proxy.py:ro

@@ -3,8 +3,9 @@
 Por cada carpeta de perfil: profile.json, extractors.json y parsers validan contra sus contratos;
 y si trae `fixtures/`, se corren los parsers sobre `fixtures/logs/<source>.log` (0 líneas sin
 parsear, o las que `expected.json` declare), `discover_datasource` sobre `fixtures/config/`
-(esperando lo que `expected.json` diga) y el lector del respaldo sintético (`fixtures/dump/` o
-el que `fixtures/synthesize.py` genera al vuelo). El contrato de los fixtures está en
+(esperando lo que `expected.json` diga), el lector del respaldo sintético (`fixtures/dump/` o
+el que `fixtures/synthesize.py` genera al vuelo) y, si `expected.json` trae `map`, los
+extractores del perfil sobre un desplegable sintético de fixtures/. El contrato de los fixtures está en
 profiles/README.md. Hasta hoy los parsers del único perfil `validated` no tenían prueba alguna.
 """
 
@@ -36,7 +37,7 @@ except ImportError:  # pragma: no cover
 
 TZ = timezone(timedelta(hours=-6))
 CON_FIXTURES = ("groovy-grails1-tomcat-mysql", "java-springboot-fatjar-postgres",
-                "java-springboot-jsf-postgres", "java-wildfly-postgres")
+                "java-springboot-jsf-postgres", "java-wildfly-postgres", "php-apache-mysql")
 
 
 def _session() -> Session:
@@ -48,7 +49,9 @@ def _session() -> Session:
 class PerfilesTest(unittest.TestCase):
     """Un método por perfil se agrega abajo, al importar el módulo; así cada perfil falla por su nombre."""
 
-    def test_los_cuatro_perfiles_del_repo_traen_fixtures(self):
+    def test_todos_los_perfiles_del_repo_traen_fixtures(self):
+        en_disco = sorted(p.parent.name for p in (ROOT / "profiles").glob("*/profile.json"))
+        self.assertEqual(en_disco, sorted(CON_FIXTURES), "un perfil nuevo entra a esta lista con sus fixtures (PERFILES.md, regla 4)")
         for pid in CON_FIXTURES:
             self.assertTrue((ROOT / "profiles" / pid / "fixtures" / "expected.json").is_file(), pid)
 
@@ -168,6 +171,50 @@ class PerfilesTest(unittest.TestCase):
         if jsonschema is not None:
             self.assertEqual(validate_instance(mapa, "system-map"), [], profile.id)
 
+    # ---------------------------------------------------------------- el mapa del fuente
+
+    def _map(self, profile: Profile, fixtures: Path, expected: dict, tmp: Path) -> None:
+        """`expected.json › map`: los extractores del perfil (menos los del respaldo) sobre un
+        desplegable sintético de fixtures/ —una carpeta de fuente o un zip— deben enumerar lo
+        declarado. Es la prueba de que un stack entró con DATOS: si el perfil dice que lee rutas
+        Laravel o formularios de PHP clásico, aquí se ve que las lee (auditoría 2026-09-29)."""
+        want = expected.get("map")
+        if want is None:
+            return
+        artifact = fixtures / want["artifact"]
+        self.assertTrue(artifact.exists(), f"{profile.id}: fixtures/{want['artifact']} no existe")
+        extractors = json.loads((profile.dir / "extractors.json").read_text(encoding="utf-8"))["extractors"]
+        sin_respaldo = [e for e in extractors if not MECHANISMS[e["mechanism"]].needs_dump]
+        mapa = build_map(artifact, sin_respaldo, profile.id, dump=None, tools={})
+        # las superficies del respaldo (data_stores, catalogs) las demuestra `_dump`; aquí no hay respaldo y su hueco es esperado
+        del_respaldo = set()
+        for e in extractors:
+            if MECHANISMS[e["mechanism"]].needs_dump:
+                del_respaldo |= set(MECHANISMS[e["mechanism"]].covers(e))
+        huecos = {g.split(":", 1)[0].strip() for g in mapa["coverage_gaps"]} - del_respaldo
+        self.assertEqual(huecos, set(want.get("gaps", [])),
+                         f"{profile.id}: huecos del mapa distintos de los declarados: {mapa['coverage_gaps']}")
+        eps = want.get("entrypoints") or {}
+        paths = {e["path"] for e in mapa["entrypoints"]}
+        self.assertGreaterEqual(len(mapa["entrypoints"]), int(eps.get("min", 0)), f"{profile.id}: entrypoints {sorted(paths)}")
+        for path in eps.get("paths", []):
+            self.assertIn(path, paths, f"{profile.id}: la ruta {path} no salió (rutas: {sorted(paths)})")
+        rest = [e for e in mapa["entrypoints"] if e.get("kind") == "rest_endpoint"]
+        self.assertGreaterEqual(len(rest), int(eps.get("rest_min", 0)), profile.id)
+        jobs = want.get("jobs") or {}
+        names = {j["name"] for j in mapa["jobs"]}
+        self.assertGreaterEqual(len(mapa["jobs"]), int(jobs.get("min", 0)), f"{profile.id}: jobs {sorted(names)}")
+        for name in jobs.get("names", []):
+            self.assertIn(name, names, f"{profile.id}: el job {name!r} no salió (jobs: {sorted(names)})")
+        externos = {d["name"] for d in mapa["external_dependencies"]}
+        for host in want.get("external_dependencies", []):
+            self.assertIn(host, externos, f"{profile.id}: el host {host} no salió (hosts: {sorted(externos)})")
+        pantallas = {s["path"] for s in mapa["screens"]}
+        for screen in want.get("screens", []):
+            self.assertIn(screen, pantallas, f"{profile.id}: la pantalla {screen} no salió (pantallas: {sorted(pantallas)})")
+        if jsonschema is not None:
+            self.assertEqual(validate_instance(mapa, "system-map"), [], profile.id)
+
     # ---------------------------------------------------------------- todo junto
 
     def _perfil(self, profile: Profile) -> None:
@@ -180,6 +227,7 @@ class PerfilesTest(unittest.TestCase):
             self._logs(profile, fixtures, expected)
             self._datasource(profile, fixtures, expected, Path(tmp))
             self._dump(profile, fixtures, expected, Path(tmp))
+            self._map(profile, fixtures, expected, Path(tmp))
 
 
 def _agrega(profile: Profile) -> None:

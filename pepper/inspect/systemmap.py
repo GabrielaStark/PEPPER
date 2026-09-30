@@ -754,6 +754,11 @@ def _extract_views(artifact: Path, spec: Dict[str, Any], report: "MapReport") ->
             v = value_re.search(attrs)
             a = action_re.search(attrs)
             label = resolve(v.group(1)) if v else ""
+            if not label:
+                # `<button type="submit">Guardar</button>`: el rótulo va adentro, no en `value=`. Si el
+                # patrón del perfil captura hasta ese texto (`button\b[^>]*>[^<]*`), se toma como rótulo.
+                inner = re.search(r">\s*([^<>]{1,80}?)\s*$", attrs)
+                label = resolve(inner.group(1)) if inner else ""
             if not label and not a:
                 continue
             item = {"label": label}

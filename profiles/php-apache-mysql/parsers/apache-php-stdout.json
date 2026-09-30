@@ -1,0 +1,125 @@
+{
+  "parser_version": "0.1.0",
+  "source": "apache-php",
+  "description": "stdout+stderr del contenedor php:<versión>-apache capturados con `pepper collect` (docker logs --timestamps). La imagen oficial manda el access log en formato `combined` a /proc/self/fd/1 y el error log (Apache y PHP: `[php:notice] … PHP Warning: …`, `PHP Fatal error: Uncaught …`) a /proc/self/fd/2, así que por el mismo stdout salen dos formatos: (1) '<cliente> - <usuario> [<fecha local>] \"<método> <ruta> HTTP/x\" <estado> <bytes> \"<referer>\" \"<agente>\"' y (2) '[<fecha>] [<módulo>:<nivel>] [pid N] [client ip:puerto] <mensaje>'. El timestamp autoritativo es el prefijo RFC3339 UTC de Docker; las fechas propias de Apache quedan en metadata. La petición que cuenta para el discovery la registra el ingress (http.jsonl); estas líneas la corroboran del lado del servidor y traen lo que PHP se quejó mientras la atendía. Las pilas de excepción de PHP (`Stack trace:`, `#0 …`, `thrown in …`) continúan el evento anterior. Redactado sin corrida real: los patrones vienen de la documentación de la imagen oficial y de Apache 2.4; la primera corrida contra un legacy los ajusta (fixtures/logs/apache-php.log es sintético). Las líneas de arranque sin corchetes (`AH00558: apache2: Could not reliably determine…`) y la línea `pepper: DocumentRoot = …` del comando del compose entran como `log` y el ruido las marca.",
+  "line_pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z) (?P<message>(?:(?P<client>\\S+) \\S+ (?P<user>\\S+) \\[(?P<access_ts>[^\\]]+)\\] \\\"(?P<method>[A-Z]+) (?P<path>\\S+) HTTP/[\\d.]+\\\" (?P<status>\\d{3}) (?P<bytes>\\d+|-) \\\"(?P<referer>[^\\\"]*)\\\" \\\"(?P<agent>[^\\\"]*)\\\"|\\[(?P<error_ts>[^\\]]+)\\] \\[(?P<module>[a-z_0-9]+):(?P<level>[a-z]+)\\] \\[pid (?P<pid>\\d+)(?::tid \\d+)?\\](?: \\[client (?P<error_client>[^\\]]+)\\])? (?P<detail>.*)|(?P<bare>AH\\d{5}: .*|pepper: .*)))$",
+  "timestamp": {
+    "group": "timestamp"
+  },
+  "fields": {
+    "component": {
+      "from": "module",
+      "map": {
+        "php": "php",
+        "core": "apache",
+        "mpm_prefork": "apache",
+        "mpm_event": "apache",
+        "rewrite": "apache",
+        "authz_core": "apache",
+        "proxy": "apache",
+        "ssl": "apache"
+      },
+      "default": "apache"
+    },
+    "message": {
+      "from": "message"
+    },
+    "severity": {
+      "from": "level",
+      "map": {
+        "trace1": "debug",
+        "debug": "debug",
+        "info": "info",
+        "notice": "info",
+        "warn": "warn",
+        "error": "error",
+        "crit": "fatal",
+        "alert": "fatal",
+        "emerg": "fatal"
+      },
+      "default": "info"
+    },
+    "metadata.client": {
+      "from": "client"
+    },
+    "metadata.method": {
+      "from": "method"
+    },
+    "metadata.path": {
+      "from": "path"
+    },
+    "metadata.status": {
+      "from": "status",
+      "transform": "int"
+    },
+    "metadata.bytes": {
+      "from": "bytes"
+    },
+    "metadata.referer": {
+      "from": "referer"
+    },
+    "metadata.user_agent": {
+      "from": "agent"
+    },
+    "metadata.access_ts": {
+      "from": "access_ts"
+    },
+    "metadata.error_ts": {
+      "from": "error_ts"
+    },
+    "metadata.module": {
+      "from": "module"
+    },
+    "metadata.pid": {
+      "from": "pid"
+    },
+    "metadata.error_client": {
+      "from": "error_client"
+    },
+    "metadata.detail": {
+      "from": "detail"
+    }
+  },
+  "event_type": {
+    "default": "log",
+    "rules": [
+      {
+        "when": {
+          "field": "method",
+          "matches": "^[A-Z]+$"
+        },
+        "value": "http_request"
+      },
+      {
+        "when": {
+          "field": "detail",
+          "matches": "PHP (?:Fatal error|Parse error)|Uncaught (?:Exception|Error|\\w+Exception)"
+        },
+        "value": "exception"
+      }
+    ]
+  },
+  "continuation": {
+    "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z) (?:PHP )?(?:Stack trace:|#\\d+ |  thrown in |\\s+at |\\S+\\(\\d+\\): )"
+  },
+  "affinity": [
+    "client"
+  ],
+  "noise": [
+    {
+      "id": "apache-fqdn-warning",
+      "description": "aviso AH00558 que la imagen oficial emite siempre al arrancar (sin ServerName global); no es del sistema",
+      "matches": "AH00558"
+    },
+    {
+      "id": "apache-startup",
+      "description": "líneas de arranque/apagado de Apache (AH00163 configured, AH00094 command line, AH00094…): son del contenedor, no del legacy",
+      "matches": "AH00163|AH00094|AH00491|AH00169|AH00170"
+    },
+    {
+      "id": "pepper-docroot",
+      "description": "la línea con que el comando del compose dice qué DocumentRoot eligió",
+      "matches": "^pepper: DocumentRoot"
+    }
+  ]
+}

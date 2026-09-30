@@ -1,0 +1,15 @@
+2026-09-30T00:10:01.100000000Z AH00558: apache2: Could not reliably determine the server's fully qualified domain name, using 10.100.0.2. Set the 'ServerName' directive globally to suppress this message
+2026-09-30T00:10:01.200000000Z pepper: DocumentRoot = /var/www/html/public (el proyecto trae public/index.php)
+2026-09-30T00:10:01.300000000Z [Wed Sep 30 00:10:01.300123 2026] [mpm_prefork:notice] [pid 1] AH00163: Apache/2.4.62 (Debian) PHP/7.4.33 configured -- resuming normal operations
+2026-09-30T00:10:01.400000000Z [Wed Sep 30 00:10:01.400456 2026] [core:notice] [pid 1] AH00094: Command line: 'apache2 -D FOREGROUND'
+2026-09-30T00:10:05.000000000Z 10.100.0.3 - - [30/Sep/2026:00:10:05 +0000] "GET /login HTTP/1.1" 200 2418 "-" "Mozilla/5.0 (X11; Linux x86_64) Chrome/128.0"
+2026-09-30T00:10:07.000000000Z 10.100.0.3 - - [30/Sep/2026:00:10:07 +0000] "POST /login HTTP/1.1" 302 358 "http://127.0.0.1:18080/login" "Mozilla/5.0 (X11; Linux x86_64) Chrome/128.0"
+2026-09-30T00:10:07.500000000Z [Wed Sep 30 00:10:07.500789 2026] [php:notice] [pid 22] [client 10.100.0.3:51234] PHP Notice:  Undefined index: recordarme in /var/www/html/app/Http/Controllers/Auth/LoginController.php on line 41, referer: http://127.0.0.1:18080/login
+2026-09-30T00:10:08.000000000Z 10.100.0.3 - - [30/Sep/2026:00:10:08 +0000] "GET /tramites HTTP/1.1" 200 15230 "http://127.0.0.1:18080/login" "Mozilla/5.0 (X11; Linux x86_64) Chrome/128.0"
+2026-09-30T00:10:12.000000000Z 10.100.0.3 - - [30/Sep/2026:00:10:12 +0000] "POST /tramites HTTP/1.1" 500 1120 "http://127.0.0.1:18080/tramites/nuevo" "Mozilla/5.0 (X11; Linux x86_64) Chrome/128.0"
+2026-09-30T00:10:12.100000000Z [Wed Sep 30 00:10:12.100321 2026] [php:error] [pid 23] [client 10.100.0.3:51240] PHP Fatal error:  Uncaught PDOException: SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry 'TR-0001' for key 'tramites_folio_unique' in /var/www/html/vendor/laravel/framework/src/Illuminate/Database/Connection.php:501
+2026-09-30T00:10:12.100400000Z Stack trace:
+2026-09-30T00:10:12.100500000Z #0 /var/www/html/vendor/laravel/framework/src/Illuminate/Database/Connection.php(461): Illuminate\Database\Connection->runQueryCallback()
+2026-09-30T00:10:12.100600000Z #1 /var/www/html/app/Http/Controllers/TramiteController.php(58): Illuminate\Database\Connection->run()
+2026-09-30T00:10:12.100700000Z   thrown in /var/www/html/vendor/laravel/framework/src/Illuminate/Database/Connection.php on line 501
+2026-09-30T00:10:20.000000000Z 10.100.0.3 - - [30/Sep/2026:00:10:20 +0000] "GET /tramites/12/editar HTTP/1.1" 200 9876 "http://127.0.0.1:18080/tramites" "Mozilla/5.0 (X11; Linux x86_64) Chrome/128.0"
