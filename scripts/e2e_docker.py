@@ -6,17 +6,25 @@ Lo que comprueba, con contenedores reales y sin red más allá del registro de i
     plan → compose → PostgreSQL restaurado desde un respaldo real → la aplicación arranca →
     el ingress responde en 127.0.0.1 → `isolate --live` en verde → apagado sin dejar volúmenes.
 
-El "legacy" es mínimo y sintético: un servicio HTTP de 40 líneas (`examples/e2e-docker/Servicio.java`)
-compilado aquí mismo con `javac` y empaquetado como un jar ejecutable con la forma de un fat jar de
-Spring Boot, más un respaldo en formato custom de `pg_dump`. No imita un sistema real ni lo pretende:
-existe para que un cambio en el núcleo que rompa el levantamiento se caiga en CI, en vez de
-descubrirse a mano tres semanas después contra un legacy de verdad.
+El "legacy" es mínimo y sintético, uno por familia (`--profile`):
 
-    python3 scripts/e2e_docker.py            # levanta, comprueba y apaga
-    python3 scripts/e2e_docker.py --keep     # deja el entorno arriba para mirarlo
+- `java-springboot-fatjar-postgres` (default): un servicio HTTP de 40 líneas (`examples/e2e-docker/Servicio.java`)
+  compilado aquí mismo con `javac` y empaquetado como un jar ejecutable con la forma de un fat jar de
+  Spring Boot, más un respaldo en formato custom de `pg_dump`.
+- `php-apache-mysql`: dos archivos de PHP clásico (`examples/e2e-php/`) que leen su `.env` y consultan
+  MySQL por PDO, entregados como CARPETA (rehydrate.artifact_kind = directory), más un respaldo
+  mysqldump sintético (`profiles/php-apache-mysql/fixtures/synthesize.py`). Es la primera familia que
+  no es JVM: si esto levanta, el perfil hecho solo con datos levanta.
 
-Necesita: Docker con Compose v2, un JDK (`javac`) y `jsonschema`. Sin Docker se salta con código 0
-y lo dice: un entorno que no se puede levantar no es una falla del código.
+Ninguno imita un sistema real ni lo pretende: existen para que un cambio en el núcleo que rompa el
+levantamiento se caiga en CI, en vez de descubrirse a mano tres semanas después contra un legacy de verdad.
+
+    python3 scripts/e2e_docker.py                              # levanta, comprueba y apaga (JVM)
+    python3 scripts/e2e_docker.py --profile php-apache-mysql   # la familia PHP
+    python3 scripts/e2e_docker.py --keep                       # deja el entorno arriba para mirarlo
+
+Necesita: Docker con Compose v2, `jsonschema`, y para el perfil JVM un JDK (`javac`). Sin Docker se
+salta con código 0 y lo dice (en CI falla): un entorno que no se puede levantar no es una falla del código.
 """
 
 from __future__ import annotations
@@ -35,10 +43,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-PROFILE_ID = "java-springboot-fatjar-postgres"
 DB_NAME, DB_USER, DB_PASSWORD, DB_IP, DB_PORT = "demo_prod", "demo", "e2e-secreto", "10.100.0.2", 5432
 APP_PORT = 8099
-HOST_PORT = 18099
+
+# Por familia: cómo se construye el legacy sintético, qué piezas debe declarar environment.json,
+# qué texto sirve la raíz y en qué puerto de loopback publica el ingress.
+FAMILIAS = {
+    "java-springboot-fatjar-postgres": {
+        "construir": "construir_legacy_jvm", "piezas": ("db", "servicio", "ingress", "stub"),
+        "marca": "Servicio del E2E", "puerto": 18099, "espera": "300",
+    },
+    "php-apache-mysql": {
+        "construir": "construir_legacy_php", "piezas": ("db", "app", "ingress", "stub"),
+        "marca": "Ventanilla del E2E", "puerto": 18098, "espera": "480",
+    },
+}
 
 CONFIG = f"""server:
   port: {APP_PORT}
@@ -54,7 +73,7 @@ def paso(texto: str) -> None:
     print(f"\n=== {texto}", flush=True)
 
 
-def construir_legacy(legacy: Path) -> None:
+def construir_legacy_jvm(legacy: Path) -> None:
     """Compila el servicio, lo empaqueta como fat jar y escribe el respaldo."""
     from tests.test_systemmap import TABLES, write_custom_dump
 
@@ -87,12 +106,43 @@ def construir_legacy(legacy: Path) -> None:
     print(f"  legacy sintético: {jar.name} ({jar.stat().st_size // 1024} KB) + respaldo.dump")
 
 
+def construir_legacy_php(legacy: Path) -> None:
+    """Copia la ventanilla de PHP clásico como CARPETA, escribe su .env y genera el respaldo mysqldump."""
+    fuente = legacy / "ventanilla"
+    shutil.copytree(ROOT / "examples" / "e2e-php", fuente)
+    (fuente / "README.md").unlink()   # el README explica el fixture; no es parte del "sistema"
+    (fuente / ".env").write_text(
+        "APP_NAME=Ventanilla-E2E\n"
+        "DB_CONNECTION=mysql\n"
+        "DB_HOST=127.0.0.1\n"           # la base vivía en la misma máquina: el app comparte la pila de red de db
+        "DB_PORT=3306\n"
+        "DB_DATABASE=tramites\n"
+        f"DB_USERNAME=app_tramites\n"
+        f"DB_PASSWORD={DB_PASSWORD}\n"
+        "MAIL_HOST=smtp.ejemplo.gob\n"   # un host externo: resuelve al stub
+        "MAIL_PORT=587\n",
+        encoding="utf-8")
+    sintetizar = subprocess.run([sys.executable, str(ROOT / "profiles" / "php-apache-mysql" / "fixtures" / "synthesize.py"),
+                                 str(legacy / "respaldo.sql")], capture_output=True, text=True)
+    if sintetizar.returncode != 0:
+        raise SystemExit(f"e2e: synthesize.py falló:\n{sintetizar.stderr}")
+    (legacy / "NOTAS.md").write_text(
+        "# Notas del legacy (E2E sintético de PEPPER, familia PHP)\n\n"
+        "No es un sistema real: una ventanilla mínima en PHP clásico para comprobar que la familia levanta.\n\n"
+        "Producción corre PHP 8.2 sobre Apache 2.4; MySQL 5.7.\n",
+        encoding="utf-8")
+    archivos = sum(1 for p in fuente.rglob("*") if p.is_file())
+    print(f"  legacy sintético: carpeta {fuente.name}/ ({archivos} archivos) + respaldo.sql")
+
+
 def correr(argv: list, **kw) -> subprocess.CompletedProcess:
     return subprocess.run(argv, capture_output=True, text=True, **kw)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--profile", choices=sorted(FAMILIAS), default="java-springboot-fatjar-postgres",
+                        help="qué familia levantar (default: la JVM)")
     parser.add_argument("--keep", action="store_true", help="no apagar el entorno al terminar")
     parser.add_argument("--work", type=Path, help="directorio de trabajo (default: uno temporal)")
     args = parser.parse_args()
@@ -118,14 +168,16 @@ def main() -> int:
     legacy, out, docs = work / "legacy", work / "rehydrate", work / "docs"
     compose = out / "docker-compose.yml"
     fallos: list = []
+    familia = FAMILIAS[args.profile]
+    host_port = familia["puerto"]
 
     try:
-        paso("construyendo el legacy sintético")
-        construir_legacy(legacy)
+        paso(f"construyendo el legacy sintético ({args.profile})")
+        globals()[familia["construir"]](legacy)
 
         paso("levantando el entorno con `pepper rehydrate --up`")
-        levantar = correr([sys.executable, "-m", "pepper", "rehydrate", str(legacy), "--profile", PROFILE_ID,
-                           "--out", str(out), "--docs", str(docs), "--port", str(HOST_PORT), "--wait", "300", "--up"],
+        levantar = correr([sys.executable, "-m", "pepper", "rehydrate", str(legacy), "--profile", args.profile,
+                           "--out", str(out), "--docs", str(docs), "--port", str(host_port), "--wait", familia["espera"], "--up"],
                           cwd=ROOT)
         print(levantar.stdout[-3000:] or levantar.stderr[-2000:])
         estado = json.loads((docs / "environment.json").read_text(encoding="utf-8"))["status"] \
@@ -137,7 +189,7 @@ def main() -> int:
         paso("comprobando lo que el entorno promete")
         entorno = json.loads((docs / "environment.json").read_text(encoding="utf-8"))
         piezas = {c["name"]: c for c in entorno["components"]}
-        for esperada in ("db", "servicio", "ingress", "stub"):
+        for esperada in familia["piezas"]:
             if esperada not in piezas:
                 fallos.append(f"environment.json no declara la pieza `{esperada}` (declara: {', '.join(piezas)})")
         arrancadas = [v for v in entorno["validations"] if "arrancó" in v["check"]]
@@ -149,14 +201,15 @@ def main() -> int:
 
         # El ingress sirve la aplicación en loopback, y solo en loopback.
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{HOST_PORT}/", timeout=20) as respuesta:
+            with urllib.request.urlopen(f"http://127.0.0.1:{host_port}/", timeout=20) as respuesta:
                 cuerpo = respuesta.read().decode("utf-8", "replace")
-            if respuesta.status != 200 or "Servicio del E2E" not in cuerpo:
-                fallos.append(f"el ingress respondió {respuesta.status} sin la página del servicio")
+            if respuesta.status != 200 or familia["marca"] not in cuerpo:
+                fallos.append(f"el ingress respondió {respuesta.status} sin la página de la aplicación ({familia['marca']!r} no aparece): "
+                              + cuerpo[:300].replace("\n", " "))
             else:
                 print(f"  el ingress responde 200 y sirve la aplicación ({len(cuerpo)} bytes)")
         except (urllib.error.URLError, OSError) as error:
-            fallos.append(f"el ingress no respondió en 127.0.0.1:{HOST_PORT}: {error}")
+            fallos.append(f"el ingress no respondió en 127.0.0.1:{host_port}: {error}")
 
         # El proxy deja su línea de evidencia: sin eso, Observe no vería nada.
         registro = correr(["docker", "compose", "-f", str(compose), "logs", "--no-log-prefix", "ingress"]).stdout

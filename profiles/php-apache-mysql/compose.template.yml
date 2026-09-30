@@ -10,6 +10,8 @@
 #   - El `.env` del legacy apunta la base a localhost (lo normal en un servidor de una sola máquina):
 #     el app corre en la pila de red de `db` (network_mode: service:db) y localhost:3306 dentro del
 #     app ES la base. Si apunta a un nombre, `db` lleva ese nombre como alias. No se inventa un host.
+#     Con DB_HOST=localhost (no 127.0.0.1) PHP no usa TCP: usa el socket Unix de MySQL, que una pila
+#     de red compartida no comparte; por eso /var/run/mysqld es un volumen común a db y app.
 #     Consecuencia: el app no tiene IP propia; su puerto 80 vive en {{db_ip}}.
 #   - Todo host externo del legacy resuelve por alias al `stub` (responde error y registra).
 #   - `dns:` a un sumidero de la subred interna en cada servicio (D22).
@@ -31,6 +33,7 @@ networks:
     driver: bridge                     # SOLO el ingress (Docker no publica puertos desde una red internal)
 volumes:
   db-data:
+  db-run:                              # el socket Unix de MySQL, visible para PHP (DB_HOST=localhost)
 
 services:
   db:
@@ -55,6 +58,7 @@ services:
         aliases: {{db_alias}}              # el nombre del DB_HOST del .env, si no era localhost
     volumes:
       - db-data:/var/lib/mysql
+      - db-run:/var/run/mysqld
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
       interval: 5s
@@ -126,15 +130,24 @@ services:
         condition: service_started
     volumes:
       - {{war_path}}:/legacy.tar:ro    # la carpeta del fuente, empacada por rehydrate como UN archivo (D45), solo lectura
-    # Desempaca el fuente en la raíz de Apache (la copia es del contenedor: el legacy no se toca) y
-    # sirve desde public/ si el proyecto lo trae (Laravel, Symfony, CodeIgniter 4), si no desde la
-    # raíz (PHP clásico con index.php arriba). mod_rewrite se habilita porque un .htaccess lo espera:
-    # sin él las rutas "bonitas" dan 404 y el sistema observado no sería el original.
+      - db-run:/var/run/mysqld         # el socket de MySQL: DB_HOST=localhost funciona como en el servidor original
+    # 1) Las extensiones de MySQL para PHP (pdo_mysql, mysqli) no vienen en la imagen oficial: se
+    #    compilan al arrancar con las fuentes que la imagen trae (sin red). Desviación declarada: el
+    #    servidor original las tenía por paquete; otras (gd, intl, zip, soap…) las dirá la primera
+    #    corrida real y entrarán aquí como datos del perfil.
+    # 2) Desempaca el fuente en la raíz de Apache (la copia es del contenedor: el legacy no se toca) y
+    #    sirve desde public/ si el proyecto lo trae (Laravel, Symfony, CodeIgniter 4), si no desde la
+    #    raíz (PHP clásico con index.php arriba). mod_rewrite se habilita porque un .htaccess lo espera:
+    #    sin él las rutas "bonitas" dan 404 y el sistema observado no sería el original.
     command:
       - sh
       - -c
       - |
         set -e
+        if ! php -m | grep -qi '^pdo_mysql$'; then
+          echo "pepper: compilando pdo_mysql y mysqli (la imagen oficial no las trae)"
+          docker-php-ext-install pdo_mysql mysqli > /tmp/pepper-ext.log 2>&1 || { tail -40 /tmp/pepper-ext.log; exit 1; }
+        fi
         rm -rf /var/www/html/* /var/www/html/.[!.]* 2>/dev/null || true
         tar -xf /legacy.tar -C /var/www/html
         chown -R www-data:www-data /var/www/html

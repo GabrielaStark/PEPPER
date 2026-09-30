@@ -104,12 +104,12 @@ El juguete esconde tres cosas: una regla no documentada, una mentira en el manua
 
 | Pieza | Estado |
 |---|---|
-| Núcleo: detect, map, rehydrate, isolate, proxy, explore, collect, correlate, package, export, init | implementados y probados (suite en `tests/`, `scripts/verificar.py`, CI). CI corre la suite, una prueba hermética con Chromium real detrás del ingress, y un E2E que **levanta un entorno real con Docker** en cada cambio (`scripts/e2e_docker.py`: base restaurada, aplicación servida por el ingress, aislamiento en vivo con sonda). En CI nada de eso se salta. El ciclo completo corrió de punta a punta contra un legacy real con datos de producción (2026-09-22) |
+| Núcleo: detect, map, rehydrate, isolate, proxy, explore, collect, correlate, package, export, init | implementados y probados (suite en `tests/`, `scripts/verificar.py`, CI). CI corre la suite, una prueba hermética con Chromium real detrás del ingress, y dos E2E que **levantan un entorno real con Docker** en cada cambio (`scripts/e2e_docker.py`, familias JVM y PHP: base restaurada, aplicación servida por el ingress, aislamiento en vivo con sonda). En CI nada de eso se salta. El ciclo completo corrió de punta a punta contra un legacy real con datos de producción (2026-09-22) |
 | Perfil `groovy-grails1-tomcat-mysql` | **`validated`** (2026-09-22): el ciclo completo contra un legacy real con su respaldo de producción, recorrido con dos roles, y la persona responsable confirmó que el documento describe su sistema. Es la única validación externa: n = 1 |
 | Perfil `java-springboot-jsf-postgres` | `draft`; corrió el pipeline entero contra un legacy real (mapa, levantar, explorar, descubrir) |
 | Perfil `java-springboot-fatjar-postgres` | `draft`; varias piezas; probado con artefactos sintéticos y Docker real en CI, nunca contra un sistema real |
 | Perfil `java-wildfly-postgres` | `draft`; parsers y extractores heredados sin corrida real |
-| Perfil `php-apache-mysql` | `draft`; la primera familia que no es JVM y la primera sin una línea de Python: detección, datasource en `.env`, rutas, jobs, pantallas y respaldo con lectores genéricos; el fuente viaja como carpeta. Redactado sin legacy real: fixtures sintéticos en CI |
+| Perfil `php-apache-mysql` | `draft`; la primera familia que no es JVM y la primera sin una línea de Python: detección, datasource en `.env`, rutas, jobs, pantallas y respaldo con lectores genéricos; el fuente viaja como carpeta. Redactado sin legacy real: fixtures sintéticos en CI, y el E2E de CI lo levanta con Docker (una ventanilla sintética de PHP clásico con MySQL) en cada cambio |
 | Versión | `0.2.0` (`pepper --version`); qué cambió y qué hallazgo cierra cada cambio: [`CHANGELOG.md`](CHANGELOG.md) |
 | Pendientes | `php-apache-mysql` corrido contra un legacy real (hoy solo fixtures); un sistema con **una base por servicio**; .NET Framework, escritorio y COBOL (lectores y destino de ejecución nuevos); un camino con modelo local |
 

@@ -82,7 +82,8 @@
     "optional_inputs": [
       "legacy/NOTAS.md con la versión de Apache, charset/collation y sql_mode del MySQL de producción, y si la base usaba mysql_native_password",
       "crontab del servidor (crontab, cron.d/*) junto al fuente: entra al mapa como tareas programadas",
-      "la configuración de PHP de producción (php.ini) si difería de la de la imagen oficial: se declara como desviación"
+      "la configuración de PHP de producción (php.ini) si difería de la de la imagen oficial: se declara como desviación",
+      "extensiones de PHP que producción tenía además de pdo_mysql/mysqli (gd, intl, zip, soap…): hoy el compose compila solo las dos de MySQL y lo declara como desviación"
     ],
     "artifact_kind": "directory",
     "compose_template": "compose.template.yml",
@@ -163,7 +164,7 @@
     "ready_log_pattern": "resuming normal operations|Command line: 'apache2 -D FOREGROUND'",
     "failed_log_pattern": "PHP Fatal error|PHP Parse error|AH00015: Unable to open logs|AH00072: make_sock|SQLSTATE\\[HY000\\] \\[(1045|2002|2054)\\]|No such file or directory: AH",
     "stub_ports": "80,443,25,465,587",
-    "startup_timeout_s": 180
+    "startup_timeout_s": 420
   },
   "collectors": [
     {

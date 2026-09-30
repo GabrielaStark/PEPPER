@@ -52,7 +52,8 @@ La versión que responde a la auditoría 2026-09-29. Antes de ella PEPPER era `0
 
 ### Primera familia que no es JVM (§2.2)
 
-- Perfil **`php-apache-mysql`** (`draft`): PHP 7/8 con Apache y MySQL, datasource en `.env`, todo con lectores genéricos parametrizados (ni una línea de Python). Redactado sin legacy real, con fixtures sintéticos que la suite ejecuta en CI. El núcleo acepta un desplegable que es una **carpeta** (`rehydrate.artifact_kind = directory`) y elige la imagen del servidor por versión completa (`php:7.4-apache`), no solo por la mayor.
+- Perfil **`php-apache-mysql`** (`draft`): PHP 7/8 con Apache y MySQL, datasource en `.env`, todo con lectores genéricos parametrizados (ni una línea de Python). Redactado sin legacy real, con fixtures sintéticos que la suite ejecuta en CI. El núcleo acepta un desplegable que es una **carpeta** (`rehydrate.artifact_kind = directory`, empacada como `legacy.tar`: D45) y elige la imagen del servidor por versión completa (`php:7.4-apache`), no solo por la mayor.
+- **E2E de CI para la familia PHP** (`scripts/e2e_docker.py --profile php-apache-mysql`, job `e2e-php`): una ventanilla sintética en PHP clásico (`examples/e2e-php/`) con su respaldo mysqldump se levanta con Docker en cada cambio: carpeta → `legacy.tar`, MySQL restaurado y el usuario del `.env` creado, `pdo_mysql` compilado al arrancar, Apache servido por el ingress en loopback, aislamiento verificado en vivo.
 
 ### Bugs puntuales cerrados (§5, último bloque)
 
