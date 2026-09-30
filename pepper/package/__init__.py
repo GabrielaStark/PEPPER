@@ -23,11 +23,11 @@ from typing import Any, Dict, List, Optional
 
 from pepper import SCHEMAS_DIR, SKILLS_DIR
 from pepper import manifest as evidence_manifest
+from pepper.sensitive import IGNORED_DIRS, IGNORED_SUFFIXES, is_key_material, uninspectable_kind
 from pepper.sensitive import summarize as summarize_sensitive
 from pepper.workspace import is_tool_path, tool_paths
 
 _EVIDENCE_FILES = ("events.jsonl", "flow.json", "flow.md", "reduction.md")
-from pepper.sensitive import IGNORED_DIRS, IGNORED_SUFFIXES
 
 # Lo que se copia se escanea y lo que no se escanea no se copia: la misma lista que el escáner.
 _LEGACY_IGNORE = shutil.ignore_patterns(*IGNORED_DIRS, *[f"*{suffix}" for suffix in IGNORED_SUFFIXES], ".DS_Store")
@@ -90,9 +90,18 @@ def _adapter(has_map: bool, has_previous: bool, data_mode: str) -> str:
     return "\n".join(lines)
 
 
+def _human_size(size: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{size} B"
+        size /= 1024
+    return f"{size:.1f} GB"
+
+
 def _readme(session: Dict[str, Any], flow: Dict[str, Any], legacy_dirs: List[str],
             data_mode: str, sensitive_count: int, unscanned_count: int,
-            overrides: List[str], has_map: bool, has_previous: bool) -> str:
+            authorized: bool, has_map: bool, has_previous: bool,
+            excluded_uninspected: Optional[List[Dict[str, Any]]] = None) -> str:
     stats = flow.get("stats", {})
     lines = [
         f"# Paquete controlado — {session.get('session_id')}",
@@ -111,14 +120,32 @@ def _readme(session: Dict[str, Any], flow: Dict[str, Any], legacy_dirs: List[str
         "",
         f"- Modo autorizado al crear el paquete: **{data_mode}**",
         f"- Hallazgos sensibles detectados por ubicación: **{sensitive_count}**",
-        f"- Archivos no inspeccionables automáticamente: **{unscanned_count}**",
-        f"- Autorización de una persona: **{', '.join(overrides) if overrides else 'ninguna (no hizo falta)'}**",
+        f"- Archivos no inspeccionables que viajan (solo con `--include-uninspected` y autorización): **{unscanned_count}**",
+        "- Autorización de una persona: **"
+        + ("sí — registrada fuera del paquete (`pepper-out/data-boundary.json`); su nombre no viaja" if authorized
+           else "ninguna (no hizo falta)") + "**",
         "",
         "Lo detectado en texto viaja SUSTITUIDO: las credenciales como `[CREDENCIAL]` y los datos de",
         "personas con un seudónimo estable (`[CURP-…]`, `[CORREO-…]`, `[RFC-…]`): el mismo valor es el",
         "mismo seudónimo en todo el paquete. Sigue a la persona por su seudónimo; nunca intentes",
-        "reconstruir el valor. Lo que no tiene patrón (un nombre propio) no se detecta: no lo copies",
-        "al documento.",
+        "reconstruir el valor. Lo que no tiene patrón (un nombre propio, una dirección, un teléfono)",
+        "NO se detecta ni se sustituye: no lo copies al documento.",
+        "",
+        "## No viaja",
+        "",
+        "Lo que PEPPER no puede leer completo (binarios, archivos enormes, codificación mixta) no entra a un",
+        "paquete remoto: se queda en la máquina y se lista aquí. Con `--include-uninspected` viajaría ENTERO",
+        "y SIN sustituir, y solo con autorización expresa de una persona sobre cada archivo.",
+        "",
+    ]
+    for item in excluded_uninspected or []:
+        lines.append(f"- `{item['path']}` — {item['kind']}, {_human_size(item['bytes'])}, sha256 {item['sha256'][:16]}…")
+    if not excluded_uninspected:
+        lines.append("- nada: todo lo que se copió se pudo inspeccionar.")
+    lines += [
+        "",
+        "Las capturas de pantalla del explorador (`evidence/<sid>/screens/`) nunca viajan: son imágenes",
+        "sin inspección posible. `explore.jsonl` las nombra; aquí no están.",
         "",
         "## Qué hay",
         "",
@@ -245,10 +272,17 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
              data_mode: str = "remote", authorization: Optional[Path] = None,
              manifest_out: Optional[Path] = None,
              system_map: Optional[Path] = None,
-             previous: Optional[Path] = None) -> Dict[str, Any]:
+             previous: Optional[Path] = None,
+             include_uninspected: bool = False) -> Dict[str, Any]:
     """Arma el paquete. En modo remoto, lo detectado tiene que caber en `authorization` (D24 con
     alcance, `pepper.boundary`): si no cabe se escribe una propuesta y no se arma nada; si cabe, se
-    excluye el material de llave y lo detectado en texto viaja sustituido."""
+    excluye el material de llave y lo detectado en texto viaja sustituido.
+
+    Lo que el escáner no puede leer (un respaldo binario, un desplegable, un log enorme) NO viaja en
+    modo remoto: se excluye de la copia y queda listado en el README y en el manifest. Antes viajaba
+    entero y sin sustituir con solo autorizarlo, y el respaldo de producción es exactamente eso
+    (auditoría 2026-09-29). `include_uninspected=True` restaura ese comportamiento, y entonces cada
+    archivo necesita autorización expresa con su sha256."""
     from pepper import boundary
     if data_mode not in ("local", "remote"):
         raise ValueError("data_mode debe ser 'local' o 'remote'")
@@ -294,18 +328,21 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
     if staging.exists():
         shutil.rmtree(staging)
     try:
-        redacted_notes, legacy_dirs, map_summary, previous_summary = _stage(
-            staging, correlated_dir, legacy_dir, system_map, previous)
+        keep_uninspected = data_mode == "local" or include_uninspected
+        redacted_notes, legacy_dirs, map_summary, previous_summary, excluded_uninspected, excluded_keys = _stage(
+            staging, correlated_dir, legacy_dir, system_map, previous, keep_uninspected)
         # La evidencia copiada se amarra a Correlate ANTES de cualquier sustitución.
         _verify_evidence_copies(staging, source_manifest)
         # `synthetic` lo escribe quien produce session.json: informa, pero NO exime del gate.
         synthetic = bool(session.get("synthetic"))
-        excluded: List[str] = _exclude_key_material(staging) if data_mode == "remote" else []
+        excluded: List[str] = sorted(set(excluded_keys) | set(_exclude_key_material(staging))) if data_mode == "remote" else []
         data_report = _scan(staging)
         substitutions: Dict[str, Dict[str, Any]] = {}
         approved: Optional[Dict[str, Any]] = None
         if data_mode == "remote" and (data_report.categories or data_report.unscanned):
-            needed = boundary.proposal(staging, (session.get("environment") or {}).get("profile_id"), data_report, excluded)
+            needed = boundary.proposal(staging, (session.get("environment") or {}).get("profile_id"), data_report, excluded,
+                                       legacy_sha256=boundary.legacy_fingerprint(
+                                           legacy_dir, _legacy_ignore(legacy_dir) if legacy_dir is not None else None))
             if authorization is None or not authorization.is_file():
                 problems = ["no hay autorización de datos para este sistema"]
             else:
@@ -328,7 +365,7 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
                                      f"Ubicaciones: {summarize_sensitive(residual.sensitive)}")
         _finish(staging, correlated_dir, source_manifest, session, flow, legacy_dirs, data_mode,
                 data_report, map_summary, previous_summary, synthetic, external_manifest,
-                approved, authorization, substitutions, excluded)
+                approved, authorization, substitutions, excluded, excluded_uninspected)
         if out_dir.exists():
             out_dir.rmdir()  # existía vacío (se comprobó arriba); rename exige que no exista
         staging.rename(out_dir)
@@ -349,16 +386,50 @@ def assemble(correlated_dir: Path, out_dir: Path, legacy_dir: Optional[Path] = N
         "unscanned_files": len(data_report.unscanned),
         "substituted": sum(sum(s["counts"].values()) for s in substitutions.values()),
         "excluded": excluded,
+        "excluded_uninspected": excluded_uninspected,
         "external_manifest": str(external_manifest),
         "files": sum(1 for path in out_dir.rglob("*") if path.is_file()),
         "out_dir": str(out_dir),
     }
 
 
-def _stage(out_dir: Path, correlated_dir: Path, legacy_dir: Optional[Path], system_map: Optional[Path],
-           previous: Optional[Path]):
-    """Copia al staging todo lo que viaja y redacta las notas (el escaneo va después, sobre la copia)."""
+def _copy_filtered(src: Path, dst: Path, label: str, keep_uninspected: bool,
+                   excluded: List[Dict[str, Any]], ignore=None, excluded_keys: Optional[List[str]] = None) -> None:
+    """copytree que, en un paquete remoto, deja fuera lo que el escáner no podría leer y lo anota.
+    La regla es la del escáner (`sensitive.uninspectable_kind`): lo que no se escanea no se copia.
+    El material de llave (keystore, .pem…) tampoco se copia y va a `excluded_keys`."""
+    for directory, dirnames, filenames in os.walk(src, followlinks=False):
+        ignored = set(ignore(directory, dirnames + filenames)) if ignore else set()
+        dirnames[:] = sorted(name for name in dirnames if name not in ignored)
+        rel_dir = Path(directory).relative_to(src)
+        (dst / rel_dir).mkdir(parents=True, exist_ok=True)
+        for name in sorted(filenames):
+            if name in ignored:
+                continue
+            source = Path(directory) / name
+            relative = (Path(label) / rel_dir / name).as_posix()
+            if source.is_symlink():
+                continue   # _assert_no_symlinks ya rechazó el árbol si había alguno
+            if not keep_uninspected:
+                if is_key_material(source):
+                    if excluded_keys is not None:
+                        excluded_keys.append(relative)
+                    continue
+                kind = uninspectable_kind(source)
+                if kind:
+                    excluded.append({"path": relative, "kind": kind, "bytes": source.stat().st_size,
+                                     "sha256": evidence_manifest.sha256_file(source)})
+                    continue
+            shutil.copy2(source, dst / rel_dir / name)
 
+
+def _stage(out_dir: Path, correlated_dir: Path, legacy_dir: Optional[Path], system_map: Optional[Path],
+           previous: Optional[Path], keep_uninspected: bool = True):
+    """Copia al staging todo lo que viaja y redacta las notas (el escaneo va después, sobre la copia).
+    Devuelve también lo que NO se copió por no poderse inspeccionar (vacío si `keep_uninspected`)."""
+
+    excluded_uninspected: List[Dict[str, Any]] = []
+    excluded_keys: List[str] = []
     evidence = out_dir / "evidence"
     evidence.mkdir(parents=True)
     (out_dir / "output").mkdir()
@@ -368,7 +439,7 @@ def _stage(out_dir: Path, correlated_dir: Path, legacy_dir: Optional[Path], syst
         if (correlated_dir / name).is_file():
             shutil.copy2(correlated_dir / name, evidence / name)
     if (correlated_dir / "raw").is_dir():
-        shutil.copytree(correlated_dir / "raw", evidence / "raw")
+        _copy_filtered(correlated_dir / "raw", evidence / "raw", "evidence/raw", keep_uninspected, excluded_uninspected)
 
     map_summary = _copy_map(system_map, out_dir) if system_map is not None else ""
     previous_summary = ""
@@ -387,14 +458,23 @@ def _stage(out_dir: Path, correlated_dir: Path, legacy_dir: Optional[Path], syst
             if child.name in ("pepper-out", "evidence", "legacy"):
                 continue
             if child.is_dir():
-                shutil.copytree(child, out_dir / "legacy" / child.name, ignore=ignore)
+                _copy_filtered(child, out_dir / "legacy" / child.name, f"legacy/{child.name}", keep_uninspected,
+                               excluded_uninspected, ignore=ignore, excluded_keys=excluded_keys)
                 legacy_dirs.append(child.name + "/")
             elif child.is_file():
                 (out_dir / "legacy").mkdir(exist_ok=True)
+                if not keep_uninspected and is_key_material(child):
+                    excluded_keys.append(f"legacy/{child.name}")
+                    continue
+                kind = None if keep_uninspected else uninspectable_kind(child)
+                if kind:
+                    excluded_uninspected.append({"path": f"legacy/{child.name}", "kind": kind, "bytes": child.stat().st_size,
+                                                 "sha256": evidence_manifest.sha256_file(child)})
+                    continue
                 shutil.copy2(child, out_dir / "legacy" / child.name)
                 legacy_dirs.append(child.name)
     redacted_notes = _redact_notes(out_dir / "legacy")
-    return redacted_notes, legacy_dirs, map_summary, previous_summary
+    return redacted_notes, legacy_dirs, map_summary, previous_summary, excluded_uninspected, excluded_keys
 
 
 _SCOPES = ("evidence", "legacy", "map", "previous")
@@ -481,7 +561,8 @@ def _finish(out_dir: Path, correlated_dir: Path, source_manifest: Dict[str, Any]
             flow: Dict[str, Any], legacy_dirs: List[str], data_mode: str, data_report,
             map_summary: str, previous_summary: str, synthetic: bool, external_manifest: Path,
             approved: Optional[Dict[str, Any]], authorization: Optional[Path],
-            substitutions: Dict[str, Dict[str, Any]], excluded: List[str]) -> None:
+            substitutions: Dict[str, Dict[str, Any]], excluded: List[str],
+            excluded_uninspected: Optional[List[Dict[str, Any]]] = None) -> None:
     """Lo que PEPPER genera (puertas de entrada, prompt, schema, manifest) — nada del legacy."""
     shutil.copy2(SCHEMAS_DIR / SCHEMA_NAME, out_dir / "schemas" / SCHEMA_NAME)
     prompt = strip_frontmatter(DISCOVERY_SKILL.read_text(encoding="utf-8"))
@@ -490,13 +571,12 @@ def _finish(out_dir: Path, correlated_dir: Path, source_manifest: Dict[str, Any]
     adapter = _adapter(bool(map_summary), bool(previous_summary), data_mode)
     (out_dir / "CLAUDE.md").write_text(adapter, encoding="utf-8")
     (out_dir / "AGENTS.md").write_text(adapter, encoding="utf-8")
-    overrides = []
-    if approved:
-        overrides.append(f"{approved['decided_by']} ({approved['date']}): categorías "
-                         f"{', '.join(approved['categories']) or 'ninguna'}; {len(approved['unscanned'])} archivo(s) no inspeccionado(s)")
+    # El nombre de quien autorizó vive en pepper-out/data-boundary.json, fuera del paquete: aquí
+    # solo se dice que hubo autorización y el sha256 del archivo la amarra (auditoría 2026-09-29).
     (out_dir / "README.md").write_text(
         _readme(session, flow, legacy_dirs, data_mode, data_report.sensitive_total,
-                len(data_report.unscanned), overrides, bool(map_summary), bool(previous_summary)),
+                len(data_report.unscanned), bool(approved), bool(map_summary), bool(previous_summary),
+                excluded_uninspected),
         encoding="utf-8",
     )
 
@@ -525,9 +605,11 @@ def _finish(out_dir: Path, correlated_dir: Path, source_manifest: Dict[str, Any]
         "categories": sorted(data_report.categories),
         "unscanned_files": len(data_report.unscanned),
         "excluded": excluded,
+        "excluded_uninspected": excluded_uninspected or [],
         "substitutions": dict(sorted(substitutions.items())),
-        "authorization": ({"sha256": evidence_manifest.sha256_file(authorization), "decided_by": approved["decided_by"],
-                           "date": approved["date"], "system": approved["system"], "destination": approved["destination"]}
+        # sin `decided_by` ni fecha: el nombre de la persona no viaja; el sha256 apunta a la autorización
+        "authorization": ({"sha256": evidence_manifest.sha256_file(authorization),
+                           "system": approved["system"], "destination": approved["destination"]}
                           if approved and authorization else None),
     }
     internal_manifest = evidence_manifest.write(out_dir, manifest)

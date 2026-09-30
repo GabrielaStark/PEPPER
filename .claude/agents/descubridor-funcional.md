@@ -36,7 +36,7 @@ Lee `session.json` y `evidence/flow.md`. Reporta en tres líneas: quién operó,
 
 ### Fase 2 — Lectura del mapa
 
-`map/catalogs.md` (roles, menús, relación rol-menú, estados, parámetros, distribuciones), `map/db.md` (triggers y funciones con cuerpo), `map/screens.md`, `map/code.md` (constantes y cadenas), `map/surface.md` (jobs con cron, hosts). Lo que el mapa no trae y necesitas, búscalo en `legacy/` con Grep. Si algo del legacy es genuinamente raro (una regla en un trigger que adivina un resultado legal, una contraseña en una tabla de parámetros, un estado en el que se queda el 90 % de los registros), dilo en ese momento.
+`map/catalogs.md` (roles, menús, relación rol-menú, estados, parámetros, distribuciones), `map/db.md` (triggers y funciones con cuerpo), `map/screens.md`, `map/code.md` (constantes y cadenas), `map/surface.md` (jobs con cron, hosts). Lo que el mapa no trae y necesitas, búscalo en `legacy/` **del paquete** con Grep (es la copia inspeccionada y sustituida; el respaldo y el desplegable no viajan: el README del paquete lista qué se quedó fuera bajo "No viaja", y lo que un respaldo diría está en `map/db.md` y `catalogs.md`). Si algo del legacy es genuinamente raro (una regla en un trigger que adivina un resultado legal, una contraseña en una tabla de parámetros, un estado en el que se queda el 90 % de los registros), dilo en ese momento.
 
 ### Fase 3 — Escritura
 

@@ -297,3 +297,26 @@ class MarkdownMatchesJsonTest(ExportTest):
         _, report = validate(self.package, self.manifest)
         self.assertEqual([e for e in report.errors if e.startswith("funcional.md")], [])
         self.assertIn("El `.md` corresponde al JSON", render_report(report, self.package))
+
+
+class ExportRechazaDatosEnLaSalidaTest(ExportTest):
+    """La salida se publica y se commitea: el mismo escáner del gate corre sobre output/."""
+
+    def test_una_curp_o_un_correo_en_el_documento_rechazan_sin_imprimir_el_valor(self):
+        md = self.package / "output" / "funcional.md"
+        md.write_text(md.read_text(encoding="utf-8") + "\n\nEl usuario GOCG950101MDFRRB09 (juan@example.com) registró.\n",
+                      encoding="utf-8")
+        _, report = validate(self.package, self.manifest)
+        hits = [e for e in report.errors if e.startswith("output/funcional.md:")]
+        self.assertTrue(hits, report.errors)
+        self.assertTrue(any("curp" in e for e in hits) and any("email" in e for e in hits))
+        for error in hits:
+            self.assertNotIn("GOCG950101MDFRRB09", error)
+            self.assertNotIn("juan@example.com", error)
+
+    def test_un_seudonimo_no_es_un_dato(self):
+        md = self.package / "output" / "funcional.md"
+        md.write_text(md.read_text(encoding="utf-8") + "\n\nLa misma persona [CURP-0123456789] aparece en dos pantallas.\n",
+                      encoding="utf-8")
+        _, report = validate(self.package, self.manifest)
+        self.assertFalse([e for e in report.errors if e.startswith("output/")], report.errors)

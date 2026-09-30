@@ -25,16 +25,18 @@ no dice a qué conectarse, se escribe qué falta y se para.
 El motor de base es DATOS del perfil (Principio 4): `rehydrate.database` dice qué
 motor espera el artefacto, qué formato tiene su respaldo, con qué imagen corre, cómo
 se le pregunta (cliente, consulta de tablas, marca de restauración) y qué hacer si el
-datasource apunta a localhost. `rehydrate.datasource` dice cómo leer la configuración
-embebida (YAML de Spring, o Groovy compilado). El núcleo no sabe de PostgreSQL ni de
-MySQL: hasta 2026-09-21 sí sabía, y el tercer stack respondía BLOCKED con un motivo
-falso ("no dice a qué conectarse") por eso.
+datasource apunta a localhost. `rehydrate.datasource` dice cómo leer la configuración que
+trae el datasource: YAML de Spring, Groovy compilado, o —desde la auditoría 2026-09-29— un
+FORMATO genérico (`key_value`, `json`, `xml`) con `files`, `keys` y, si la URL no es JDBC,
+`url_pattern`. El núcleo no sabe de PostgreSQL ni de MySQL: hasta 2026-09-21 sí sabía, y el
+tercer stack respondía BLOCKED con un motivo falso ("no dice a qué conectarse") por eso.
 """
 
 from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -46,9 +48,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Set
 
 from pepper import REPO_ROOT
+from pepper.inspect.readers import configfiles
 from pepper.profiles import Profile
 
 DEFAULT_PORT = 18080
@@ -56,11 +59,17 @@ DEFAULT_PORT = 18080
 # declara en `rehydrate.artifact_suffixes`: qué cuenta como desplegable es del perfil,
 # no del núcleo — si no, el front de un sistema es invisible (2026-09-15).
 _ARTIFACT_SUFFIXES = (".war", ".ear", ".jar")
+# Un desplegable puede ser un archivo (zip: WAR/JAR/EAR o lo que `artifact_suffixes` declare) o una
+# CARPETA bajo legacy/ (PHP, Node con fuente, un dist estático): `rehydrate.artifact_kind`.
+_ARTIFACT_KINDS = ("archive", "directory")
+_SKIP_DIR_NAMES = {".git", "__MACOSX", "__pycache__", "node_modules"}
 _DUMP_SUFFIXES = (".dump", ".backup", ".sql")   # el perfil (`database.dump.suffixes`) manda; esto es el default
 _FILES_KEY_RE = re.compile(r"(?i)(ruta|path|dir|folder)")
 _FILES_KEY_EXCLUDE_RE = re.compile(r"(?i)redirect|direccion|context[-.]?path|servlet[-.]?path|classpath|url")
 _URL_RE = re.compile(r"https?://([A-Za-z0-9.-]+)(?::(\d+))?")
-_JDBC_RE = re.compile(r"jdbc:(\w+)://([A-Za-z0-9.-]+)(?::(\d+))?/([A-Za-z0-9_]+)")
+# Una referencia sin resolver en la contraseña: `${DB_PASS}` (Spring), `<%= ENV[…] %>` (Rails),
+# `%(x)s` (ini de Python). El artefacto espera algo que no trae; se pide, no se adivina.
+_UNRESOLVED_RE = re.compile(r"\$\{|<%=?|%\(\w+\)s")
 _SECRET_KEY_RE = re.compile(r"(?i)pass|pwd|secret|psw|token")
 
 
@@ -120,10 +129,36 @@ def split_documents(text: str) -> List[str]:
     return [d for d in docs if d.strip()]
 
 
+def _open_artifact(artifact: Path) -> zipfile.ZipFile:
+    """El desplegable abierto como zip (WAR/JAR/EAR), o BLOCKED diciendo qué es en realidad.
+
+    `zipfile.ZipFile` sobre un `.exe`, un tar o un archivo truncado reventaba con un traceback
+    en vez de un BLOCKED (auditoría 2026-09-29): el artefacto dicta el ambiente, y uno que no
+    se puede abrir es un insumo faltante con nombre, no un error de programa."""
+    try:
+        head = artifact.read_bytes()[:262] if artifact.is_file() else b""
+    except OSError as error:
+        raise Blocked(f"no se pudo leer el desplegable {artifact.name}: {error}")
+    try:
+        return zipfile.ZipFile(artifact)
+    except (zipfile.BadZipFile, OSError, IsADirectoryError) as error:
+        if head[257:262] == b"ustar" or head[:2] == b"\x1f\x8b":
+            forma = "un tar (o tar.gz), no un zip"
+        elif head[:2] == b"MZ":
+            forma = "un ejecutable de Windows (.exe/.dll), no un zip"
+        elif artifact.is_dir():
+            forma = "un directorio, no un archivo"
+        else:
+            forma = "no es un zip legible"
+        raise Blocked(f"el desplegable {artifact.name} {forma} ({type(error).__name__}: {str(error)[:80]}). "
+                      "Esta receta espera un WAR/JAR/EAR; si el stack empaca de otra forma, el perfil debe declararlo "
+                      "en rehydrate.artifact_suffixes y con lectores que entiendan ese formato")
+
+
 def read_artifact_configs(artifact: Path, patterns: List[str]) -> Dict[str, Dict[str, str]]:
     """{nombre-de-perfil: config} de cada archivo (y documento) de configuración dentro del artefacto."""
     configs: Dict[str, Dict[str, str]] = {}
-    with zipfile.ZipFile(artifact) as archive:
+    with _open_artifact(artifact) as archive:
         for name in sorted(archive.namelist()):
             if not any(re.search(p, name) for p in patterns):
                 continue
@@ -259,8 +294,7 @@ class Plan:
         return self.db_tool_version.split(".")[0]
 
     def variables(self, out_dir: Path) -> Dict[str, str]:
-        rel = lambda p: Path(*([".."] * len(out_dir.resolve().relative_to(REPO_ROOT).parts))) / p.resolve().relative_to(REPO_ROOT) \
-            if _under(p, REPO_ROOT) and _under(out_dir, REPO_ROOT) else p.resolve()
+        rel = lambda p: _relative_to(p, out_dir)
         return {
             "stack_name": self.stack_name, "subnet": self.subnet,
             "db_engine": self.db_engine, "db_version": self.db_version, "db_tool_version": self.db_tool_version,
@@ -376,8 +410,8 @@ def classify_components(artifacts: List[Path], profile: Profile, subnet_base: st
         members = _member_names(artifact)
         try:
             configs = read_artifact_configs(artifact, patterns)
-        except (zipfile.BadZipFile, OSError):
-            configs = {}
+        except Blocked:
+            configs = {}   # una pieza que no se puede abrir no tiene configuración: quedará "sin clasificar", con nombre
         rule = next((r for r in rules if _rule_matches(r, artifact, members, configs)), None)
         if rule is None:
             sin_clasificar.append(artifact.name)
@@ -432,22 +466,70 @@ def ingress_component(components: List[Component], spec: Dict[str, Any],
     raise Blocked("ninguna pieza puede ser la puerta de entrada del ingress (no hay gateway, frontend ni backend)")
 
 
+def _dir_size(path: Path) -> int:
+    total = 0
+    for child in path.rglob("*"):
+        if child.is_file() and not child.is_symlink():
+            total += child.stat().st_size
+    return total
+
+
+def _artifact_member_names(artifact: Path) -> Set[str]:
+    """Los miembros del desplegable, venga como zip o como carpeta: rutas relativas POSIX.
+
+    Así `descriptors` del perfil se comprueban igual (`META-INF/context.xml` en un WAR,
+    `public/index.php` en una carpeta de PHP) sin que el resto del plan sepa qué forma tiene."""
+    if artifact.is_dir():
+        from pepper.workspace import is_tool_path, tool_paths
+        tool = tool_paths(artifact)
+        names: Set[str] = set()
+        for path in artifact.rglob("*"):
+            relative = path.relative_to(artifact)
+            if any(part in _SKIP_DIR_NAMES for part in relative.parts) or is_tool_path(path, tool):
+                continue
+            if path.is_file() or path.is_symlink():
+                names.add(relative.as_posix())
+        return names
+    with _open_artifact(artifact) as archive:
+        return set(archive.namelist())
+
+
 def find_all_inputs(legacy_dir: Path, artifact_suffixes: Optional[Tuple[str, ...]] = None,
-                    dump_suffixes: Optional[Tuple[str, ...]] = None) -> Tuple[List[Path], List[Path]]:
+                    dump_suffixes: Optional[Tuple[str, ...]] = None,
+                    artifact_kind: Optional[str] = None) -> Tuple[List[Path], List[Path]]:
     """TODOS los desplegables y TODOS los respaldos, de mayor a menor.
 
     Un legacy no siempre es un desplegable: puede ser tres servicios y un front (un
     sistema de microservicios), o un backend y un panel aparte. Quedarse con el más
     grande y callar los demás es exactamente la clase de silencio que esta herramienta
     no se permite: quien llama decide qué usa, pero tiene que SABER qué había.
+
+    Con `artifact_kind = "directory"` (PHP, Node con fuente, un dist estático) el desplegable
+    es cada carpeta directamente bajo legacy/ (no oculta, no de la herramienta); los archivos
+    sueltos ahí (NOTAS.md, el respaldo) no cuentan como desplegable.
     """
+    kind = artifact_kind or "archive"
+    if kind not in _ARTIFACT_KINDS:
+        raise Blocked(f"el perfil declara rehydrate.artifact_kind = {kind!r}; se admite {' | '.join(_ARTIFACT_KINDS)}")
     suffixes = tuple(s.lower() for s in (artifact_suffixes or _ARTIFACT_SUFFIXES))
     dump_sfx = tuple(s.lower() for s in (dump_suffixes or _DUMP_SUFFIXES))
-    artifacts = sorted((p for p in legacy_dir.iterdir() if p.suffix.lower() in suffixes),
-                       key=lambda p: -p.stat().st_size)
-    dumps = sorted((p for p in legacy_dir.iterdir() if p.suffix.lower() in dump_sfx),
+    if kind == "directory":
+        from pepper.workspace import is_tool_path, tool_paths
+        tool = tool_paths(legacy_dir)
+        artifacts = sorted((p for p in legacy_dir.iterdir()
+                            if p.is_dir() and not p.name.startswith(".") and p.name not in _SKIP_DIR_NAMES
+                            and not is_tool_path(p, tool)),
+                           key=lambda p: -_dir_size(p))
+    else:
+        artifacts = sorted((p for p in legacy_dir.iterdir() if p.is_file() and p.suffix.lower() in suffixes),
+                           key=lambda p: -p.stat().st_size)
+    dumps = sorted((p for p in legacy_dir.iterdir() if p.is_file() and p.suffix.lower() in dump_sfx),
                    key=lambda p: -p.stat().st_size)
     if not artifacts:
+        if kind == "directory":
+            raise Blocked(f"no hay carpeta de fuente en {legacy_dir}: este perfil espera el desplegable como CARPETA "
+                          "(rehydrate.artifact_kind = directory), p. ej. legacy/<sistema>/ con su configuración adentro. "
+                          "Un zip del fuente se descomprime ahí antes")
         raise Blocked(f"no hay desplegable ({'/'.join(suffixes)}) en {legacy_dir}")
     if not dumps:
         raise Blocked(f"no hay respaldo de la base en {legacy_dir} (se buscan {'/'.join(dump_sfx)})")
@@ -472,8 +554,7 @@ def _choose_server(artifact: Path, profile: Profile, notes_text: str) -> Tuple[s
     deviations: List[str] = []
     descriptors: Dict[str, List[str]] = recipe.get("descriptors") or {}
     images: Dict[str, Dict[str, str]] = recipe.get("server_images") or {}
-    with zipfile.ZipFile(artifact) as archive:
-        members = set(archive.namelist())
+    members = _artifact_member_names(artifact)
     present = [server for server, files in descriptors.items() if any(f in members for f in files)]
     # Solo cuentan los servidores de APLICACIÓN (los que el perfil sabe reconocer por descriptor):
     # una nota que diga "la base es postgres 12" no puede convertir al app en un contenedor de
@@ -493,8 +574,12 @@ def _choose_server(artifact: Path, profile: Profile, notes_text: str) -> Tuple[s
     if not major:
         raise Blocked(f"NOTAS.md no dice la versión de {server} y el artefacto no la trae: por fidelidad no se adivina. "
                       f"Escribe en legacy/NOTAS.md cuál corre en producción (p. ej. \"{server} {sorted(k for k in table if k.isdigit())[-1] if any(k.isdigit() for k in table) else 'N'}\")")
-    # el comodín solo rinde una versión declarada; sin versión no hay `tomcat:{major}` que valga
-    image = table.get(major) or table.get("*", "").replace("{major}", major)
+    # La versión completa manda cuando el perfil la distingue (php:7.4-apache no es php:7-apache):
+    # exacta, luego mayor.menor, luego mayor; el comodín solo rinde una versión declarada
+    # (`{version}` la completa, `{major}` la mayor): sin versión no hay `tomcat:{major}` que valga.
+    minor = ".".join(version.split(".")[:2])
+    image = (table.get(version) or table.get(minor) or table.get(major)
+             or table.get("*", "").replace("{major}", major).replace("{version}", version))
     if not image:
         # Elegir "la mayor de la tabla" levantaba un servidor distinto del original y presentaba
         # la evidencia como del legado (auditoría 2026-09-21, P1-02). Una versión que el perfil
@@ -618,27 +703,220 @@ def _groovy_datasource(artifact: Path, spec: Dict[str, Any], override: Optional[
     return chosen, candidates[chosen], deviations
 
 
-def discover_datasource(artifact: Path, recipe: Dict[str, Any],
-                        override: Optional[str] = None) -> Tuple[str, Dict[str, str], List[str], Dict[str, str]]:
-    """→ (perfil/entorno, configuración plana, desviaciones, {url, username, password}) según `rehydrate.datasource`."""
+def _spring_datasource(artifact: Path, recipe: Dict[str, Any], spec: Dict[str, Any], override: Optional[str],
+                       legacy_dir: Optional[Path]) -> Tuple[str, Dict[str, str], List[str], Dict[str, str]]:
+    configs = read_artifact_configs(artifact, recipe.get("config_patterns") or [r"application.*\.(yml|yaml|properties)$"])
+    if not configs:
+        raise Blocked("el artefacto no trae configuración embebida (application*.yml) y no se dio configuración externa")
+    name, cfg, deviations = choose_spring_profile(configs, override)
+    creds = {
+        "url": next(v for k, v in cfg.items() if k.endswith("datasource.url")),
+        "username": next(v for k, v in cfg.items() if k.endswith("datasource.username")),
+        "password": next(v for k, v in cfg.items() if k.endswith("datasource.password")),
+    }
+    return name, cfg, deviations, creds
+
+
+def _groovy_datasource_creds(artifact: Path, recipe: Dict[str, Any], spec: Dict[str, Any], override: Optional[str],
+                             legacy_dir: Optional[Path]) -> Tuple[str, Dict[str, str], List[str], Dict[str, str]]:
+    name, cfg, deviations = _groovy_datasource(artifact, spec, override)
+    keys = spec.get("keys") or {"url": "dataSource.url", "username": "dataSource.username", "password": "dataSource.password"}
+    return name, cfg, deviations, {k: cfg[keys[k]] for k in ("url", "username", "password")}
+
+
+# --- los lectores genéricos de configuración (auditoría 2026-09-29) ---------------------------
+# Un `.env` (Laravel), un `database.yml` (Rails), un `appsettings.json` (.NET), un `Web.config`
+# o un `standalone.xml` (WildFly) no son un framework que el núcleo tenga que aprender: son un
+# FORMATO (clave=valor, JSON, XML) más las claves que el perfil señala. El perfil declara
+# `datasource.files` (globs de miembros del artefacto o de archivos junto a él en legacy/) y
+# `datasource.keys` (qué clave es url/host/port/db/user/password/engine).
+
+# Qué campo del datasource puede señalar `datasource.keys`, y cómo se le llama al pedirlo.
+_DATASOURCE_KEYS = {"url": "URL del datasource", "host": "host de la base", "port": "puerto de la base",
+                    "db": "nombre de la base", "user": "usuario", "username": "usuario", "password": "contraseña",
+                    "engine": "motor"}
+_FLAT_READERS = {
+    "key_value": lambda text, name: configfiles.parse_key_value(text),
+    "json": configfiles.parse_json_flat,
+    "xml": configfiles.parse_xml_flat,
+}
+
+
+def _locate_config_files(artifact: Path, legacy_dir: Optional[Path], globs: List[str]) -> List[Tuple[str, str]]:
+    """[(nombre legible, contenido)] de los archivos que casan los globs: miembros del artefacto
+    (zip o directorio) y archivos bajo legacy/ (junto al desplegable), en orden determinístico."""
+    found: List[Tuple[str, str]] = []
+
+    def wanted(relative: str) -> bool:
+        base = relative.rsplit("/", 1)[-1]
+        return any(fnmatch(relative, g) or fnmatch(base, g) for g in globs)
+
+    if artifact.is_file() and zipfile.is_zipfile(artifact):
+        with zipfile.ZipFile(artifact) as archive:
+            for info in sorted(archive.infolist(), key=lambda i: i.filename):
+                if not info.is_dir() and wanted(info.filename) and info.file_size <= 4 * 1024 * 1024:
+                    found.append((f"{artifact.name}!{info.filename}", archive.read(info.filename).decode("utf-8", errors="replace")))
+    elif artifact.is_dir():
+        for path in sorted(artifact.rglob("*")):
+            relative = path.relative_to(artifact).as_posix()
+            if path.is_file() and not path.is_symlink() and wanted(relative):
+                found.append((f"{artifact.name}/{relative}", path.read_text(encoding="utf-8", errors="replace")))
+    if legacy_dir is not None and legacy_dir.is_dir():
+        for path in sorted(legacy_dir.rglob("*")):
+            relative = path.relative_to(legacy_dir).as_posix()
+            if path.is_file() and not path.is_symlink() and path.resolve() != artifact.resolve() and wanted(relative):
+                found.append((relative, path.read_text(encoding="utf-8", errors="replace")))
+    return found
+
+
+def _generic_datasource(kind: str, artifact: Path, spec: Dict[str, Any], override: Optional[str],
+                        legacy_dir: Optional[Path]) -> Tuple[str, Dict[str, str], List[str], Dict[str, str]]:
+    """key_value / json / xml → (archivos leídos, configuración plana, desviaciones, credenciales).
+
+    Fail-closed: cada clave que el perfil señala se busca en los archivos declarados; la que
+    falta se nombra con su archivo, y una clave con dos valores distintos en dos archivos es
+    ambigüedad (BLOCKED), no "el último gana". Nunca se adivina."""
+    if override is not None:
+        raise Blocked(f"--config-profile no aplica al mecanismo {kind}: los archivos declarados en datasource.files no "
+                      "tienen entornos; el perfil fija el entorno en datasource.keys (p. ej. production.host)")
+    globs = [g for g in (spec.get("files") or []) if isinstance(g, str) and g]
+    if not globs:
+        raise Blocked(f"el perfil declara datasource.mechanism = {kind} pero no `datasource.files`: no dice en qué archivos buscar")
+    keys: Dict[str, str] = dict(spec.get("keys") or {})
+    unknown = sorted(k for k in keys if k not in _DATASOURCE_KEYS)
+    if unknown:
+        raise Blocked(f"datasource.keys señala campos que el plan no conoce: {', '.join(unknown)} "
+                      f"(válidos: {', '.join(_DATASOURCE_KEYS)})")
+    if "username" in keys and "user" not in keys:
+        keys["user"] = keys.pop("username")
+    if not ("url" in keys or ("host" in keys and "db" in keys)):
+        raise Blocked(f"datasource.keys del mecanismo {kind} debe señalar `url` (o `host` y `db`), y `user`/`password` "
+                      f"si no viajan dentro de la URL; declara: {', '.join(sorted(keys)) or 'nada'}")
+    if "url" not in keys and ("user" not in keys or "password" not in keys):
+        raise Blocked(f"datasource.keys del mecanismo {kind} señala host y db pero no `user` y `password`: sin URL que los "
+                      f"traiga, tienen que venir en claves; declara: {', '.join(sorted(keys))}")
+    files = _locate_config_files(artifact, legacy_dir, globs)
+    if not files:
+        where = f"en {artifact.name}" + (f" ni en {legacy_dir}" if legacy_dir is not None else "")
+        raise Blocked(f"ninguno de los archivos de configuración que declara el perfil ({', '.join(globs)}) existe {where}: "
+                      "sin ellos no se sabe a qué base se conecta")
+    cfg: Dict[str, str] = {}
+    per_file: Dict[str, Dict[str, str]] = {}
+    for name, content in files:
+        try:
+            flat = _FLAT_READERS[kind](content, name)
+        except configfiles.ConfigError as error:
+            raise Blocked(str(error))
+        per_file[name] = flat
+        if kind == "xml":
+            # las claves del perfil son rutas con predicado, que un aplanado no representa
+            for field, path in keys.items():
+                try:
+                    value = configfiles.lookup_xml(content, path, name)
+                except configfiles.ConfigError as error:
+                    raise Blocked(str(error))
+                if value is not None:
+                    flat[path] = value
+        for key, value in flat.items():
+            cfg.setdefault(key, value)
+    creds: Dict[str, str] = {}
+    missing: List[str] = []
+    for field, key in keys.items():
+        values = {name: flat[key] for name, flat in per_file.items() if key in flat}
+        if not values:
+            missing.append(f"`{key}` ({_DATASOURCE_KEYS[field]})")
+            continue
+        if len(set(values.values())) > 1:
+            detalle = "; ".join(f"{name}: {value if field != 'password' else '[REDACTADO]'}" for name, value in values.items())
+            raise Blocked(f"la clave `{key}` ({_DATASOURCE_KEYS[field]}) tiene valores distintos en los archivos declarados "
+                          f"({detalle}): elegir uno sería adivinar el ambiente. Deja en datasource.files solo el del ambiente a reconstruir")
+        creds["username" if field == "user" else field] = next(iter(values.values()))
+    if missing:
+        raise Blocked(f"en {', '.join(per_file)} falta {', '.join(missing)}: la configuración no dice a qué conectarse. "
+                      "Consíguela, o corrige datasource.keys del perfil si la clave se llama distinto")
+    creds.setdefault("url", "")
+    return "+".join(name.rsplit("/", 1)[-1].rsplit("!", 1)[-1] for name in per_file), cfg, [], creds
+
+
+DATASOURCE_MECHANISMS = {
+    "spring_config": _spring_datasource,
+    "groovy_config": _groovy_datasource_creds,
+    "key_value": lambda art, recipe, spec, override, legacy: _generic_datasource("key_value", art, spec, override, legacy),
+    "json": lambda art, recipe, spec, override, legacy: _generic_datasource("json", art, spec, override, legacy),
+    "xml": lambda art, recipe, spec, override, legacy: _generic_datasource("xml", art, spec, override, legacy),
+}
+
+
+def discover_datasource(artifact: Path, recipe: Dict[str, Any], override: Optional[str] = None,
+                        legacy_dir: Optional[Path] = None) -> Tuple[str, Dict[str, str], List[str], Dict[str, str]]:
+    """→ (perfil/entorno, configuración plana, desviaciones, credenciales) según `rehydrate.datasource`.
+
+    Las credenciales traen siempre `url`, `username` y `password`; los lectores genéricos agregan
+    `host`, `port`, `db` y `engine` cuando la configuración los da por separado (entonces `url`
+    puede venir vacía). `datasource_facts` los convierte en el plan."""
     spec = recipe.get("datasource") or {"mechanism": "spring_config"}
     mechanism = spec.get("mechanism", "spring_config")
-    if mechanism == "spring_config":
-        configs = read_artifact_configs(artifact, recipe.get("config_patterns") or [r"application.*\.(yml|yaml|properties)$"])
-        if not configs:
-            raise Blocked("el artefacto no trae configuración embebida (application*.yml) y no se dio configuración externa")
-        name, cfg, deviations = choose_spring_profile(configs, override)
-        creds = {
-            "url": next(v for k, v in cfg.items() if k.endswith("datasource.url")),
-            "username": next(v for k, v in cfg.items() if k.endswith("datasource.username")),
-            "password": next(v for k, v in cfg.items() if k.endswith("datasource.password")),
-        }
-        return name, cfg, deviations, creds
-    if mechanism == "groovy_config":
-        name, cfg, deviations = _groovy_datasource(artifact, spec, override)
-        keys = spec.get("keys") or {"url": "dataSource.url", "username": "dataSource.username", "password": "dataSource.password"}
-        return name, cfg, deviations, {k: cfg[keys[k]] for k in ("url", "username", "password")}
-    raise Blocked(f"el perfil declara un mecanismo de datasource desconocido: {mechanism!r} (spring_config | groovy_config)")
+    reader = DATASOURCE_MECHANISMS.get(mechanism)
+    if reader is None:
+        raise Blocked(f"el perfil declara un mecanismo de datasource desconocido: {mechanism!r} "
+                      f"({' | '.join(DATASOURCE_MECHANISMS)})")
+    return reader(artifact, recipe, spec, override, legacy_dir)
+
+
+@dataclass
+class DatasourceFacts:
+    """A qué base se conecta el artefacto, ya interpretado: lo que el plan necesita."""
+    engine: str
+    host: str
+    port: int
+    db: str
+    user: str
+    password: str
+    url: str                 # la URL tal cual la trae la configuración ("" si vino en claves sueltas)
+    notes: List[str] = field(default_factory=list)
+
+
+def datasource_facts(creds: Dict[str, str], spec: Dict[str, Any], database: Dict[str, Any]) -> DatasourceFacts:
+    """Credenciales del lector → hechos del datasource, con la URL leída por la regex del perfil.
+
+    `datasource.url_pattern` (grupos nombrados engine/host/port/db y opcionales user/password)
+    reemplaza a la JDBC de siempre cuando el perfil la declara: `postgres://u:p@h:5432/db`,
+    `Server=h;Database=db;User Id=u;Password=p`, `mysql:host=h;dbname=db`. Lo que la URL no
+    trae se toma de las claves sueltas; lo que ninguno trae se pide, no se adivina."""
+    notes: List[str] = []
+    url = creds.get("url") or ""
+    parsed: Dict[str, str] = {}
+    try:
+        if url:
+            parsed = configfiles.parse_datasource_url(url, spec.get("url_pattern"))
+        elif spec.get("url_pattern"):
+            configfiles.compile_url_pattern(spec.get("url_pattern"))   # una regex rota del perfil se dice aunque no haya URL
+    except configfiles.ConfigError as error:
+        raise Blocked(str(error))
+    host = parsed.get("host") or creds.get("host") or ""
+    db = parsed.get("db") or creds.get("db") or ""
+    if not host or not db:
+        raise Blocked(f"la configuración del datasource no dice {'el host' if not host else 'el nombre de la base'}"
+                      + (f" (URL: {url!r})" if url else " y no trae URL") + ": no se sabe a qué conectarse")
+    user = creds.get("username") if creds.get("username") is not None else parsed.get("user")
+    password = creds.get("password") if creds.get("password") is not None else parsed.get("password")
+    if not user:
+        raise Blocked("la configuración del datasource no trae el usuario de la base: ni la URL lo lleva ni datasource.keys "
+                      "señala una clave `user`")
+    if password is None:
+        raise Blocked("la configuración del datasource no trae la contraseña de la base: ni la URL la lleva ni datasource.keys "
+                      "señala una clave `password`")
+    port_raw = parsed.get("port") or creds.get("port") or ""
+    try:
+        port = int(port_raw) if port_raw else int(database.get("default_port") or 0)
+    except ValueError:
+        raise Blocked(f"el puerto del datasource no es un número: {port_raw!r}")
+    engine = parsed.get("engine") or creds.get("engine") or ""
+    if not engine:
+        engine = str(database.get("engine") or "")
+        notes.append(f"la configuración del datasource no declara el motor; el perfil fabrica {engine} y con eso se levanta")
+    return DatasourceFacts(engine=engine, host=host, port=port, db=db, user=str(user), password=str(password),
+                           url=url, notes=notes)
 
 
 _NUMERIC_VERSION = re.compile(r"^\d+(?:\.\d+)*$")
@@ -667,7 +945,8 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
     recipe_early = profile.data.get("rehydrate", {})
     database: Dict[str, Any] = recipe_early.get("database") or {}
     dump_suffixes = tuple((database.get("dump") or {}).get("suffixes") or ())
-    artifacts, dumps = find_all_inputs(legacy_dir, recipe_early.get("artifact_suffixes"), dump_suffixes or None)
+    artifacts, dumps = find_all_inputs(legacy_dir, recipe_early.get("artifact_suffixes"), dump_suffixes or None,
+                                       recipe_early.get("artifact_kind"))
     artifact = artifacts[0]
     human_choices: List[str] = []
     if dump_choice is not None:
@@ -740,11 +1019,13 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
                 datasources = {}
                 for carrier in carriers:
                     try:
-                        _, _, _, creds_c = discover_datasource(carrier.artifact, recipe, config_profile)
+                        _, _, _, creds_c = discover_datasource(carrier.artifact, recipe, config_profile, legacy_dir)
                     except Blocked as error:
                         raise Blocked(f"la pieza `{carrier.name}` tiene el papel '{datasource_role}' y no se le pudo leer "
                                       f"el datasource: {error}")
-                    datasources.setdefault((creds_c["url"], creds_c["username"]), []).append(carrier)
+                    # la clave de agrupación: la URL, o host/base si la configuración vino en claves sueltas
+                    target = creds_c.get("url") or f"{creds_c.get('host', '?')}/{creds_c.get('db', '?')}"
+                    datasources.setdefault((target, creds_c["username"]), []).append(carrier)
                 if len(datasources) > 1:
                     detalle = "\n".join(
                         f"      · {', '.join(c.name for c in piezas)} → {url}  (usuario {user})"
@@ -766,25 +1047,22 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
     if not database.get("engine"):
         raise Blocked(f"el perfil {profile.id} no declara `rehydrate.database` (motor, respaldo, imagen, sonda): "
                       "sin eso el núcleo no sabe qué base fabricar")
-    spring_profile, cfg, profile_deviations, creds = discover_datasource(artifact, recipe, config_profile)
-    url = creds["url"]
-    m = _JDBC_RE.search(url)
-    if not m:
-        raise Blocked(f"no entiendo la URL del datasource: {url!r}")
-    engine, host, port, db_name = m.group(1), m.group(2), int(m.group(3) or database.get("default_port") or 0), m.group(4)
+    spring_profile, cfg, profile_deviations, creds = discover_datasource(artifact, recipe, config_profile, legacy_dir)
+    facts_ds = datasource_facts(creds, recipe.get("datasource") or {}, database)
+    url, engine, host, port, db_name = facts_ds.url, facts_ds.engine, facts_ds.host, facts_ds.port, facts_ds.db
     expected_engine = database["engine"]
     if engine.lower() not in {expected_engine.lower(), *(e.lower() for e in database.get("engine_aliases") or [])}:
-        raise Blocked(f"el datasource es jdbc:{engine} y el perfil {profile.id} fabrica {expected_engine}: no es el perfil de este stack")
-    db_user = creds["username"]
-    db_password = creds["password"]
+        raise Blocked(f"el datasource es {engine} y el perfil {profile.id} fabrica {expected_engine}: no es el perfil de este stack")
+    db_user = facts_ds.user
+    db_password = facts_ds.password
     deviations: List[str] = list(profile_deviations)
     # El perfil puede declarar parámetros de la URL que el motor de esa versión rechaza (MySQL 5.7.36
     # no conoce `storage_engine`; con él el pool nunca conecta). Se quitan y queda como desviación:
     # el ambiente original tuvo que resolverlo con configuración externa que no está en legacy/.
     url, stripped = strip_url_params(url, (recipe.get("datasource") or {}).get("url_strip_params") or [])
     deviations += stripped
-    notes: List[str] = list(human_choices) + component_notes
-    if "${" in db_password:
+    notes: List[str] = list(human_choices) + component_notes + facts_ds.notes
+    if _UNRESOLVED_RE.search(db_password):
         raise Blocked(f"la contraseña del datasource es una referencia sin resolver ({db_password!r}): "
                       "el artefacto espera una variable de entorno que no trae; consíguela")
     shared_namespace = False
@@ -884,7 +1162,8 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
                 pass
             if h not in external and h != "localhost":
                 external.append(h)
-        if re.search(r"(?i)smtp|mail\.host|mail\.smtp", key) and re.fullmatch(r"[A-Za-z0-9.-]+\.[a-z]{2,}", value):
+        # `mail.host` (Spring), `MAIL_HOST` (.env), `mail-host`: el separador es del formato, no del negocio
+        if re.search(r"(?i)smtp|mail[._-]host|mail[._-]smtp", key) and re.fullmatch(r"[A-Za-z0-9.-]+\.[a-z]{2,}", value):
             if value not in external:
                 external.append(value)
     for key, value in cfg.items():
@@ -895,11 +1174,12 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
         notes.append("dependencias declaradas por IP directa (no se pueden aliasear al stub; fallan sin salir y sin registro): " + ", ".join(by_ip))
 
     start_class = ""
-    with zipfile.ZipFile(artifact) as archive:
-        if "META-INF/MANIFEST.MF" in archive.namelist():
-            manifest = archive.read("META-INF/MANIFEST.MF").decode("utf-8", errors="replace")
-            mm = re.search(r"Start-Class:\s*(\S+)", manifest)
-            start_class = mm.group(1) if mm else ""
+    if artifact.is_file():   # una carpeta de fuente no lleva MANIFEST: el paquete es "app"
+        with _open_artifact(artifact) as archive:
+            if "META-INF/MANIFEST.MF" in archive.namelist():
+                manifest = archive.read("META-INF/MANIFEST.MF").decode("utf-8", errors="replace")
+                mm = re.search(r"Start-Class:\s*(\S+)", manifest)
+                start_class = mm.group(1) if mm else ""
     package = ".".join(start_class.split(".")[:3]) if start_class else "app"
     app_package_env = package.upper().replace(".", "_").replace("-", "_")
     files_root = next((v for k, v in cfg.items()
@@ -1046,6 +1326,75 @@ def env_line(name: str, value: str) -> str:
 
 # --------------------------------------------------------------- render
 
+# Lo que cada variable de plantilla puede contener. Los valores salen del artefacto (nombre de base,
+# usuario del datasource, dueños del respaldo) y se insertaban con str.replace encadenado en un YAML
+# y en un shell: un rol `$(…)` del respaldo se ejecutaba en el contenedor de restauración, y una
+# sustitución anidada (`{{db_url}}` dentro de un valor) se expandía (auditoría 2026-09-29). Ahora
+# cada valor se valida contra su forma y se sustituye en UNA pasada; lo que no cabe es BLOCKED.
+_IDENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.,-]*$|^$")
+_IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@-]*$|^$")
+_VERSION = re.compile(r"^[A-Za-z0-9._+-]*$")
+_PORTS = re.compile(r"^\d+(,\d+)*$|^$")
+_DIGITS = re.compile(r"^\d+$")
+_PATH = re.compile(r"^[^\s$`;\"'|&<>*?]+$|^$")
+_HOST_LIST = re.compile(r"^\[[A-Za-z0-9._-]*(?:, [A-Za-z0-9._-]+)*\]$")
+_OWNERS = re.compile(r"^(?:[A-Za-z0-9_][A-Za-z0-9_.-]*(?: [A-Za-z0-9_][A-Za-z0-9_.-]*)*)?$")
+_URL = re.compile(r"^[^\s\"'`$;|&<>]*$")
+_TEMPLATE_RULES: Dict[str, Any] = {
+    **{k: _IDENT for k in ("db_name", "db_user", "stack_name", "app_name", "war_name", "component_name",
+                           "component_artifact_name", "entry_component", "config_profile", "spring_profile",
+                           "component_config_profile", "component_role", "component_engine", "app_package_env")},
+    **{k: "ip" for k in ("db_ip", "stub_ip", "gateway_ip", "entry_ip", "app_ip", "component_ip")},
+    "dns_sink": "quoted_ip", "subnet": "cidr",
+    **{k: _DIGITS for k in ("db_port", "host_port", "entry_port", "component_port")},
+    **{k: _IMAGE for k in ("db_image", "db_tool_image", "server_image", "component_image")},
+    **{k: _VERSION for k in ("db_version", "db_tool_version", "postgres_version", "pg_restore_version", "db_engine", "dump_sha")},
+    **{k: _PATH for k in ("dump_path", "war_path", "component_artifact_path", "files_root")},
+    "stub_ports": _PORTS, "external_hosts": _HOST_LIST, "db_alias": _HOST_LIST, "db_owners": _OWNERS, "db_url": _URL,
+}
+_VARIABLE_RE = re.compile(r"\{\{(\w+)\}\}")
+
+
+def _template_value_ok(name: str, value: str) -> bool:
+    rule = _TEMPLATE_RULES.get(name)
+    if rule is None:
+        return "\n" not in value and "{{" not in value if name != "components" else True
+    if rule == "ip":
+        try:
+            ipaddress.ip_address(value)
+            return True
+        except ValueError:
+            return False
+    if rule == "quoted_ip":
+        try:
+            ipaddress.ip_address(value.strip('"'))
+            return value.startswith('"') and value.endswith('"')
+        except ValueError:
+            return False
+    if rule == "cidr":
+        try:
+            ipaddress.ip_network(value, strict=False)
+            return True
+        except ValueError:
+            return False
+    return bool(rule.match(value))
+
+
+def render_template(text: str, values: Dict[str, str], template_name: str) -> str:
+    """Sustituye `{{nombre}}` en una sola pasada, con cada valor validado contra su forma."""
+    missing = sorted(set(_VARIABLE_RE.findall(text)) - set(values))
+    if missing:
+        raise Blocked(f"la plantilla {template_name} pide variables que el plan no tiene: {', '.join(missing)}")
+    used = set(_VARIABLE_RE.findall(text))
+    for name in sorted(used):
+        value = str(values[name])
+        if not _template_value_ok(name, value):
+            shown = value if len(value) <= 40 else value[:40] + "…"
+            raise Blocked(f"{template_name}: el valor de `{name}` ({shown!r}) no tiene la forma que PEPPER admite en una "
+                          "plantilla (identificador, IP, imagen, ruta sin caracteres de shell): no se inserta lo que no se reconoce")
+    return _VARIABLE_RE.sub(lambda m: str(values[m.group(1)]), text)
+
+
 def render_components(plan: Plan, profile: Profile, out_dir: Path, variables: Dict[str, str]) -> str:
     """El fragmento de compose del perfil, renderizado una vez por pieza y concatenado.
 
@@ -1069,21 +1418,53 @@ def render_components(plan: Plan, profile: Profile, out_dir: Path, variables: Di
         text = (profile.dir / template_name).read_text(encoding="utf-8")
         values = dict(variables)
         values.update(component.variables(str(_relative_to(component.artifact, out_dir))))
-        missing = sorted(set(re.findall(r"\{\{(\w+)\}\}", text)) - set(values))
-        if missing:
-            raise Blocked(f"la plantilla {template_name} pide variables que el plan no tiene: {', '.join(missing)}")
-        piece = text
-        for name, value in values.items():
-            piece = piece.replace("{{" + name + "}}", value)
-        rendered.append(piece.rstrip() + "\n")
+        rendered.append(render_template(text, values, template_name).rstrip() + "\n")
     return "\n".join(rendered)
 
 
-def _relative_to(path: Path, out_dir: Path) -> Path:
-    """La ruta del artefacto tal como la ve el compose (relativa si ambos viven bajo el repo)."""
-    if _under(path, REPO_ROOT) and _under(out_dir, REPO_ROOT):
-        return Path(*([".."] * len(out_dir.resolve().relative_to(REPO_ROOT).parts))) / path.resolve().relative_to(REPO_ROOT)
-    return path.resolve()
+def _relative_to(path: Path, out_dir: Path) -> str:
+    """La ruta del artefacto o del respaldo tal como la ve el compose.
+
+    Relativa al directorio del compose (`../../legacy/app.war`) cuando los dos viven en el mismo
+    workspace — el que marca `.claude/commands/pepper.md` o `.pepper-home`, sea un workspace de
+    `pepper init`, el clon de la herramienta o el repo del legacy con PEPPER encima — y absoluta
+    si no. Antes solo relativizaba bajo `REPO_ROOT`: con el workspace aparte del clon, `legacy/`
+    ya no está bajo la instalación. `pepper isolate` acepta las dos formas: son archivos
+    concretos, no directorios del host."""
+    from pepper.workspace import find_root
+
+    root = find_root(out_dir) or (REPO_ROOT if _under(out_dir, REPO_ROOT) else None)
+    if root is not None and _under(path, root):
+        relative = os.path.relpath(str(path.resolve()), str(out_dir.resolve()))
+        # `legacy/x.war` sin `./` sería un volumen nombrado para Compose, no un bind
+        return relative if relative.startswith("../") else "./" + relative
+    return str(path.resolve())
+
+
+def pack_directory(source: Path, target: Path) -> Path:
+    """La carpeta del fuente empacada como UN archivo tar junto al compose (`legacy.tar`).
+
+    `isolate` no admite montar un directorio del host en un contenedor (expone todo lo que
+    contenga, sockets de control incluidos) y esa regla no se relaja por un stack: el
+    contenedor recibe un archivo `:ro` y lo desempaca en su propio sistema de archivos, así el
+    legacy sigue siendo solo lectura y lo que el sistema escriba muere con el contenedor. Sin
+    comprimir (es una copia local), sin seguir enlaces (un enlace a /etc no viaja como /etc),
+    sin `.git` ni sockets, y con permisos 0600: la carpeta lleva la configuración con credenciales."""
+    import tarfile
+
+    from pepper.workspace import is_tool_path, tool_paths
+    tool = tool_paths(source)
+    with tarfile.open(target, "w", dereference=False) as tar:
+        for path in sorted(source.rglob("*")):
+            relative = path.relative_to(source)
+            if any(part in _SKIP_DIR_NAMES for part in relative.parts) or is_tool_path(path, tool):
+                continue
+            if path.is_socket() or path.is_fifo():
+                continue
+            if path.is_file() or path.is_symlink() or path.is_dir():
+                tar.add(path, arcname=relative.as_posix(), recursive=False)
+    target.chmod(0o600)
+    return target
 
 
 def render(plan: Plan, profile: Profile, out_dir: Path) -> List[Path]:
@@ -1092,18 +1473,22 @@ def render(plan: Plan, profile: Profile, out_dir: Path) -> List[Path]:
     variables = plan.variables(out_dir)
     variables["components"] = render_components(plan, profile, out_dir, variables)
     written: List[Path] = []
+    if plan.artifact.is_dir():
+        # El desplegable es una carpeta (rehydrate.artifact_kind = directory): viaja al contenedor
+        # como un solo archivo escrito por PEPPER junto al compose, nunca como directorio del host.
+        written.append(pack_directory(plan.artifact, out_dir / "legacy.tar"))
+        variables["war_path"] = "./legacy.tar"
+        note = f"la carpeta `{plan.artifact.name}` se empaca como legacy.tar junto al compose y el contenedor la desempaca en su propio sistema de archivos (el legacy no se toca)"
+        if note not in plan.notes:
+            plan.notes.append(note)
     for key, target in (("compose_template", "docker-compose.yml"), ("restore_template", "restore.sh")):
         template_name = recipe.get(key)
         if not template_name:
             raise Blocked(f"el perfil {profile.id} no declara {key}")
-        text = (profile.dir / template_name).read_text(encoding="utf-8")
-        missing = sorted(set(re.findall(r"\{\{(\w+)\}\}", text)) - set(variables))
-        if missing:
-            raise Blocked(f"la plantilla {template_name} pide variables que el plan no tiene: {', '.join(missing)}")
-        for name, value in variables.items():
-            text = text.replace("{{" + name + "}}", value)
+        text = render_template((profile.dir / template_name).read_text(encoding="utf-8"), variables, template_name)
         path = out_dir / target
         path.write_text(text, encoding="utf-8")
+        path.chmod(0o600)   # el compose y el restore rendidos llevan valores del datasource
         written.append(path)
     # Archivos extra del perfil (p. ej. la configuración externa que el servidor original tenía
     # fuera del artefacto): se renderizan con las mismas variables y cada uno queda como desviación.
@@ -1111,12 +1496,7 @@ def render(plan: Plan, profile: Profile, out_dir: Path) -> List[Path]:
         template_name, target = extra["template"], extra["target"]
         if "/" in target or target.startswith("."):
             raise Blocked(f"extra_templates: el destino {target!r} debe ser un nombre de archivo junto al compose")
-        text = (profile.dir / template_name).read_text(encoding="utf-8")
-        missing = sorted(set(re.findall(r"\{\{(\w+)\}\}", text)) - set(variables))
-        if missing:
-            raise Blocked(f"la plantilla {template_name} pide variables que el plan no tiene: {', '.join(missing)}")
-        for name, value in variables.items():
-            text = text.replace("{{" + name + "}}", value)
+        text = render_template((profile.dir / template_name).read_text(encoding="utf-8"), variables, template_name)
         path = out_dir / target
         path.write_text(text, encoding="utf-8")
         path.chmod(0o600)   # puede llevar la credencial del datasource
@@ -1187,9 +1567,49 @@ def _http(url: str, timeout: int = 5) -> Tuple[Optional[int], str]:
         return None, ""
 
 
+def _create_verified_and_start(out_dir: Path, compose_path: Path, plan: Plan, validations: List[Dict[str, str]],
+                               *services: str, force: bool = False, log=print) -> Optional[Dict[str, str]]:
+    """`docker compose create` → inspección según Docker → `start`. Lo que el daemon hizo con el compose
+    se mira ANTES de que el legacy ejecute una sola instrucción: antes el aislamiento en vivo se
+    verificaba después de que el app ya había corrido sus jobs de arranque (auditoría 2026-09-29).
+    Devuelve la validación fallida, o None si arrancó."""
+    from pepper.isolate import check_live
+
+    args = ["create", "--pull", "never"] + (["--force-recreate"] if force else []) + list(services)
+    created = _compose(out_dir, *args)
+    if created.returncode != 0:
+        return {"check": f"docker compose create {' '.join(services)}", "result": "fail", "detail": created.stderr[-400:]}
+    report = check_live(compose_path, plan.external_hosts, "ingress", created_only=True, probe=False)
+    if report.verdict != "VERIFIED":
+        for finding in report.errors + report.unknowns:
+            log(f"  ✗ {finding.check}")
+        return {"check": f"aislamiento de {', '.join(services)} según Docker, antes de arrancar", "result": "fail",
+                "detail": report.verdict + ": " + "; ".join(f.check for f in report.errors + report.unknowns)[:400]}
+    started = _compose(out_dir, "start", *services)
+    if started.returncode != 0:
+        return {"check": f"docker compose start {' '.join(services)}", "result": "fail", "detail": started.stderr[-400:]}
+    validations.append({"check": f"{', '.join(services) or 'servicios auxiliares'}: creados, inspeccionados según Docker y arrancados", "result": "pass",
+                        "detail": f"{len([f for f in report.findings if f.level == 'ok'])} comprobaciones antes de arrancar"})
+    return None
+
+
 def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
              log=print) -> Tuple[str, List[Dict[str, str]], List[Dict[str, str]]]:
-    """Levanta, restaura si hace falta, espera, verifica y valida. → (estado, validaciones, faltantes)."""
+    """Levanta, restaura si hace falta, espera, verifica y valida. → (estado, validaciones, faltantes).
+    Si termina en FAILED con contenedores arriba, los DETIENE (sin borrar volúmenes ni contenedores:
+    `docker compose logs` sigue sirviendo para diagnosticar): un entorno que no pasó la verificación
+    no se queda corriendo (auditoría 2026-09-29)."""
+    status, validations, missing = _bring_up(plan, profile, out_dir, wait_s=wait_s, log=log)
+    if status == "FAILED":
+        stopped = _compose(out_dir, "stop")
+        validations.append({"check": "entorno detenido tras FAILED (contenedores y volumen conservados para diagnosticar)",
+                            "result": "pass" if stopped.returncode == 0 else "fail",
+                            "detail": "docker compose stop" if stopped.returncode == 0 else stopped.stderr[-200:]})
+    return status, validations, missing
+
+
+def _bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
+              log=print) -> Tuple[str, List[Dict[str, str]], List[Dict[str, str]]]:
     from pepper.isolate import check_live, check_static, resolve_compose
 
     validations: List[Dict[str, str]] = []
@@ -1223,10 +1643,10 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
     validations.append({"check": "aislamiento del compose verificado antes de levantar", "result": "pass",
                         "detail": f"{len([f for f in report.findings if f.level == 'ok'])} comprobaciones"})
 
-    log("  levantando base y stub…")
-    up = _compose(out_dir, "up", "-d", "--pull", "never", "db", "stub")
-    if up.returncode != 0:
-        return "FAILED", validations + [{"check": "docker compose up db stub", "result": "fail", "detail": up.stderr[-400:]}], missing
+    log("  creando base y stub, inspeccionando según Docker y arrancando…")
+    failure = _create_verified_and_start(out_dir, compose_path, plan, validations, "db", "stub", log=log)
+    if failure:
+        return "FAILED", validations + [failure], missing
     alive = False
     for _ in range(int(probe.get("ready_attempts", 60))):
         try:
@@ -1290,17 +1710,16 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
 
     # Con varias piezas, los servicios son las piezas; con una, el `app` de siempre.
     services = [c.name for c in plan.components] or ["app"]
-    log(f"  levantando {', '.join(services)} e ingress…")
+    log(f"  creando {', '.join(services)} e ingress, inspeccionando según Docker y arrancando…")
     since = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-    up = _compose(out_dir, "up", "-d", "--pull", "never", "--force-recreate", *services, "ingress")
-    if up.returncode != 0:
-        return "FAILED", validations + [{"check": f"docker compose up {' '.join(services)} ingress", "result": "fail",
-                                         "detail": up.stderr[-400:]}], missing
+    failure = _create_verified_and_start(out_dir, compose_path, plan, validations, *services, "ingress", force=True, log=log)
+    if failure:
+        return "FAILED", validations + [failure], missing
     # Lo demás que el compose declare sin `profiles:` (sidecars como el que saca el general log de
     # MySQL por stdout): el núcleo no sabe qué son, pero sin ellos `pepper collect` no ve su evidencia.
-    rest = _compose(out_dir, "up", "-d", "--pull", "never")
-    if rest.returncode != 0:
-        return "FAILED", validations + [{"check": "docker compose up (servicios auxiliares)", "result": "fail", "detail": rest.stderr[-400:]}], missing
+    failure = _create_verified_and_start(out_dir, compose_path, plan, validations, log=log)
+    if failure:
+        return "FAILED", validations + [failure], missing
     recipe = profile.data.get("rehydrate", {})
     default_ready = recipe.get("ready_log_pattern") or "Started|started"
     failed_re = re.compile(recipe["failed_log_pattern"]) if recipe.get("failed_log_pattern") else None

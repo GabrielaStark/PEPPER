@@ -21,11 +21,10 @@ raw-evidence/    evidencia de una ejecución del flujo "Registrar solicitud"
 
 expected/        la clave de respuestas
 ├── notes.md                  qué debe encontrar PEPPER y cómo se evalúa
-├── funcional.json / .md      salida de referencia (golden file): qué hace el sistema
-└── reference-environment/    lo que Rehydrate debería generar
+└── funcional.json / .md      salida de referencia (golden file): qué hace el sistema
 ```
 
-> La evidencia de `raw-evidence/` es **sintética**: construida a mano para reproducir lo que este legacy emitiría, con el formato real de cada fuente. Está marcada como tal en `session.json`. Cuando el entorno de referencia se levante por primera vez, hay que contrastarla con la captura real y corregirla si difiere.
+> La evidencia de `raw-evidence/` es **sintética**: construida a mano para reproducir lo que este legacy emitiría, con el formato real de cada fuente. Está marcada como tal en `session.json`. El levantamiento real con Docker lo prueba `scripts/e2e_docker.py` en CI con un servicio mínimo; este fixture cubre correlate → package → export.
 
 ## El flujo observado
 
@@ -61,4 +60,4 @@ Corre Correlate y Package sobre este fixture y deja el paquete listo para el age
 | Nivel | Necesitas | Ejercita |
 |---|---|---|
 | Evidencia pre-capturada (`raw-evidence/`) | Python 3.9+ y un agente | Correlate → Package → Discover → Export — **funciona hoy** |
-| Legacy corriendo | Docker, Maven, JDK 8 | el pipeline completo, incluido Rehydrate ([entorno de referencia](expected/reference-environment/), sin verificar) |
+| Legacy corriendo | Docker, Maven, JDK 8 | el pipeline completo con este WAR no está automatizado; el levantamiento aislado real lo prueba `scripts/e2e_docker.py` con un servicio sintético |

@@ -467,3 +467,75 @@ class ExplorerParserTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UserSqlTest(unittest.TestCase):
+    """`roles[].user_sql`: la clave de usuario se resuelve dentro de la base desechable y el agente no la ve."""
+
+    def _explorer(self, roles, creds=None):
+        import io
+        from pepper.explore import Explorer
+        ex = Explorer.__new__(Explorer)
+        ex.config = {"credentials": creds if creds is not None else {"db_name": "d", "sql": "UPDATE u SET p = '{password}' WHERE k = '{user}'"},
+                     "roles": roles}
+        ex.actions, ex._log = [], io.StringIO()
+        return ex
+
+    def _run(self, ex, responder):
+        from unittest import mock
+        calls = []
+        def fake(command, capture_output, text):
+            sql = command[-1]; calls.append(sql)
+            rc, out, err = responder(sql)
+            return mock.Mock(returncode=rc, stdout=out, stderr=err)
+        with mock.patch("pepper.explore.subprocess.run", side_effect=fake):
+            ready = ex.grant_credentials(Path("/x/docker-compose.yml"))
+        return ready, calls
+
+    def test_config_acepta_user_sql_en_vez_de_user(self):
+        from pepper.explore import config_problems
+        base = {"base_url": "http://127.0.0.1:1", "login": {"route": "/l", "user_field": "#u", "password_field": "#p",
+                                                             "submit": "#s", "identity_text": "{user}"},
+                "credentials": {"db_name": "d", "sql": "x"}}
+        ok = dict(base, roles=[{"name": "ADMIN", "user_sql": "SELECT login FROM usuarios WHERE rol='ADMIN' LIMIT 1", "password": "p"}])
+        self.assertEqual(config_problems(ok), [])
+        both = dict(base, roles=[{"name": "ADMIN", "user": "u", "user_sql": "SELECT 1", "password": "p"}])
+        self.assertTrue(any("uno u otro" in p for p in config_problems(both)))
+        no_db = dict(base, credentials={}, roles=[{"name": "ADMIN", "user_sql": "SELECT 1", "password": "p"}])
+        self.assertTrue(any("credentials.db_name" in p for p in config_problems(no_db)))
+
+    def test_resuelve_la_clave_en_el_contenedor_y_no_la_escribe(self):
+        ex = self._explorer([{"name": "ADMIN", "user_sql": "SELECT login FROM usuarios WHERE rol='ADMIN' LIMIT 1", "password": "p"}])
+        def responder(sql):
+            if "SELECT login" in sql:
+                return (0, "jperez\n", "")
+            return (0, "", "")
+        ready, calls = self._run(ex, responder)
+        self.assertEqual(ready, ["ADMIN"])
+        self.assertEqual(ex.config["roles"][0]["user"], "jperez")
+        self.assertTrue(any("WHERE k = 'jperez'" in sql for sql in calls))
+        self.assertNotIn("jperez", ex._log.getvalue())
+
+    def test_una_consulta_vacia_deja_al_rol_sin_explorar_y_lo_dice(self):
+        ex = self._explorer([{"name": "ADMIN", "user_sql": "SELECT login FROM usuarios WHERE 1=0", "password": "p"},
+                             {"name": "CONSULTAS", "user": "c1", "password": "p"}])
+        ready, _ = self._run(ex, lambda sql: (0, "", "") if "1=0" in sql else (0, "", ""))
+        self.assertEqual(ready, ["CONSULTAS"])
+        self.assertEqual(ex.actions[0].detail.get("falla"), "acceso")
+
+
+class NavegadorHermeticoYObserveTest(unittest.TestCase):
+    def test_los_flags_cierran_el_resolver_salvo_el_ingress(self):
+        from pepper.explore import browser_args
+        args = browser_args("http://127.0.0.1:18080")
+        self.assertIn("--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1", args)
+        self.assertTrue(any(a.startswith("--force-webrtc-ip-handling-policy") for a in args))
+
+    def test_el_veredicto_de_una_observacion(self):
+        from pepper.explore import outcome
+        ok = outcome({"mode": "observe"}, [{"kind": "observe", "result": "ok"}], ["http.jsonl"])
+        self.assertEqual(ok["status"], "COMPLETO")
+        sin_http = outcome({"mode": "observe"}, [{"kind": "observe", "result": "ok"}], [])
+        self.assertEqual(sin_http["status"], "FALLIDO")
+        no_abrio = outcome({"mode": "observe"}, [{"kind": "observe", "result": "error"}], ["http.jsonl"])
+        self.assertEqual(no_abrio["status"], "FALLIDO")

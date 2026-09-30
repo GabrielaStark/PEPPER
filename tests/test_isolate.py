@@ -18,22 +18,23 @@ sys.path.insert(0, str(ROOT))
 
 from pepper.isolate import check_static, render  # noqa: E402
 
+_HARD = {"cap_drop": ["NET_RAW"], "security_opt": ["no-new-privileges:true"]}
 AISLADO = {
     "services": {
-        "db": {"image": "postgres:16", "dns": ["10.4.2.254"], "networks": {"legacy": {"ipv4_address": "10.4.2.186"}}},
+        "db": {"image": "postgres:16", "dns": ["10.4.2.254"], "networks": {"legacy": {"ipv4_address": "10.4.2.186"}}, **_HARD},
         "stub": {"image": "python:3-alpine", "dns": ["10.4.2.254"],
                  "networks": {"legacy": {"ipv4_address": "10.4.2.185",
-                                         "aliases": ["bus.institucion.example", "smtp.gmail.com"]}}},
+                                         "aliases": ["bus.institucion.example", "smtp.gmail.com"]}}, **_HARD},
         "app": {"image": "jboss/wildfly:21.0.2.Final", "dns": ["10.4.2.254"],
                 "networks": {"legacy": {"ipv4_address": "10.4.2.10"}},
-                "volumes": ["../../legacy/app.war:/opt/jboss/wildfly/standalone/deployments/app.war:ro"]},
+                "volumes": ["../../legacy/app.war:/opt/jboss/wildfly/standalone/deployments/app.war:ro"], **_HARD},
         "ingress": {"image": "python:3-alpine", "dns": ["10.4.2.254"],
                     "command": ["python3", "-u", "/pepper-proxy.py",
                                 "--listen", "0.0.0.0:8080", "--upstream", "10.4.2.10:8080"],
                     "depends_on": {"app": {"condition": "service_started"}},
                     "networks": {"legacy": {}, "edge": {}},
                     "ports": [{"published": "18080", "target": 8080, "host_ip": "127.0.0.1"}],
-                    "volumes": ["./proxy/proxy.py:/pepper-proxy.py:ro"]},
+                    "volumes": ["./proxy/proxy.py:/pepper-proxy.py:ro"], **_HARD},
     },
     "networks": {
         "legacy": {"internal": True, "ipam": {"config": [{"subnet": "10.4.2.0/24"}]}},
@@ -505,18 +506,69 @@ class FailClosedTest(Base):
         self.assertNotEqual(report.verdict, "VERIFIED")
 
 
-class AvisoTest(Base):
-    def test_publicar_la_base_al_host_es_aviso_no_fuga(self):
+class PuertosYCapacidadesTest(Base):
+    """Publicar fuera del ingress o fuera de loopback era aviso; "nada del legacy sale de la máquina"
+    incluye a la LAN. Y cada servicio suelta NET_RAW: la red interna no es la única capa (2026-09-29)."""
+
+    def test_publicar_la_base_al_host_es_fuga(self):
         report = self.leak(lambda c: c["services"]["db"].__setitem__(
             "ports", [{"published": "15432", "target": 5432}]))
-        self.assertEqual(report.verdict, "VERIFIED", "publicar un puerto no da salida al contenedor")
-        self.assertTrue(any("publica puertos al host" in f.check for f in report.warnings))
+        self.assertEqual(report.verdict, "FAILED")
+        self.assertTrue(any("publica puertos al host" in f.check for f in report.errors))
 
-    def test_ingress_en_todas_las_interfaces_es_aviso(self):
+    def test_ingress_en_todas_las_interfaces_es_fuga(self):
         report = self.leak(lambda c: c["services"]["ingress"].__setitem__(
             "ports", [{"published": "18080", "target": 8080}]))
+        self.assertEqual(report.verdict, "FAILED")
+        self.assertTrue(any("todas las interfaces" in f.check for f in report.errors))
+
+    def test_ingress_en_ipv6_loopback_con_cadena_es_valido(self):
+        report = self.leak(lambda c: c["services"]["ingress"].__setitem__("ports", ["[::1]:18080:8080"]))
+        self.assertFalse(any("todas las interfaces" in f.check for f in report.errors))
+
+    def test_sin_cap_drop_o_sin_no_new_privileges_no_hay_verde(self):
+        report = self.leak(lambda c: c["services"]["app"].pop("cap_drop"))
+        self.assertEqual(report.verdict, "FAILED")
+        self.assertTrue(any("NET_RAW" in f.check for f in report.errors))
+        report = self.leak(lambda c: c["services"]["db"].pop("security_opt"))
+        self.assertEqual(report.verdict, "FAILED")
+        self.assertTrue(any("no-new-privileges" in f.check for f in report.errors))
+
+    def test_cap_drop_all_tambien_vale(self):
+        report = self.leak(lambda c: c["services"]["app"].__setitem__("cap_drop", ["ALL"]))
+        self.assertFalse(any("NET_RAW" in f.check for f in report.errors))
+
+
+class ProcNetTest(unittest.TestCase):
+    def test_lee_ipv4_e_ipv6(self):
+        from pepper.isolate import _proc_net_address
+        self.assertEqual(str(_proc_net_address("0100007F")), "127.0.0.1")
+        self.assertEqual(str(_proc_net_address("0A0A0A0A")), "10.10.10.10")
+        # ::1 en /proc/net/tcp6
+        self.assertEqual(str(_proc_net_address("00000000000000000000000001000000")), "::1")
+        # 2001:db8::1
+        self.assertEqual(str(_proc_net_address("0000000000000000" + "0000000000000000")), "::")
+        self.assertIsNone(_proc_net_address("zz"))
+
+
+class SondaTest(unittest.TestCase):
+    def test_el_veredicto_de_la_sonda(self):
+        from pepper.isolate import Report, _judge_probe
+        report = Report()
+        _judge_probe({"1.1.1.1:53": "unreachable", "8.8.8.8:443": "timeout", "gateway:22": "timeout",
+                      "udp:1.1.1.1:53": "unreachable", "dns:example.com": "unresolved"}, report)
         self.assertEqual(report.verdict, "VERIFIED")
-        self.assertTrue(any("todas las interfaces" in f.check for f in report.warnings))
+        report = Report()
+        _judge_probe({"1.1.1.1:53": "connected", "udp:1.1.1.1:53": "timeout", "dns:example.com": "unresolved"}, report)
+        self.assertEqual(report.verdict, "FAILED")
+        report = Report()
+        _judge_probe({"1.1.1.1:53": "timeout", "gateway:5432": "connected", "dns:example.com": "unresolved"}, report)
+        self.assertEqual(report.verdict, "VERIFIED")   # el host es la propia máquina: aviso, no fuga
+        self.assertTrue(any("servicio del host" in f.check and "5432" in f.check for f in report.warnings))
+        report = Report()
+        _judge_probe({"1.1.1.1:53": "timeout", "gateway:22": "refused", "dns:example.com": "unresolved"}, report)
+        self.assertEqual(report.verdict, "VERIFIED")
+        self.assertTrue(report.warnings)
 
 
 if __name__ == "__main__":

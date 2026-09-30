@@ -1,0 +1,775 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pepper/extractors.schema.json",
+  "title": "PepperExtractors",
+  "description": "Contrato de extractors.json: cómo `pepper map` saca lo que un sistema ES con los lectores del núcleo (pepper/inspect/readers) parametrizados por el perfil. Cada extractor declara un `mechanism` registrado y las claves que ESE mecanismo lee; una clave que el mecanismo no lee no valida (hasta la auditoría 2026-09-29 una clave mal escrita caía en un default en silencio).",
+  "type": "object",
+  "required": [
+    "extractors"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "extractor_version": {
+      "type": "string",
+      "description": "Versión de este contrato que el archivo sigue, semver."
+    },
+    "description": {
+      "type": "string"
+    },
+    "extractors": {
+      "type": "array",
+      "minItems": 1,
+      "description": "En el orden en que corren. Lo que ningún mecanismo cubra sale como hueco declarado en el mapa.",
+      "items": {
+        "type": "object",
+        "required": [
+          "mechanism"
+        ],
+        "properties": {
+          "mechanism": {
+            "type": "string",
+            "enum": [
+              "archive_url_scan",
+              "config_hosts",
+              "pg_dump_custom",
+              "sql_dump",
+              "jvm_route_annotations",
+              "jvm_class_inventory",
+              "view_templates",
+              "groovy_config_values",
+              "groovy_controller_actions",
+              "groovy_url_mappings",
+              "regex_extractor"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "mechanism": {
+                  "const": "archive_url_scan"
+                }
+              },
+              "required": [
+                "mechanism"
+              ]
+            },
+            "then": {
+              "$ref": "#/$defs/archive_url_scan"
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "mechanism": {
+                  "const": "config_hosts"
+                }
+              },
+              "required": [
+                "mechanism"
+              ]
+            },
+            "then": {
+              "$ref": "#/$defs/config_hosts"
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "mechanism": {
+                  "const": "pg_dump_custom"
+                }
+              },
+              "required": [
+                "mechanism"
+              ]
+            },
+            "then": {
+              "$ref": "#/$defs/pg_dump_custom"
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "mechanism": {
+                  "const": "sql_dump"
+                }
+              },
+              "required": [
+                "mechanism"
+              ]
+            },
+            "then": {
+              "$ref": "#/$defs/sql_dump"
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "mechanism": {
+                  "const": "jvm_route_annotations"
+                }
+              },
+              "required": [
+                "mechanism"
+              ]
+            },
+            "then": {
+              "$ref": "#/$defs/jvm_route_annotations"
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "mechanism": {
+                  "const": "jvm_class_inventory"
+                }
+              },
+              "required": [
+                "mechanism"
+              ]
+            },
+            "then": {
+              "$ref": "#/$defs/jvm_class_inventory"
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "mechanism": {
+                  "const": "view_templates"
+                }
+              },
+              "required": [
+                "mechanism"
+              ]
+            },
+            "then": {
+              "$ref": "#/$defs/view_templates"
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "mechanism": {
+                  "const": "groovy_config_values"
+                }
+              },
+              "required": [
+                "mechanism"
+              ]
+            },
+            "then": {
+              "$ref": "#/$defs/groovy_config_values"
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "mechanism": {
+                  "const": "groovy_controller_actions"
+                }
+              },
+              "required": [
+                "mechanism"
+              ]
+            },
+            "then": {
+              "$ref": "#/$defs/groovy_controller_actions"
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "mechanism": {
+                  "const": "groovy_url_mappings"
+                }
+              },
+              "required": [
+                "mechanism"
+              ]
+            },
+            "then": {
+              "$ref": "#/$defs/groovy_url_mappings"
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "mechanism": {
+                  "const": "regex_extractor"
+                }
+              },
+              "required": [
+                "mechanism"
+              ]
+            },
+            "then": {
+              "$ref": "#/$defs/regex_extractor"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "archive_url_scan": {
+      "type": "object",
+      "description": "URLs externas incrustadas en cualquier miembro de texto del artefacto, agrupadas por host → external_dependencies.",
+      "required": [
+        "mechanism"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mechanism": {
+          "type": "string",
+          "description": "Nombre del lector en pepper/inspect/readers (MECHANISMS)."
+        },
+        "description": {
+          "type": "string",
+          "description": "Para quien lea el perfil: qué saca este extractor de ESTE stack y por qué así."
+        },
+        "member_patterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Qué miembros del artefacto leer (regex sobre la ruta interna); default: yml, yaml, properties, xml, xhtml, js, class, jrxml."
+        },
+        "exclude_host_patterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Hosts que no son dependencias del sistema (w3.org, cdn., jquery…)."
+        },
+        "kind_hints": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": "Tipo de dependencia por patrón de host: {\"smtp\": [\"smtp\"], \"rest\": [\"\\\\d+\\\\.\\\\d+\"]}; lo que no case es `web`."
+        }
+      }
+    },
+    "config_hosts": {
+      "type": "object",
+      "description": "Hosts y URLs declarados en archivos de configuración `clave: valor` → notas del mapa.",
+      "required": [
+        "mechanism"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mechanism": {
+          "type": "string",
+          "description": "Nombre del lector en pepper/inspect/readers (MECHANISMS)."
+        },
+        "description": {
+          "type": "string",
+          "description": "Para quien lea el perfil: qué saca este extractor de ESTE stack y por qué así."
+        },
+        "config_patterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Archivos de configuración a leer (regex sobre la ruta interna); default application*.yml/yaml/properties."
+        },
+        "host_key_pattern": {
+          "type": "string",
+          "description": "Claves cuyo valor es un host o una URL (url, host, smtp, uri, endpoint…) (regex, sintaxis Python)."
+        }
+      }
+    },
+    "pg_dump_custom": {
+      "type": "object",
+      "description": "Respaldo custom de pg_dump (-Fc) leído en Python puro → data_stores, catalogs, distributions.",
+      "required": [
+        "mechanism"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mechanism": {
+          "type": "string",
+          "description": "Nombre del lector en pepper/inspect/readers (MECHANISMS)."
+        },
+        "description": {
+          "type": "string",
+          "description": "Para quien lea el perfil: qué saca este extractor de ESTE stack y por qué así."
+        },
+        "catalog_max_rows": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Hasta cuántas filas una tabla se vuelca completa como catálogo (default 300)."
+        },
+        "catalog_include_patterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Solo estas tablas (regex sobre el nombre) pueden ser catálogo; vacío = toda tabla chica."
+        },
+        "catalog_exclude_patterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tablas que nunca se vuelcan aunque sean chicas: personas, usuarios, contactos."
+        },
+        "state_column_pattern": {
+          "type": "string",
+          "description": "Columnas cuyos valores se cuentan como distribución (estatus, tipo, rol…) (regex, sintaxis Python)."
+        },
+        "date_column_pattern": {
+          "type": "string",
+          "description": "Columnas de fecha cuyo año se cuenta como distribución (regex, sintaxis Python)."
+        },
+        "distribution_top": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Cuántos valores distintos se listan por distribución (default 15)."
+        }
+      }
+    },
+    "sql_dump": {
+      "type": "object",
+      "description": "Respaldo SQL en texto (mysqldump, mariadb-dump, pg_dump plano) → data_stores, catalogs, distributions.",
+      "required": [
+        "mechanism"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mechanism": {
+          "type": "string",
+          "description": "Nombre del lector en pepper/inspect/readers (MECHANISMS)."
+        },
+        "description": {
+          "type": "string",
+          "description": "Para quien lea el perfil: qué saca este extractor de ESTE stack y por qué así."
+        },
+        "catalog_max_rows": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Hasta cuántas filas una tabla se vuelca completa como catálogo (default 300)."
+        },
+        "catalog_include_patterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Solo estas tablas (regex sobre el nombre) pueden ser catálogo; vacío = toda tabla chica."
+        },
+        "catalog_exclude_patterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tablas que nunca se vuelcan aunque sean chicas: personas, usuarios, contactos."
+        },
+        "state_column_pattern": {
+          "type": "string",
+          "description": "Columnas cuyos valores se cuentan como distribución (estatus, tipo, rol…) (regex, sintaxis Python)."
+        },
+        "date_column_pattern": {
+          "type": "string",
+          "description": "Columnas de fecha cuyo año se cuenta como distribución (regex, sintaxis Python)."
+        },
+        "distribution_top": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Cuántos valores distintos se listan por distribución (default 15)."
+        }
+      }
+    },
+    "jvm_route_annotations": {
+      "type": "object",
+      "description": "Rutas @RequestMapping/@Get/@Post/@Put/@DeleteMapping y jobs @Scheduled de Spring, vía `javap -v` → entrypoints, jobs.",
+      "required": [
+        "mechanism"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mechanism": {
+          "type": "string",
+          "description": "Nombre del lector en pepper/inspect/readers (MECHANISMS)."
+        },
+        "description": {
+          "type": "string",
+          "description": "Para quien lea el perfil: qué saca este extractor de ESTE stack y por qué así."
+        },
+        "class_root": {
+          "type": "string",
+          "description": "Raíz de clases dentro del artefacto: WEB-INF/classes en un WAR, BOOT-INF/classes en un fat JAR de Spring Boot."
+        },
+        "package_prefixes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Prefijos de paquete (anclados a un segmento de ruta) de las clases propias a leer; vacío = todas bajo class_root."
+        },
+        "job_signatures": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Por clase de job, la regex con que se reconoce en la evidencia; sin ella la cobertura de jobs se declara no medible."
+        }
+      }
+    },
+    "jvm_class_inventory": {
+      "type": "object",
+      "description": "Por clase propia: métodos públicos, constantes static final y cadenas del bytecode, vía `javap -c -constants` → classes.",
+      "required": [
+        "mechanism"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mechanism": {
+          "type": "string",
+          "description": "Nombre del lector en pepper/inspect/readers (MECHANISMS)."
+        },
+        "description": {
+          "type": "string",
+          "description": "Para quien lea el perfil: qué saca este extractor de ESTE stack y por qué así."
+        },
+        "class_root": {
+          "type": "string",
+          "description": "Raíz de clases dentro del artefacto: WEB-INF/classes en un WAR, BOOT-INF/classes en un fat JAR de Spring Boot."
+        },
+        "package_prefixes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Prefijos de paquete (anclados a un segmento de ruta) de las clases propias a leer; vacío = todas bajo class_root."
+        },
+        "include_own_libs": {
+          "type": "boolean",
+          "description": "Leer también los jars de WEB-INF/lib que comparten paquete raíz con el WAR (default true)."
+        },
+        "class_kinds": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Etiqueta → regex sobre el nombre calificado: cómo clasificar cada clase (controlador, servicio, job…)."
+        },
+        "max_strings_per_class": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Tope de cadenas por clase (default 80)."
+        }
+      }
+    },
+    "view_templates": {
+      "type": "object",
+      "description": "Pantallas leídas con regex sobre plantillas de texto (XHTML, GSP, HTML, FTL…), con el bundle i18n resuelto → screens.",
+      "required": [
+        "mechanism"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mechanism": {
+          "type": "string",
+          "description": "Nombre del lector en pepper/inspect/readers (MECHANISMS)."
+        },
+        "description": {
+          "type": "string",
+          "description": "Para quien lea el perfil: qué saca este extractor de ESTE stack y por qué así."
+        },
+        "member_patterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Qué miembros son pantallas (regex sobre la ruta interna); default \\\\.xhtml$."
+        },
+        "exclude_patterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Plantillas, layouts y parciales que no son pantallas."
+        },
+        "bundle_patterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Archivos .properties del bundle de etiquetas (i18n) para resolver las referencias."
+        },
+        "bundle_ref_pattern": {
+          "type": "string",
+          "description": "Cómo se referencia una etiqueta del bundle en la vista; debe capturar el grupo nombrado `key` (regex, sintaxis Python)."
+        },
+        "title_pattern": {
+          "type": "string",
+          "description": "Título de la pantalla (regex, sintaxis Python)."
+        },
+        "heading_pattern": {
+          "type": "string",
+          "description": "Encabezados (regex, sintaxis Python)."
+        },
+        "label_pattern": {
+          "type": "string",
+          "description": "Etiquetas de campos (regex, sintaxis Python)."
+        },
+        "button_pattern": {
+          "type": "string",
+          "description": "Botones: el grupo captura sus atributos (de ahí salen value/title y action/actionListener) (regex, sintaxis Python)."
+        },
+        "message_pattern": {
+          "type": "string",
+          "description": "Mensajes de validación (regex, sintaxis Python)."
+        },
+        "condition_pattern": {
+          "type": "string",
+          "description": "Condiciones de render por rol/perfil (regex, sintaxis Python)."
+        },
+        "include_pattern": {
+          "type": "string",
+          "description": "Inclusiones de otras vistas (regex, sintaxis Python)."
+        },
+        "input_pattern": {
+          "type": "string",
+          "description": "Controles de captura: dos grupos, tipo e id/nombre (regex, sintaxis Python)."
+        },
+        "form_pattern": {
+          "type": "string",
+          "description": "Formularios: el grupo captura sus atributos (regex, sintaxis Python)."
+        }
+      }
+    },
+    "groovy_config_values": {
+      "type": "object",
+      "description": "Config/DataSource de Grails reconstruidos del bytecode: jobs con su cron y notas de configuración → jobs.",
+      "required": [
+        "mechanism"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mechanism": {
+          "type": "string",
+          "description": "Nombre del lector en pepper/inspect/readers (MECHANISMS)."
+        },
+        "description": {
+          "type": "string",
+          "description": "Para quien lea el perfil: qué saca este extractor de ESTE stack y por qué así."
+        },
+        "class_root": {
+          "type": "string",
+          "description": "Raíz de clases dentro del artefacto: WEB-INF/classes en un WAR, BOOT-INF/classes en un fat JAR de Spring Boot."
+        },
+        "package_prefixes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Prefijos de paquete (anclados a un segmento de ruta) de las clases propias a leer; vacío = todas bajo class_root."
+        },
+        "scripts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Scripts de configuración a reconstruir (default Config, DataSource)."
+        },
+        "job_key_pattern": {
+          "type": "string",
+          "description": "Claves de configuración que son el cron de un job (regex, sintaxis Python)."
+        },
+        "job_class_pattern": {
+          "type": "string",
+          "description": "Clases de job cuyo bloque `triggers` también aporta el cron (regex, sintaxis Python)."
+        },
+        "note_key_pattern": {
+          "type": "string",
+          "description": "Claves que se anotan en el mapa (hosts, correo, ldap, ubicaciones de configuración externa) (regex, sintaxis Python)."
+        },
+        "max_notes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Tope de notas de configuración (default 60)."
+        }
+      }
+    },
+    "groovy_controller_actions": {
+      "type": "object",
+      "description": "Acciones de controladores Grails (closures del constructor, o métodos) → rutas por convención → entrypoints.",
+      "required": [
+        "mechanism"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mechanism": {
+          "type": "string",
+          "description": "Nombre del lector en pepper/inspect/readers (MECHANISMS)."
+        },
+        "description": {
+          "type": "string",
+          "description": "Para quien lea el perfil: qué saca este extractor de ESTE stack y por qué así."
+        },
+        "class_root": {
+          "type": "string",
+          "description": "Raíz de clases dentro del artefacto: WEB-INF/classes en un WAR, BOOT-INF/classes en un fat JAR de Spring Boot."
+        },
+        "package_prefixes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Prefijos de paquete (anclados a un segmento de ruta) de las clases propias a leer; vacío = todas bajo class_root."
+        },
+        "class_pattern": {
+          "type": "string",
+          "description": "Qué clases son controladores (default Controller$) (regex, sintaxis Python)."
+        },
+        "strip_suffix": {
+          "type": "string",
+          "description": "Sufijo que se quita al nombre de la clase para formar el nombre del controlador en la ruta (default Controller)."
+        },
+        "route_template": {
+          "type": "string",
+          "description": "Plantilla de la ruta con {controller} y {action} (default /{controller}/{action})."
+        },
+        "rest_class_pattern": {
+          "type": "string",
+          "description": "Controladores que son REST (kind rest_endpoint) (regex, sintaxis Python)."
+        },
+        "methods_as_actions": {
+          "type": "boolean",
+          "description": "Grails 2+: los métodos públicos también son acciones."
+        }
+      }
+    },
+    "groovy_url_mappings": {
+      "type": "object",
+      "description": "UrlMappings de Grails compilado → rutas declaradas, con sus plantillas y verbos → entrypoints.",
+      "required": [
+        "mechanism"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mechanism": {
+          "type": "string",
+          "description": "Nombre del lector en pepper/inspect/readers (MECHANISMS)."
+        },
+        "description": {
+          "type": "string",
+          "description": "Para quien lea el perfil: qué saca este extractor de ESTE stack y por qué así."
+        },
+        "class_root": {
+          "type": "string",
+          "description": "Raíz de clases dentro del artefacto: WEB-INF/classes en un WAR, BOOT-INF/classes en un fat JAR de Spring Boot."
+        },
+        "package_prefixes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Prefijos de paquete (anclados a un segmento de ruta) de las clases propias a leer; vacío = todas bajo class_root."
+        },
+        "class_pattern": {
+          "type": "string",
+          "description": "Qué clase es el UrlMappings (default ^UrlMappings$) (regex, sintaxis Python)."
+        }
+      }
+    },
+    "regex_extractor": {
+      "type": "object",
+      "description": "El genérico para un stack con fuente en texto: regex con grupos nombrados sobre los miembros que el perfil señala; cada match es un elemento de la superficie declarada, con evidencia miembro:línea. Los grupos deben ser campos del contrato del mapa para esa superficie (entrypoints: kind, method, path, handler, auth; jobs: name, schedule, signature, detail; external_dependencies: name|host, kind, target, detail).",
+      "required": [
+        "mechanism",
+        "surface",
+        "member_patterns",
+        "pattern"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mechanism": {
+          "type": "string",
+          "description": "Nombre del lector en pepper/inspect/readers (MECHANISMS)."
+        },
+        "description": {
+          "type": "string",
+          "description": "Para quien lea el perfil: qué saca este extractor de ESTE stack y por qué así."
+        },
+        "surface": {
+          "type": "string",
+          "enum": [
+            "entrypoints",
+            "jobs",
+            "external_dependencies"
+          ],
+          "description": "A qué superficie del mapa va cada match."
+        },
+        "member_patterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Qué miembros del artefacto (zip o directorio) leer: regex sobre la ruta interna."
+        },
+        "exclude_patterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Miembros que no se leen aunque casen (vendor/, node_modules/…)."
+        },
+        "pattern": {
+          "type": "string",
+          "description": "La regex con grupos nombrados (?P<campo>…); se busca con finditer en todo el texto del miembro (regex, sintaxis Python)."
+        },
+        "flags": {
+          "type": "string",
+          "pattern": "^[imsx]*$",
+          "description": "Banderas de la regex: i (ignorar mayúsculas), m (multilínea), s (punto casa salto de línea), x (verbose)."
+        },
+        "defaults": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Valor de un campo cuando el grupo no casó o no existe en el patrón (p. ej. {\"method\": \"GET\", \"kind\": \"rest_endpoint\"})."
+        },
+        "transforms": {
+          "type": "object",
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "upper",
+                  "lower",
+                  "strip",
+                  "last_segment",
+                  "leading_slash"
+                ]
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "upper",
+                    "lower",
+                    "strip",
+                    "last_segment",
+                    "leading_slash"
+                  ]
+                }
+              }
+            ]
+          },
+          "description": "Transformación(es) por campo, en orden: upper, lower, strip, last_segment, leading_slash."
+        }
+      }
+    }
+  }
+}

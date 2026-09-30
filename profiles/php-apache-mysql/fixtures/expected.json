@@ -1,0 +1,80 @@
+{
+  "notes": "Fixtures sintéticos del perfil php-apache-mysql (auditoría 2026-09-29): no describen ningún sistema real. Los logs siguen el formato documentado de la imagen php:*-apache y del general log de MySQL 5.7 (mismo formato que el fixture real anonimizado del perfil Grails); el .env, el fuente Laravel/PHP clásico y el respaldo mysqldump son inventados. En mysql.log las 3 líneas sin parsear son la cabecera que mysqld escribe al abrir el log.",
+  "logs": {
+    "apache-php": {
+      "events": 11,
+      "unparsed": 0
+    },
+    "mysql": {
+      "events": 13,
+      "unparsed": 3,
+      "sql_tables": [
+        "users",
+        "tramites"
+      ]
+    }
+  },
+  "datasource": {
+    "name": ".env",
+    "engine": "mysql",
+    "host": "127.0.0.1",
+    "port": 3306,
+    "db": "tramites",
+    "username": "app_tramites"
+  },
+  "dump": {
+    "file": "respaldo.sql",
+    "format": "sql_text",
+    "dbname": "tramites_prod",
+    "server_version": "5.7.44",
+    "tables": [
+      "estados",
+      "dependencias",
+      "users",
+      "tramites",
+      "pagos",
+      "migrations"
+    ],
+    "catalogs": [
+      "estados",
+      "dependencias"
+    ],
+    "not_catalogs": [
+      "users",
+      "tramites",
+      "migrations"
+    ]
+  },
+  "map": {
+    "artifact": "source",
+    "entrypoints": {
+      "min": 14,
+      "rest_min": 2,
+      "paths": [
+        "/login",
+        "/tramites",
+        "/tramites/{id}/editar",
+        "/tramites/{folio}/pago",
+        "/consulta_publica.php"
+      ]
+    },
+    "jobs": {
+      "min": 6,
+      "names": [
+        "tramites:vencer",
+        "tramites:recordatorios",
+        "/usr/local/bin/limpiar_temporales.sh"
+      ]
+    },
+    "external_dependencies": [
+      "smtp.ejemplo.gob",
+      "api.pagos.ejemplo.com"
+    ],
+    "screens": [
+      "resources/views/tramites/index.blade.php"
+    ],
+    "gaps": [
+      "classes"
+    ]
+  }
+}

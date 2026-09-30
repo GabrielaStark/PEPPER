@@ -424,6 +424,7 @@ def validate(package_dir: Path, external_manifest: Optional[Path] = None) -> Tup
         report.warnings.append("ninguna fuente es 'observado' aunque el paquete trae evidencia de ejecución")
     if not discovery.get("unknowns"):
         report.errors.append("unknowns está vacío: en un legacy siempre hay algo que no se sabe; decláralo")
+    _check_output_has_no_sensitive_data(package_dir, report)
     md_path = package_dir / "output" / OUTPUT_MD
     if not md_path.is_file():
         report.errors.append(f"falta output/{OUTPUT_MD}: el documento legible ES el entregable")
@@ -461,6 +462,22 @@ def validate(package_dir: Path, external_manifest: Optional[Path] = None) -> Tup
     return discovery, report
 
 
+def _check_output_has_no_sensitive_data(package_dir: Path, report: Report) -> None:
+    """La salida del agente se publica y se commitea (docs/pepper, docs/analysis). "Sin nombres,
+    CURP, correos ni contraseñas" era un ítem de checklist que Export no comprobaba (auditoría
+    2026-09-29): ahora el mismo escáner del gate corre sobre output/ y rechaza por ubicación,
+    sin imprimir el valor. Un seudónimo (`[CURP-…]`) no es un dato y pasa."""
+    from pepper.sensitive import scan as scan_sensitive
+
+    output_dir = package_dir / "output"
+    if not output_dir.is_dir():
+        return
+    found = scan_sensitive([("output", output_dir, lambda _d, names: [n for n in names if n == "validation.md"])])
+    for finding in found.sensitive:
+        report.errors.append(f"{finding.location}: la salida trae un dato de tipo {finding.kind} (credencial o dato de una "
+                             "persona; el valor no se imprime). El documento describe roles y seudónimos, nunca valores: quítalo")
+
+
 def render_report(report: Report, package_dir: Path, published: bool = True) -> str:
     lines = [f"# Validación de export — {package_dir.name}", ""]
     if report.ok:
@@ -484,6 +501,8 @@ def render_report(report: Report, package_dir: Path, published: bool = True) -> 
         "en código/base/datos → un elemento del mapa (`map:<colección>:<nombre>`) o un archivo del paquete.",
         "- La evidencia, el mapa, el legacy y el discovery anterior conservan sus hashes (manifest interno = externo).",
         "- La sesión del paquete aparece en `sessions`; hay desconocidos declarados; existe el `.md` legible.",
+        "- La salida no trae credenciales ni datos de personas con patrón (CURP, RFC, CLABE, tarjeta, correo): "
+        "el mismo escáner del gate corre sobre `output/`. Un nombre propio sin patrón no se detecta: eso lo revisa una persona.",
         "- El `.md` corresponde al JSON: nombra cada rol, capacidad, recorrido, estado, automatismo, integración, "
         "reporte, catálogo y sesión del JSON; la sección 12 lleva cada desconocido; ningún `[observado <sesión>]` "
         "cita una sesión que el JSON no declare. (Cobertura de lo nombrable: la prosa la revisa una persona.)",

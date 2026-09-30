@@ -1,0 +1,246 @@
+{
+  "extractor_version": "0.2.0",
+  "description": "Cómo `pepper map` saca lo que un sistema PHP con fuente ES. Todo es texto, así que todo entra con lectores genéricos parametrizados: rutas y formularios con `regex_extractor` (Laravel `Route::`, formularios HTML de PHP clásico), tareas programadas con `regex_extractor` (el scheduler de Laravel y crontabs), hosts externos con `archive_url_scan`, pantallas Blade y vistas PHP con `view_templates`, y el respaldo mysqldump con `sql_dump`. Ningún lector de este perfil es de PHP: son lectores de texto con los patrones de PHP como datos (Principio 4). Los `.php` sueltos que son páginas (PHP clásico sin enrutador) no se enumeran de antemano: los descubre el explorador al navegar.",
+  "extractors": [
+    {
+      "mechanism": "regex_extractor",
+      "surface": "entrypoints",
+      "description": "Rutas web de Laravel/Lumen: Route::get|post|…('/ruta', manejador) en routes/web.php (y routes/*.php salvo api.php).",
+      "member_patterns": [
+        "(^|/)routes/(?!api\\.php$)[^/]+\\.php$"
+      ],
+      "pattern": "Route::(?P<method>get|post|put|patch|delete|options|any|match)\\(\\s*(?:\\[[^\\]]*\\]\\s*,\\s*)?['\"](?P<path>[^'\"]+)['\"]\\s*,\\s*(?P<handler>[^;]*?)\\)\\s*(?:->[^;]*)?;",
+      "flags": "i",
+      "defaults": {
+        "kind": "http_route",
+        "auth": "unknown"
+      },
+      "transforms": {
+        "method": "upper",
+        "path": "leading_slash",
+        "handler": "strip"
+      }
+    },
+    {
+      "mechanism": "regex_extractor",
+      "surface": "entrypoints",
+      "description": "Rutas de API de Laravel (routes/api.php): mismas formas, marcadas como rest_endpoint. Laravel les antepone /api.",
+      "member_patterns": [
+        "(^|/)routes/api\\.php$"
+      ],
+      "pattern": "Route::(?P<method>get|post|put|patch|delete|options|any|match|apiResource|resource)\\(\\s*(?:\\[[^\\]]*\\]\\s*,\\s*)?['\"](?P<path>[^'\"]+)['\"]\\s*,\\s*(?P<handler>[^;]*?)\\)\\s*(?:->[^;]*)?;",
+      "flags": "i",
+      "defaults": {
+        "kind": "rest_endpoint",
+        "auth": "unknown"
+      },
+      "transforms": {
+        "method": "upper",
+        "path": "leading_slash",
+        "handler": "strip"
+      }
+    },
+    {
+      "mechanism": "regex_extractor",
+      "surface": "entrypoints",
+      "description": "Formularios HTML de PHP clásico: <form action=\"x.php\" method=\"post\"> (action antes que method). El destino del formulario es un punto de entrada aunque no haya enrutador.",
+      "member_patterns": [
+        "\\.(php|phtml|html?)$"
+      ],
+      "exclude_patterns": [
+        "(^|/)vendor/",
+        "(^|/)node_modules/",
+        "(^|/)tests?/"
+      ],
+      "pattern": "<form\\b[^>]*\\baction=[\"'](?P<path>[^\"'?{$<]+\\.php)[\"'][^>]*\\bmethod=[\"'](?P<method>get|post)[\"']",
+      "flags": "i",
+      "defaults": {
+        "kind": "http_route",
+        "auth": "unknown"
+      },
+      "transforms": {
+        "method": "upper",
+        "path": "leading_slash"
+      }
+    },
+    {
+      "mechanism": "regex_extractor",
+      "surface": "entrypoints",
+      "description": "Formularios HTML de PHP clásico con method antes que action.",
+      "member_patterns": [
+        "\\.(php|phtml|html?)$"
+      ],
+      "exclude_patterns": [
+        "(^|/)vendor/",
+        "(^|/)node_modules/",
+        "(^|/)tests?/"
+      ],
+      "pattern": "<form\\b[^>]*\\bmethod=[\"'](?P<method>get|post)[\"'][^>]*\\baction=[\"'](?P<path>[^\"'?{$<]+\\.php)[\"']",
+      "flags": "i",
+      "defaults": {
+        "kind": "http_route",
+        "auth": "unknown"
+      },
+      "transforms": {
+        "method": "upper",
+        "path": "leading_slash"
+      }
+    },
+    {
+      "mechanism": "regex_extractor",
+      "surface": "jobs",
+      "description": "Tareas del scheduler de Laravel (app/Console/Kernel.php o routes/console.php): $schedule->command|job|call|exec('x')->daily()… La frecuencia es el método encadenado, tal cual.",
+      "member_patterns": [
+        "(^|/)app/Console/Kernel\\.php$",
+        "(^|/)routes/console\\.php$"
+      ],
+      "pattern": "(?:\\$schedule|Schedule)(?:->|::)(?:command|job|call|exec)\\(\\s*['\"]?(?P<name>[^'\"),]+)['\"]?[^;]*?->(?P<schedule>everyMinute|everyTwoMinutes|everyFiveMinutes|everyTenMinutes|everyFifteenMinutes|everyThirtyMinutes|hourly(?:At\\([^)]*\\))?|everyTwoHours|everySixHours|daily(?:At\\([^)]*\\))?|twiceDaily\\([^)]*\\)|weekly(?:On\\([^)]*\\))?|monthly(?:On\\([^)]*\\))?|quarterly|yearly|cron\\([^)]*\\))",
+      "transforms": {
+        "name": "strip"
+      },
+      "defaults": {
+        "detail": "scheduler de Laravel (php artisan schedule:run)"
+      }
+    },
+    {
+      "mechanism": "regex_extractor",
+      "surface": "jobs",
+      "description": "Crontabs entregados con el legacy (crontab, cron.d/*, *.cron): cinco campos y el comando, tal cual.",
+      "member_patterns": [
+        "(^|/)(crontab|cron\\.d/[^/]+|[^/]*\\.cron|crontab\\.txt)$"
+      ],
+      "pattern": "^(?P<schedule>(?:[\\d*/,\\-]+\\s+){4}[\\d*/,\\-]+|@(?:hourly|daily|weekly|monthly|yearly|annually|reboot))\\s+(?P<name>[^#\\s].*?)\\s*$",
+      "flags": "m",
+      "defaults": {
+        "detail": "crontab del servidor original"
+      }
+    },
+    {
+      "mechanism": "regex_extractor",
+      "surface": "external_dependencies",
+      "description": "Servidor de correo declarado en .env (MAIL_HOST, SMTP_HOST…): un host, no una URL, así que archive_url_scan no lo ve.",
+      "member_patterns": [
+        "(^|/)\\.env$"
+      ],
+      "pattern": "^(?:MAIL|SMTP)[A-Z_]*_HOST\\s*=\\s*[\"']?(?P<host>[A-Za-z0-9.-]+\\.[a-z]{2,})",
+      "flags": "m",
+      "defaults": {
+        "kind": "smtp",
+        "detail": "MAIL_HOST/SMTP_HOST del .env"
+      }
+    },
+    {
+      "mechanism": "regex_extractor",
+      "surface": "external_dependencies",
+      "description": "Otros hosts declarados en .env por clave *_HOST (no la base: DB_*, ni el correo, que va aparte): caché, colas, LDAP, servicios internos.",
+      "member_patterns": [
+        "(^|/)\\.env$"
+      ],
+      "pattern": "^(?!DB_|MAIL_|SMTP_|APP_)(?P<name>[A-Z][A-Z0-9_]*_HOST)\\s*=\\s*[\"']?(?P<target>[A-Za-z0-9.-]+\\.[a-z]{2,})",
+      "flags": "m",
+      "defaults": {
+        "kind": "other",
+        "detail": "clave *_HOST del .env"
+      }
+    },
+    {
+      "mechanism": "archive_url_scan",
+      "description": "URLs externas incrustadas en el fuente y la configuración (.php, .env, .ini, .json, .yml, .xml, .js, .htaccess, .conf).",
+      "member_patterns": [
+        "\\.(php|env|ini|json|ya?ml|xml|js|htaccess|conf)$",
+        "(^|/)\\.env(\\.[^/]+)?$"
+      ],
+      "exclude_host_patterns": [
+        "php\\.net",
+        "laravel\\.com",
+        "symfony\\.com",
+        "packagist\\.org",
+        "getcomposer\\.org",
+        "phpunit\\.de",
+        "w3\\.org",
+        "schema\\.org",
+        "xmlns",
+        "apache\\.org",
+        "mysql\\.com",
+        "github\\.com",
+        "opensource\\.org",
+        "jquery",
+        "cdn\\.",
+        "cdnjs\\.",
+        "jsdelivr",
+        "cloudflare",
+        "unpkg",
+        "fontawesome",
+        "bootstrapcdn",
+        "fonts\\.gstatic",
+        "fonts\\.googleapis",
+        "localhost",
+        "127\\.0\\.0\\.1",
+        "example\\.com"
+      ],
+      "kind_hints": {
+        "rest": [
+          "\\d+\\.\\d+\\.\\d+\\.\\d+",
+          "api\\.",
+          "googleapis",
+          "maps\\.google",
+          "recaptcha",
+          "paypal",
+          "stripe",
+          "openpay",
+          "conekta",
+          "sat\\.gob"
+        ],
+        "smtp": [
+          "smtp",
+          "mail\\."
+        ],
+        "ldap": [
+          "ldap"
+        ],
+        "web": [
+          "facebook",
+          "twitter",
+          "youtube",
+          "wikipedia"
+        ]
+      }
+    },
+    {
+      "mechanism": "view_templates",
+      "description": "Pantallas: plantillas Blade (resources/views/**/*.blade.php) y vistas de PHP clásico (views|templates|vistas/**/*.php): título (también @section('title')), encabezados, etiquetas, campos, formularios, botones con value/title, mensajes de __()/@lang con palabras de error/confirmación, condiciones por rol (@can/@role/@auth) e inclusiones (@include/@extends/@component). Sin bundle: los textos de Blade suelen ser literales; los de __('archivo.clave') se listan por clave.",
+      "member_patterns": [
+        "(^|/)resources/views/.*\\.blade\\.php$",
+        "(^|/)(views?|templates?|vistas|plantillas)/.*\\.(php|phtml)$"
+      ],
+      "exclude_patterns": [
+        "/layouts?/",
+        "/partials?/",
+        "/components?/",
+        "/vendor/",
+        "/emails?/|/mail/",
+        "/errors?/"
+      ],
+      "title_pattern": "<title>(.*?)</title>|@section\\(\\s*['\"]title['\"]\\s*,\\s*['\"](.*?)['\"]",
+      "heading_pattern": "<h[1-4][^>]*>(.*?)</h[1-4]>",
+      "label_pattern": "<label[^>]*>(.*?)</label>",
+      "button_pattern": "<(?:input\\b[^>]*\\btype=[\"']submit[\"'][^>]*|button\\b[^>]*>[^<]*)>?",
+      "message_pattern": "(?:__|@lang|trans|trans_choice)\\(\\s*['\"]([^'\"]*(?:error|invalid|inv[aá]lid|requerid|required|confirm|warning|advertencia|success|[ée]xito|eliminad|borrad)[^'\"]*)['\"]",
+      "condition_pattern": "@((?:can(?:not|any)?|auth|guest|role|hasrole|hasanyrole|hasallroles|unlessrole|permission|admin|superadmin)\\b[^\\n]{0,80})",
+      "include_pattern": "@(?:include(?:If|When|Unless|First)?|extends|component|each|livewire)\\(\\s*['\"]([^'\"]+)['\"]",
+      "input_pattern": "<(input|select|textarea)\\b[^>]*\\bname=[\"']([^\"']+)[\"']",
+      "form_pattern": "<form\\b([^>]*)>"
+    },
+    {
+      "mechanism": "sql_dump",
+      "description": "Respaldo SQL en texto (mysqldump / mariadb-dump). Tablas con conteo y columnas, catálogos (tablas chicas completas, redactadas), distribuciones de columnas de estado y fecha, vistas, rutinas y triggers. Si el respaldo es el esquema `mysql` del motor, lo declara como hueco.",
+      "catalog_max_rows": 300,
+      "catalog_exclude_patterns": [
+        "(?i)^users?$|usuarios?|persona|^address$|domicilio|^contact|phone|telefono|email|correo|password|sessions?|password_resets?|failed_jobs|migrations"
+      ],
+      "state_column_pattern": "(?i)status|estatus|estado$|^type$|_type$|^tipo|_tipo|role|rol$|active$|activo$|enabled$|habilitado$",
+      "date_column_pattern": "(?i)date|fecha|_at$|^created$|^updated$",
+      "distribution_top": 15
+    }
+  ]
+}

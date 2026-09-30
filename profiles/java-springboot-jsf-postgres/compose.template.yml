@@ -36,6 +36,8 @@ volumes:
 services:
   db:
     image: {{db_image}}                    # la versión de la cabecera del respaldo, vía rehydrate.database.images
+    cap_drop: [NET_RAW]                # la red interna no es la única capa: sin tramas crudas al bridge
+    security_opt: [no-new-privileges:true]
     platform: ${PEPPER_PLATFORM}      # la dicta el registro: amd64 emulado si la imagen exigida no existe para esta máquina
     dns: [{{dns_sink}}]                   # IP libre de la subred interna: lo que no sea alias muere aquí, no va al resolver del host
     environment:
@@ -60,6 +62,8 @@ services:
   # de producción en sus USER MAPPING). Una vez: docker compose --profile restore run --rm restore
   restore:
     image: {{db_tool_image}}               # un cliente >= la versión del pg_dump que generó el respaldo
+    cap_drop: [NET_RAW]                # la red interna no es la única capa: sin tramas crudas al bridge
+    security_opt: [no-new-privileges:true]
     platform: ${PEPPER_PLATFORM}      # la dicta el registro: amd64 emulado si la imagen exigida no existe para esta máquina
     dns: [{{dns_sink}}]                   # IP libre de la subred interna: lo que no sea alias muere aquí, no va al resolver del host
     profiles: ["restore"]
@@ -81,6 +85,8 @@ services:
   # igual que el proxy). Los puertos son los que el artefacto espera de sus externos.
   stub:
     image: python:3-alpine
+    cap_drop: [NET_RAW]                # la red interna no es la única capa: sin tramas crudas al bridge
+    security_opt: [no-new-privileges:true]
     dns: [{{dns_sink}}]                   # IP libre de la subred interna: lo que no sea alias muere aquí, no va al resolver del host
     command: ["python3", "-u", "/stub/stub.py", "--ports", "{{stub_ports}}"]
     networks:
@@ -92,6 +98,8 @@ services:
 
   app:
     image: {{server_image}}                # jboss/wildfly:<versión de NOTAS.md> si hay jboss-web.xml
+    cap_drop: [NET_RAW]                # la red interna no es la única capa: sin tramas crudas al bridge
+    security_opt: [no-new-privileges:true]
     platform: ${PEPPER_PLATFORM}      # la dicta el registro: amd64 emulado si la imagen exigida no existe para esta máquina
     dns: [{{dns_sink}}]                   # IP libre de la subred interna: lo que no sea alias muere aquí, no va al resolver del host
     depends_on:
@@ -117,6 +125,10 @@ services:
   # No registra headers de credenciales y redacta campos que parezcan contraseñas.
   ingress:
     image: python:3-alpine
+    cap_drop: [NET_RAW]                # la red interna no es la única capa: sin tramas crudas al bridge
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m                    # el proxy guarda cada respuesta en memoria: un stream sin fin no tumba la máquina
+    restart: unless-stopped            # y si cae, vuelve: sin ingress no hay puerta verificada
     dns: [{{dns_sink}}]                   # IP libre de la subred interna: lo que no sea alias muere aquí, no va al resolver del host
     command: ["python3", "-u", "/pepper-proxy.py", "--listen", "0.0.0.0:8080", "--upstream", "{{app_ip}}:8080"]
     depends_on:

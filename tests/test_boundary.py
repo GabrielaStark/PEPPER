@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from pepper.boundary import BoundaryError, authorize, key_path  # noqa: E402
+from pepper.boundary import BoundaryError, authorize, key_path, pseudonym_key  # noqa: E402
 from pepper.correlate import run as correlate_run  # noqa: E402
 from pepper.package import assemble  # noqa: E402
 from pepper.sensitive import pseudonym, pseudonymize_text  # noqa: E402
@@ -45,16 +45,16 @@ class _ConLegacy(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _package(self, legacy=None, previous=None):
+    def _package(self, legacy=None, previous=None, include_uninspected=False):
         self.n += 1
         return assemble(self.correlated, self.root / f"package-{self.n}", legacy or self.legacy, data_mode="remote",
-                        authorization=self.auth, previous=previous)
+                        authorization=self.auth, previous=previous, include_uninspected=include_uninspected)
 
-    def _authorized_package(self):
+    def _authorized_package(self, include_uninspected=False):
         with self.assertRaises(BoundaryError) as raised:
-            self._package()
+            self._package(include_uninspected=include_uninspected)
         authorize(raised.exception.proposal_path, "Ana Responsable", self.auth)
-        return self._package()
+        return self._package(include_uninspected=include_uninspected)
 
 
 class AlcanceTest(_ConLegacy):
@@ -64,9 +64,57 @@ class AlcanceTest(_ConLegacy):
             self._package()
         proposal = json.loads(raised.exception.proposal_path.read_text(encoding="utf-8"))
         self.assertEqual(proposal["categories"], ["curp"])
-        self.assertEqual(list(proposal["unscanned"]), ["legacy/sistema.war"])
+        # el binario no viaja por defecto: no hay nada "no inspeccionado" que autorizar
+        self.assertEqual(proposal["unscanned"], {})
         self.assertNotIn(CURP, raised.exception.proposal_path.read_text(encoding="utf-8"))
         self.assertFalse((self.root / "package-1").exists())
+
+    def test_lo_no_inspeccionable_no_viaja_y_queda_listado(self):
+        # El respaldo de producción es binario o pesa más de lo que el escáner lee: antes viajaba
+        # ENTERO y sin sustituir con solo autorizarlo (auditoría 2026-09-29). Ahora se queda.
+        summary = self._authorized_package()
+        package = Path(summary["out_dir"])
+        self.assertFalse((package / "legacy" / "sistema.war").exists())
+        self.assertEqual([e["path"] for e in summary["excluded_uninspected"]], ["legacy/sistema.war"])
+        self.assertEqual(summary["excluded_uninspected"][0]["kind"], "binary")
+        readme = (package / "README.md").read_text(encoding="utf-8")
+        self.assertIn("## No viaja", readme)
+        self.assertIn("`legacy/sistema.war` — binary", readme)
+        self.assertIn("capturas de pantalla", readme)
+        manifest = json.loads(Path(summary["external_manifest"]).read_text(encoding="utf-8"))
+        self.assertEqual([e["path"] for e in manifest["data_policy"]["excluded_uninspected"]], ["legacy/sistema.war"])
+        self.assertNotIn("legacy/sistema.war", manifest["files"])
+
+    def test_con_la_bandera_lo_no_inspeccionable_exige_autorizacion_expresa(self):
+        with self.assertRaises(BoundaryError) as raised:
+            self._package(include_uninspected=True)
+        proposal = json.loads(raised.exception.proposal_path.read_text(encoding="utf-8"))
+        self.assertEqual(list(proposal["unscanned"]), ["legacy/sistema.war"])
+        authorize(raised.exception.proposal_path, "Ana Responsable", self.auth)
+        summary = self._package(include_uninspected=True)
+        self.assertTrue((Path(summary["out_dir"]) / "legacy" / "sistema.war").exists())
+        self.assertEqual(summary["excluded_uninspected"], [])
+
+    def test_la_llave_de_seudonimos_es_por_sistema(self):
+        self._authorized_package()
+        system = json.loads(self.auth.read_text(encoding="utf-8"))["system"]["legacy_sha256"]
+        key = key_path(self.auth, system)
+        self.assertTrue(key.is_file())
+        self.assertIn(system[:16], key.name)
+        self.assertNotEqual(key, key_path(self.auth, "0" * 64))
+        # otro legacy en el mismo workspace: la persona borra la autorización y decide de nuevo;
+        # la llave del sistema anterior no se reutiliza
+        self.auth.unlink()
+        other = self.root / "otro-legacy"
+        other.mkdir()
+        (other / "persona.sql").write_text(f"INSERT INTO persona VALUES ('{CURP}');\n", encoding="utf-8")
+        with self.assertRaises(BoundaryError) as raised:
+            self._package(other)
+        authorize(raised.exception.proposal_path, "Ana Responsable", self.auth)
+        self._package(other)
+        other_key = key_path(self.auth, json.loads(self.auth.read_text(encoding="utf-8"))["system"]["legacy_sha256"])
+        self.assertNotEqual(other_key, key)
+        self.assertNotEqual(other_key.read_text(), key.read_text())
 
     def test_con_autorizacion_viaja_sustituido_y_con_el_mismo_seudonimo(self):
         summary = self._authorized_package()
@@ -74,11 +122,17 @@ class AlcanceTest(_ConLegacy):
         persona = (package / "legacy" / "persona.sql").read_text(encoding="utf-8")
         otra = (package / "legacy" / "otra.sql").read_text(encoding="utf-8")
         self.assertNotIn(CURP, persona + otra)
-        token = pseudonym("curp", CURP, bytes.fromhex(key_path(self.auth).read_text().strip()))
+        token = pseudonym("curp", CURP, pseudonym_key(self.auth))
         self.assertIn(token, persona)
         self.assertIn(token, otra)
         manifest = json.loads(Path(summary["external_manifest"]).read_text(encoding="utf-8"))
-        self.assertEqual(manifest["data_policy"]["authorization"]["decided_by"], "Ana Responsable")
+        # el nombre de quien autorizó no viaja: el sha256 apunta a la autorización, que queda fuera
+        self.assertNotIn("decided_by", manifest["data_policy"]["authorization"])
+        self.assertEqual(manifest["data_policy"]["authorization"]["sha256"],
+                         __import__("pepper.manifest", fromlist=["sha256_file"]).sha256_file(self.auth))
+        for path in package.rglob("*"):
+            if path.is_file():
+                self.assertNotIn("Ana Responsable", path.read_text(encoding="utf-8", errors="replace"), path.name)
         self.assertIn("source_sha256", manifest["data_policy"]["substitutions"]["legacy/persona.sql"])
 
     def test_una_categoria_nueva_detiene_hasta_que_una_persona_la_autorice(self):
@@ -145,15 +199,15 @@ class SinTopeParaDecidirTest(_ConLegacy):
         for i in range(201):
             (self.legacy / f"export-{i:03d}.txt").write_bytes(b"\x00binario %d" % i)
         with self.assertRaises(BoundaryError) as raised:
-            self._package()
+            self._package(include_uninspected=True)
         proposal = json.loads(raised.exception.proposal_path.read_text(encoding="utf-8"))
         self.assertIn("legacy/export-200.txt", proposal["unscanned"])
         self.assertEqual(len(proposal["unscanned"]), 202)  # los 201 y sistema.war
         authorize(raised.exception.proposal_path, "Ana Responsable", self.auth)
-        self._package()
+        self._package(include_uninspected=True)
         (self.legacy / "export-200.txt").write_bytes(b"\x00otro contenido")
         with self.assertRaisesRegex(BoundaryError, "cambió desde que se autorizó: legacy/export-200.txt"):
-            self._package()
+            self._package(include_uninspected=True)
 
     def test_una_categoria_despues_de_200_hallazgos_llega_a_la_propuesta(self):
         lines = [f"INSERT INTO persona VALUES ('GOCG95{(i % 12) + 1:02d}{(i % 28) + 1:02d}MDFRRB{i % 10}9');" for i in range(250)]

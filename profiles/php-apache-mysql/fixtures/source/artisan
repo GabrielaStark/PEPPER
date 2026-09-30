@@ -1,0 +1,3 @@
+#!/usr/bin/env php
+<?php
+// fixture: el binario de consola de Laravel (vacío a propósito)

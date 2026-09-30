@@ -1,0 +1,4 @@
+# crontab del servidor original (fixture)
+* * * * * cd /var/www/ventanilla && php artisan schedule:run >> /dev/null 2>&1
+30 2 * * 0 /usr/bin/mysqldump --routines --triggers tramites > /respaldos/tramites.sql
+@daily /usr/local/bin/limpiar_temporales.sh

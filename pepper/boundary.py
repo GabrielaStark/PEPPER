@@ -43,21 +43,33 @@ class BoundaryError(ValueError):
         self.proposal_path = proposal_path
 
 
-def legacy_fingerprint(legacy_copy: Optional[Path]) -> str:
-    """sha256 de la lista (ruta, sha256) de los artefactos del legacy, sin las notas."""
-    if legacy_copy is None or not legacy_copy.is_dir():
+def legacy_fingerprint(legacy_dir: Optional[Path], ignore=None) -> str:
+    """sha256 de la lista (ruta, sha256) de los artefactos del legacy, sin las notas.
+
+    Se calcula sobre el legacy FUENTE, con el mismo `ignore` que Package aplica al copiar: la copia
+    que viaja ya no lleva los binarios (no viajan por defecto), y una huella sobre la copia no
+    notaría que el desplegable cambió (auditoría 2026-09-29)."""
+    if legacy_dir is None or not legacy_dir.is_dir():
         return "sin-legacy"
     digest = hashlib.sha256()
-    for path in sorted(legacy_copy.rglob("*")):
-        if path.is_file() and not path.is_symlink() and path.suffix.lower() not in _NOTE_SUFFIXES:
-            digest.update(f"{path.relative_to(legacy_copy).as_posix()}\0{evidence_manifest.sha256_file(path)}\n".encode("utf-8"))
+    for directory, dirnames, filenames in os.walk(legacy_dir, followlinks=False):
+        ignored = set(ignore(directory, dirnames + filenames)) if ignore else set()
+        dirnames[:] = sorted(name for name in dirnames if name not in ignored)
+        for name in sorted(filenames):
+            path = Path(directory) / name
+            if name in ignored or path.is_symlink() or not path.is_file() or path.suffix.lower() in _NOTE_SUFFIXES:
+                continue
+            digest.update(f"{path.relative_to(legacy_dir).as_posix()}\0{evidence_manifest.sha256_file(path)}\n".encode("utf-8"))
     return digest.hexdigest()
 
 
-def proposal(staging: Path, profile_id: Optional[str], report, excluded: List[str]) -> Dict[str, Any]:
-    """El alcance que este paquete necesita, sacado de lo que el escáner vio en la copia."""
+def proposal(staging: Path, profile_id: Optional[str], report, excluded: List[str],
+             legacy_sha256: Optional[str] = None) -> Dict[str, Any]:
+    """El alcance que este paquete necesita, sacado de lo que el escáner vio en la copia; la huella
+    del sistema viene del legacy fuente (`legacy_sha256`), no de la copia."""
     return {
-        "system": {"profile_id": profile_id, "legacy_sha256": legacy_fingerprint(staging / "legacy")},
+        "system": {"profile_id": profile_id,
+                   "legacy_sha256": legacy_sha256 if legacy_sha256 is not None else legacy_fingerprint(staging / "legacy")},
         "destination": REMOTE_DESTINATION,
         # completos: el alcance se decide con TODAS las categorías y TODOS los archivos no inspeccionados
         "categories": sorted(report.categories),
@@ -118,12 +130,17 @@ def write_proposal(package_dir: Path, needed: Dict[str, Any], problems: List[str
     return path
 
 
-def key_path(authorization_path: Path) -> Path:
-    return authorization_path.with_name(authorization_path.stem + ".seudonimos.key")
+def key_path(authorization_path: Path, legacy_sha256: str) -> Path:
+    """La llave de seudónimos es POR SISTEMA (huella del legacy). Antes era una sola por workspace:
+    si la persona borraba la autorización para decidir sobre otro legacy, la misma CURP daba el
+    mismo seudónimo en dos sistemas distintos y los paquetes quedaban vinculables entre sí
+    (auditoría 2026-09-29)."""
+    return authorization_path.with_name(f"{authorization_path.stem}.{legacy_sha256[:16]}.seudonimos.key")
 
 
 def pseudonym_key(authorization_path: Path) -> bytes:
-    path = key_path(authorization_path)
+    authorization = load(authorization_path)
+    path = key_path(authorization_path, str((authorization.get("system") or {}).get("legacy_sha256") or ""))
     if not path.is_file():
         raise ValueError(f"falta la llave de seudónimos {path}: se crea con `pepper authorize`; sin ella no hay sustitución consistente")
     return bytes.fromhex(path.read_text(encoding="utf-8").strip())
@@ -155,7 +172,7 @@ def authorize(proposal_path: Path, decided_by: str, out: Path, today: Optional[s
     authorization["history"] = list(authorization.get("history") or []) + [record]
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(authorization, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    key = key_path(out)
+    key = key_path(out, str(authorization["system"].get("legacy_sha256") or ""))
     if not key.is_file():
         fd = os.open(str(key), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:

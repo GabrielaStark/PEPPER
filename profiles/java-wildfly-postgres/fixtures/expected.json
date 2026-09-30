@@ -1,0 +1,24 @@
+{
+  "notes": "Fixtures tomados de examples/legacy-demo (sistema FICTICIO): los logs son los de raw-evidence/, con el formato de archivo del servidor (server.log de WildFly y el log de PostgreSQL con log_line_prefix), sin prefijo de Docker: este perfil no tiene compose y sus parsers describen los archivos del servidor. El datasource de un Java EE vive en el standalone.xml del servidor, que la persona deja junto al WAR en legacy/ (fixtures/config/legacy/configuration/); la contraseña del fixture es ficticia (el fragmento real del demo la trae enmascarada como ******, que un lector tomaría al pie de la letra). El respaldo lo genera fixtures/synthesize.py con las tablas del esquema del demo.",
+  "logs": {
+    "wildfly": {"events": 18, "unparsed": 0},
+    "postgresql": {"events": 10, "unparsed": 0, "sql_tables": ["citizen", "application", "application_history"]}
+  },
+  "datasource": {
+    "name": "standalone-fragment.xml",
+    "engine": "postgresql",
+    "host": "srv-bd-01",
+    "port": 5432,
+    "db": "solicitudes",
+    "username": "solicitudes_app"
+  },
+  "dump": {
+    "file": "respaldo.dump",
+    "format": "pg_dump_custom",
+    "dbname": "base_origen",
+    "server_version": "10.6",
+    "tables": ["citizen", "application", "application_history"],
+    "catalogs": ["application"],
+    "not_catalogs": ["citizen"]
+  }
+}

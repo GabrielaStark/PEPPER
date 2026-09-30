@@ -483,6 +483,31 @@ def _check_ingress(name: str, service: Dict[str, Any], compose_dir: Optional[Pat
     return upstream
 
 
+_REQUIRED_DROPS = {"ALL", "NET_RAW"}
+
+
+def _cap_drop_ok(values: Any) -> bool:
+    dropped = {str(v).upper().replace("CAP_", "") for v in (values or [])}
+    return bool(dropped & _REQUIRED_DROPS)
+
+
+def _no_new_privileges(values: Any) -> bool:
+    return any(str(v).replace("=", ":").lower() == "no-new-privileges:true" for v in (values or []))
+
+
+def _check_capabilities(name: str, service: Dict[str, Any], report: Report) -> None:
+    """La red interna era la ÚNICA capa: con NET_RAW un proceso emite tramas al MAC del bridge y,
+    con `iptables: false` en el daemon, el host las reenvía (auditoría 2026-09-29). Cada servicio
+    suelta NET_RAW (o todo) y no gana privilegios: dos líneas de compose que convierten la red
+    interna en una de varias capas."""
+    if not _cap_drop_ok(service.get("cap_drop")):
+        report.add("error", f"`{name}` no suelta NET_RAW (`cap_drop: [NET_RAW]` o `[ALL]`)",
+                   "con NET_RAW un proceso del legacy puede emitir tramas crudas al bridge: la red interna deja de ser la única barrera")
+    if not _no_new_privileges(service.get("security_opt")):
+        report.add("error", f"`{name}` no fija `security_opt: [no-new-privileges:true]`",
+                   "un binario setuid dentro del contenedor recuperaría lo que cap_drop quitó")
+
+
 def _check_dns(name: str, dns: Any, subnets: Iterable[ipaddress.IPv4Network], report: Report) -> None:
     """`internal: true` bloquea los paquetes, no las preguntas.
 
@@ -570,6 +595,7 @@ def check_static(compose: Dict[str, Any], external_hosts: Optional[List[str]] = 
         is_ingress = name == ingress
         _check_service_hardening(name, service, is_ingress, report, volumes=compose.get("volumes") or {},
                                  compose_dir=compose_dir)
+        _check_capabilities(name, service, report)
 
         mode = str(service.get("network_mode") or "")
         if mode:
@@ -609,13 +635,16 @@ def check_static(compose: Dict[str, Any], external_hosts: Optional[List[str]] = 
 
         published = [p for p in (service.get("ports") or [])]
         if published and not is_ingress:
-            report.add("warn", f"`{name}` publica puertos al host: {_ports_text(published)}",
-                       "expone datos del legacy al host y a su LAN; publica solo por el ingress o bindea a 127.0.0.1")
+            # Era aviso: "publicar un puerto no da salida al contenedor". Pero "nada del legacy sale de
+            # la máquina" incluye a la LAN: una base con datos de producción publicada es una fuga
+            # (auditoría 2026-09-29).
+            report.add("error", f"`{name}` publica puertos al host: {_ports_text(published)}",
+                       "expone datos del legacy al host y a su LAN; la única puerta es el ingress en 127.0.0.1")
         if published and is_ingress:
             for port in published:
-                host_ip = str(port.get("host_ip", "")) if isinstance(port, dict) else str(port).split(":")[0]
+                host_ip = _published_host_ip(port)
                 if host_ip not in ("127.0.0.1", "::1", "localhost"):
-                    report.add("warn", f"el ingress publica en todas las interfaces ({_ports_text([port])})",
+                    report.add("error", f"el ingress publica en todas las interfaces ({_ports_text([port])})",
                                'cualquier equipo de tu LAN alcanza el legacy: usa "127.0.0.1:<puerto>:8080"')
 
         if is_ingress:
@@ -633,6 +662,18 @@ def check_static(compose: Dict[str, Any], external_hosts: Optional[List[str]] = 
                        "sin alias, el contenedor lo resuelve por DNS real: si hay salida, va a producción")
 
     return report
+
+
+def _published_host_ip(port: Any) -> str:
+    """La IP del host en una publicación del compose (dict resuelto o cadena `ip:host:cont`,
+    también con IPv6 entre corchetes)."""
+    if isinstance(port, dict):
+        return str(port.get("host_ip", ""))
+    text = str(port)
+    if text.startswith("["):
+        return text[1:text.find("]")] if "]" in text else ""
+    parts = text.split(":")
+    return parts[0] if len(parts) >= 3 else ""
 
 
 def _ports_text(ports: List[Any]) -> str:
@@ -781,15 +822,27 @@ def _live_remote_peers(container: str) -> Optional[List[str]]:
         if parts[1].rsplit(":", 1)[1] in listening:
             continue  # entrante
         hexip = parts[2].split(":")[0]
-        if len(hexip) == 8:           # IPv4, little-endian
-            try:
-                ip = ipaddress.ip_address(int.from_bytes(bytes.fromhex(hexip), "little"))
-            except ValueError:
-                continue
-            if ip.is_unspecified or ip.is_loopback:
-                continue
-            peers.add(str(ip))
+        ip = _proc_net_address(hexip)
+        if ip is None or ip.is_unspecified or ip.is_loopback:
+            continue
+        peers.add(str(ip))
     return sorted(peers)
+
+
+def _proc_net_address(hexip: str) -> Optional[Any]:
+    """Una dirección de /proc/net/tcp (8 hex, little-endian) o de tcp6 (32 hex: cuatro palabras de
+    32 bits, cada una little-endian). Antes solo se leía IPv4 y una conexión IPv6 saliente del
+    ingress era invisible (auditoría 2026-09-29)."""
+    try:
+        if len(hexip) == 8:
+            return ipaddress.ip_address(int.from_bytes(bytes.fromhex(hexip), "little"))
+        if len(hexip) == 32:
+            raw = b"".join(bytes.fromhex(hexip[i:i + 8])[::-1] for i in range(0, 32, 8))
+            address = ipaddress.IPv6Address(raw)
+            return address.ipv4_mapped or address
+    except ValueError:
+        return None
+    return None
 
 
 def _check_live_ingress_peers(service: str, container: str, upstream: Optional[Tuple[str, int]],
@@ -810,7 +863,7 @@ def _check_live_ingress_peers(service: str, container: str, upstream: Optional[T
         except ValueError:
             fuera.append(peer)
             continue
-        if any(address in subnet for subnet in subnets):
+        if any(address.version == subnet.version and address in subnet for subnet in subnets):
             continue
         fuera.append(peer)
     if fuera:
@@ -865,16 +918,138 @@ def _check_live_browser_policy(service: str, info: Dict[str, Any], report: Repor
                    "hosts del artefacto: fuga por fuera de los contenedores")
 
 
-def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
-               ingress: str = DEFAULT_INGRESS) -> Report:
-    """Verifica el aislamiento sobre los contenedores en ejecución, según Docker.
+def daemon_facts() -> Optional[Dict[str, Any]]:
+    """Lo que el daemon dice de sí mismo (`docker info`), o None si no responde."""
+    out = subprocess.run(["docker", "info", "--format", "{{json .}}"], capture_output=True, text=True)
+    if out.returncode != 0:
+        return None
+    try:
+        data = json.loads(out.stdout)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
 
-    Fail-closed (C-01): sin contenedores no hay nada verificado; una red o un
-    contenedor que no se pudo inspeccionar bloquea el verde.
+
+def _check_daemon(report: Report) -> None:
+    """`isolate` daba VERIFICADO sin saber sobre qué daemon: Docker en Linux, Docker Desktop, Podman
+    por socket compatible, Windows containers… cada uno con otra semántica de `internal` (auditoría
+    2026-09-29). Lo que no es Linux no da verde; lo que es rootless o no es moby se declara."""
+    facts = daemon_facts()
+    if facts is None:
+        report.add("unknown", "no pude preguntarle al daemon qué es (`docker info`)",
+                   "sin saber qué daemon corre no se sabe qué significa `internal: true`")
+        return
+    os_type = str(facts.get("OSType") or "")
+    version = str(facts.get("ServerVersion") or "?")
+    security = [str(s) for s in (facts.get("SecurityOptions") or [])]
+    rootless = any("rootless" in s for s in security)
+    if os_type and os_type != "linux":
+        report.add("error", f"el daemon no es Linux (OSType={os_type})",
+                   "las redes internas de PEPPER están verificadas solo con contenedores Linux")
+        return
+    product = str(facts.get("ProductLicense") or facts.get("Name") or "")
+    detail = f"Docker {version}" + (", rootless" if rootless else "") + (f", {product}" if product and "Desktop" in product else "")
+    report.add("ok", f"daemon: {detail}")
+    if rootless:
+        report.add("warn", "daemon rootless: la red interna la implementa slirp4netns/pasta, no iptables del host",
+                   "no probado por PEPPER; la sonda de salida es la que dice si de verdad no sale nada")
+
+
+_PROBE_SCRIPT = r"""
+import json, socket
+res = {}
+def tcp(h, p):
+    s = socket.socket(); s.settimeout(3)
+    try:
+        s.connect((h, p)); return "connected"
+    except socket.timeout:
+        return "timeout"
+    except OSError as e:
+        return {111: "refused", 101: "unreachable", 113: "unreachable"}.get(getattr(e, "errno", None), "error")
+    finally:
+        s.close()
+for h, p in [("1.1.1.1", 53), ("8.8.8.8", 443), ("GATEWAY", 22), ("GATEWAY", 80), ("GATEWAY", 443),
+             ("GATEWAY", 5432), ("GATEWAY", 3306), ("GATEWAY", 8080)]:
+    if h != "GATEWAY" or GATEWAY:
+        res[("gateway" if h == "GATEWAY" else h) + ":" + str(p)] = tcp(GATEWAY if h == "GATEWAY" else h, p)
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3)
+q = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01"
+try:
+    s.sendto(q, ("1.1.1.1", 53)); s.recv(512); res["udp:1.1.1.1:53"] = "answered"
+except socket.timeout:
+    res["udp:1.1.1.1:53"] = "timeout"
+except OSError as e:
+    res["udp:1.1.1.1:53"] = {101: "unreachable", 113: "unreachable"}.get(getattr(e, "errno", None), "error")
+try:
+    socket.getaddrinfo("example.com", 80); res["dns:example.com"] = "resolved"
+except OSError:
+    res["dns:example.com"] = "unresolved"
+print(json.dumps(res))
+"""
+
+
+def probe_egress(network: str, dns_sink: Optional[str], image: str, gateway: Optional[str]) -> Tuple[Optional[Dict[str, str]], str]:
+    """Una sonda DESDE la red interna: intenta salir y tiene que fracasar. Es la única comprobación
+    que no depende de haber leído bien el compose ni de suponer cómo implementa el daemon
+    `internal: true` (auditoría 2026-09-29). → (resultados, error)."""
+    script = "GATEWAY = " + json.dumps(gateway or "") + "\n" + _PROBE_SCRIPT
+    command = ["docker", "run", "--rm", "--pull", "never", "--network", network, "--cap-drop", "ALL",
+               "--security-opt", "no-new-privileges:true", "--label", "pepper=probe"]
+    if dns_sink:
+        command += ["--dns", dns_sink, "--dns-opt", "timeout:1", "--dns-opt", "attempts:1"]
+    command += [image, "python3", "-c", script]
+    try:
+        out = subprocess.run(command, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return None, f"la sonda no corrió: {error}"
+    if out.returncode != 0:
+        return None, f"la sonda no corrió (código {out.returncode}): {out.stderr.strip()[-200:]}"
+    try:
+        return json.loads(out.stdout.strip().splitlines()[-1]), ""
+    except (ValueError, IndexError):
+        return None, f"la sonda no devolvió resultados: {out.stdout.strip()[-200:]}"
+
+
+def _judge_probe(results: Dict[str, str], report: Report) -> None:
+    external = {k: v for k, v in results.items() if not k.startswith("gateway")}
+    leaks = [k for k, v in external.items() if v in ("connected", "answered", "resolved")]
+    if leaks:
+        report.add("error", f"la sonda desde la red interna SÍ salió: {', '.join(leaks)}",
+                   "el daemon no aísla esta red como el compose promete: no levantes ni explores nada aquí")
+    else:
+        report.add("ok", "sonda desde la red interna: ningún paquete sale (TCP y UDP a internet fallan, "
+                         "un nombre público no resuelve)")
+    gateway = {k: v for k, v in results.items() if k.startswith("gateway")}
+    reachable = [k.split(":", 1)[1] for k, v in gateway.items() if v == "connected"]
+    answered = [k for k, v in gateway.items() if v == "refused"]
+    # El host es la propia máquina: que el legacy lo alcance no es una salida, pero sí es algo que
+    # la persona tiene que saber (una base local, un proxy de desarrollo, el sshd del runner de CI:
+    # el primer E2E lo encontró en el puerto 22). Aviso con los puertos; fuga solo lo que sale.
+    if reachable:
+        report.add("warn", f"un servicio del host escucha y es alcanzable desde la red interna (puertos {', '.join(reachable)})",
+                   "Docker deja pasar el tráfico de una red interna hacia la IP del bridge del host: mientras el legacy corra, "
+                   "que nada que importe escuche en 0.0.0.0 en esta máquina")
+    elif answered:
+        report.add("warn", "el host responde (RST) desde la red interna: un servicio que escuche en 0.0.0.0 sería alcanzable",
+                   "Docker deja pasar el tráfico de una red interna hacia la IP del bridge del host")
+    else:
+        report.add("ok", "sonda hacia el host: el host no responde desde la red interna")
+
+
+def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
+               ingress: str = DEFAULT_INGRESS, created_only: bool = False, probe: bool = True) -> Report:
+    """Verifica el aislamiento sobre los contenedores, según Docker.
+
+    Fail-closed (C-01): sin contenedores no hay nada verificado; una red o un contenedor que no se
+    pudo inspeccionar bloquea el verde. Con `created_only` se inspeccionan contenedores CREADOS y
+    todavía no arrancados (`docker compose create`): lo que el daemon hizo con el compose se mira
+    ANTES de que el legacy ejecute una sola instrucción; las comprobaciones que exigen procesos
+    vivos (conexiones, política del navegador, DNS, sonda) se hacen después, con `created_only=False`.
     """
     report = Report()
+    _check_daemon(report)
     ps = subprocess.run(
-        ["docker", "compose", "-f", str(compose_path), "ps", "--format", "json"],
+        ["docker", "compose", "-f", str(compose_path), "ps", "-a", "--format", "json"],
         capture_output=True, text=True,
     )
     if ps.returncode != 0:
@@ -888,12 +1063,25 @@ def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
             containers.append(json.loads(line))
         elif line.startswith("["):
             containers.extend(json.loads(line))
+    wanted_state = "created" if created_only else "running"
+    containers = [c for c in containers if str(c.get("State") or c.get("state") or "").lower() in (wanted_state, "")
+                  or (created_only and str(c.get("State") or c.get("state") or "").lower() == "running")]
     if not containers:
         # Sin contenedores no hay fuga que demostrar ni verde que dar: NO VERIFICADO
         # (bloquea igual, pero no dice "el entorno puede alcanzar producción" de un entorno apagado).
-        report.add("unknown", "no hay contenedores en ejecución para este compose",
+        report.add("unknown", f"no hay contenedores {'creados' if created_only else 'en ejecución'} para este compose",
                    "no hay nada que verificar: levanta el entorno y repite — el verde vivo exige el entorno arriba")
         return report
+    services_seen = {c.get("Service") or c.get("service") for c in containers}
+    if not created_only and ingress not in services_seen:
+        # Un ingress caído (sin memoria, sin restart) dejaba VERIFICADO al entorno con la puerta muerta
+        report.add("error", f"el ingress `{ingress}` no está en ejecución",
+                   "sin ingress no hay puerta verificada; lo que responde en el puerto publicado no es PEPPER")
+    for container in containers:
+        state = str(container.get("State") or container.get("state") or "").lower()
+        if state and not created_only and state != "running":
+            report.add("error", f"`{container.get('Service') or container.get('service')}` no está corriendo (estado: {state})",
+                       "un contenedor caído no se puede verificar; y si es el ingress, la puerta no es de PEPPER")
 
     network_internal: Dict[str, Optional[bool]] = {}
 
@@ -907,6 +1095,9 @@ def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
     expected_proxy = bundled_proxy_hash()
     live_subnets: List[ipaddress.IPv4Network] = []
     compose_dir = compose_path.resolve().parent
+    probe_network: Optional[str] = None
+    probe_dns: Optional[str] = None
+    probe_image: Optional[str] = None
 
     for container in containers:
         name = container.get("Name") or container.get("name") or "?"
@@ -966,6 +1157,7 @@ def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
                 nets = _network_subnets(network)
                 live_subnets.extend(nets)
                 container_subnets.extend(nets)
+                probe_network = probe_network or network
             elif service != ingress:
                 report.add("error", f"`{service}` está conectado a `{network}`, que NO es interna en Docker",
                            "solo el ingress verificado toca una red con salida")
@@ -974,20 +1166,30 @@ def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
         # DNS según Docker, no según el YAML: lo que no sea alias debe morir dentro
         dns_owner = (shared_peer.get("HostConfig") or {}) if shared_peer is not None else host_config
         _check_dns(service, dns_owner.get("Dns"), container_subnets, report)
+        if not _cap_drop_ok(host_config.get("CapDrop")):
+            report.add("error", f"`{service}` no suelta NET_RAW en ejecución (según Docker)",
+                       "con NET_RAW un proceso del legacy puede emitir tramas crudas al bridge")
+        if not _no_new_privileges(host_config.get("SecurityOpt")):
+            report.add("error", f"`{service}` corre sin no-new-privileges (según Docker)")
+        if service != ingress:
+            dns_list = dns_owner.get("Dns") or []
+            probe_dns = probe_dns or (str(dns_list[0]) if dns_list else None)
         if service == ingress:
             _check_live_publication_network(service, name, external_networks, report)
 
         if service == ingress:
             config = info.get("Config") or {}
             image = str(config.get("Image") or "")
+            probe_image = image or probe_image
             if not _PYTHON_IMAGE.fullmatch(image):
                 report.add("error", f"`{service}` (ingress) ejecuta una imagen no permitida: `{image or '?'}`")
             entrypoint = config.get("Entrypoint")
             if entrypoint not in (None, "", []):
                 report.add("error", f"`{service}` (ingress) ejecuta un entrypoint inesperado: {entrypoint!r}")
             live_upstream = _parse_proxy_command(service, config.get("Cmd"), report)
-            _check_live_ingress_peers(service, name, live_upstream, live_subnets, report)
-            _check_live_browser_policy(service, info, report)
+            if not created_only:
+                _check_live_ingress_peers(service, name, live_upstream, live_subnets, report)
+                _check_live_browser_policy(service, info, report)
 
             mounts = info.get("Mounts") or []
             proxy_mounts = [m for m in mounts if str(m.get("Destination", "")) == "/pepper-proxy.py"]
@@ -1009,6 +1211,8 @@ def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
                     else:
                         report.add("ok", "el ingress vivo ejecuta el proxy de PEPPER (hash verificado, :ro)")
 
+    if created_only:
+        return report
     for host in (external_hosts or []):
         for container in containers:
             name = container.get("Name") or container.get("name")
@@ -1018,14 +1222,46 @@ def check_live(compose_path: Path, external_hosts: Optional[List[str]] = None,
             out = subprocess.run(["docker", "exec", name, "getent", "hosts", host],
                                  capture_output=True, text=True)
             resolved = out.stdout.split()[0] if out.stdout.split() else ""
+            # Antes cualquier IP privada era "ok" y "no resuelve" también: producción por VPN vive en
+            # 10.x, y un alias que no resuelve es un stub que no recibe nada (auditoría 2026-09-29).
+            # Solo vale resolver DENTRO de la subred interna, es decir, al stub.
             if not resolved:
-                report.add("ok", f"`{service}`: `{host}` no resuelve (sin DNS externo)")
+                report.add("unknown", f"`{service}`: `{host}` no resuelve",
+                           "debería resolver al stub por alias de la red interna; si no, el stub no registra esa dependencia")
+                continue
+            try:
+                inside = any(ipaddress.ip_address(resolved) in subnet for subnet in live_subnets)
+            except ValueError:
+                inside = False
+            report.add("ok" if inside else "error",
+                       f"`{service}`: `{host}` resuelve a {resolved}" + (" (dentro de la red interna: el stub)" if inside else ""),
+                       "" if inside else "resuelve fuera de la red interna: el contenedor puede llamar al servicio real")
+    if probe:
+        if probe_network and probe_image:
+            results, error = probe_egress(probe_network, probe_dns, probe_image, _network_gateway(probe_network))
+            if results is None:
+                report.add("unknown", "no pude correr la sonda de salida desde la red interna", error)
             else:
-                private = resolved.startswith(("10.", "172.", "192.168."))
-                report.add("ok" if private else "error",
-                           f"`{service}`: `{host}` resuelve a {resolved}",
-                           "" if private else "resuelve a una IP pública: el contenedor puede llamar al servicio real")
+                _judge_probe(results, report)
+        else:
+            report.add("unknown", "sin red interna o sin imagen del ingress no hay con qué sondear la salida")
     return report
+
+
+def _network_gateway(network: str) -> Optional[str]:
+    out = subprocess.run(["docker", "network", "inspect", network, "--format", "{{json .IPAM.Config}}"],
+                         capture_output=True, text=True)
+    if out.returncode != 0:
+        return None
+    try:
+        config = json.loads(out.stdout.strip() or "[]") or []
+    except ValueError:
+        return None
+    for entry in config:
+        gateway = (entry or {}).get("Gateway")
+        if gateway:
+            return str(gateway)
+    return None
 
 
 def render(report: Report, title: str) -> str:

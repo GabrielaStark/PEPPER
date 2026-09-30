@@ -128,6 +128,16 @@ def identity_text(login: Dict[str, Any], role: Dict[str, Any]) -> str:
     return str(template).replace("{user}", str(role.get("user", ""))).replace("{role}", str(role.get("name", "")))
 
 
+def browser_args(base_url: str) -> List[str]:
+    """Flags de Chromium con las que el navegador del explorador no puede salir de la máquina aunque
+    `route` no viera una petición: todo nombre → NOTFOUND salvo el host del ingress; WebRTC sin UDP directo."""
+    host = urlsplit(base_url).hostname or "127.0.0.1"
+    return [f"--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE {host}",
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            "--disable-background-networking", "--disable-component-update", "--disable-sync",
+            "--dns-prefetch-disable", "--no-pings"]
+
+
 class CredentialsError(RuntimeError):
     """No se pudo fijar ninguna credencial de prueba: sin eso no hay nada que explorar."""
 
@@ -163,7 +173,11 @@ class Explorer:
         self.shots.mkdir(exist_ok=True)
         self._log = self.log_path.open("a", encoding="utf-8")
         self._pw = sync_playwright().start()
-        self._browser = self._pw.chromium.launch(headless=self.headless)
+        # El mismo endurecimiento que la prueba hermética del ingress, que en producción no se aplicaba
+        # (auditoría 2026-09-29): el resolver de Chromium no resuelve NADA salvo el host del ingress
+        # (un <link rel=preconnect>, un dns-prefetch o el predictor no pasan por `route`), y WebRTC no
+        # manda UDP a ningún STUN. `route` sigue siendo la segunda capa, y la evidencia de lo bloqueado.
+        self._browser = self._pw.chromium.launch(headless=self.headless, args=browser_args(self.base))
         self._context = None
         self._fresh_context()
         self.ready: Optional[List[str]] = None
@@ -182,7 +196,8 @@ class Explorer:
                 self._context.close()
             except Exception:
                 pass
-        context = self._browser.new_context(viewport={"width": 1366, "height": 900})
+        # service_workers="block": `route` no intercepta lo que un service worker pide; sin ellos, todo pasa por aquí
+        context = self._browser.new_context(viewport={"width": 1366, "height": 900}, service_workers="block")
         self._context = context
         context.set_default_timeout(self.timeout_ms)
         # El navegador del explorador corre en el host (con VPN). La CSP del ingress frena lo
@@ -317,10 +332,15 @@ class Explorer:
         nada se detuviera: un fallo de credenciales es fatal, no una nota al pie."""
         creds = self.config.get("credentials") or {}
         sql_template = creds.get("sql")
-        if not sql_template or docker_compose is None:
-            return [r["name"] for r in self.config.get("roles", []) if r.get("password")]
+        roles = self.config.get("roles", [])
+        # `roles[].user_sql`: la clave de usuario de ese rol se resuelve DENTRO de la base desechable
+        # y nunca pasa por quien escribe explore.json (el agente la consultaba con psql y el valor
+        # entraba a su contexto — auditoría 2026-09-29). Solo la ve el navegador.
+        needs_db = bool(sql_template) or any(r.get("user_sql") for r in roles)
+        if not needs_db or docker_compose is None:
+            return [r["name"] for r in roles if r.get("password") and r.get("user")]
 
-        secrets = [r["password"] for r in self.config.get("roles", []) if r.get("password")]
+        secrets = [r["password"] for r in roles if r.get("password")]
 
         # El cliente de la base lo declara el perfil (`rehydrate.database.probe`: psql, mysql…);
         # `pepper explore --profile` lo copia a `credentials.client`. Sin perfil, psql como antes.
@@ -360,7 +380,26 @@ class Explorer:
                 raise CredentialsError(f"credentials.setup_sql falló en la base desechable: {error}")
         ready: List[str] = []
         failures: List[str] = []
-        for role in self.config.get("roles", []):
+        for role in roles:
+            if role.get("user_sql") and not role.get("user"):
+                result = psql(role["user_sql"])
+                first = (result.stdout or "").strip().splitlines()
+                value = first[0].split("\t")[0].strip() if first else ""
+                if result.returncode != 0 or not value:
+                    error = (result.stderr.strip() or "la consulta no devolvió ninguna clave de usuario")[:300]
+                    failures.append(f"{role['name']}: user_sql: {error}")
+                    self._write(Action(role=role["name"], route="", kind="credentials", label="user_sql", started=_now(),
+                                       result="error", detail={"stderr": error, "falla": "acceso"}))
+                    continue
+                role["user"] = value       # solo en memoria: no se escribe en explore.jsonl ni en session.json
+                secrets.append(value)      # y tampoco en un stderr que sí se escribe
+        if not sql_template:
+            self.ready = [r["name"] for r in roles if r.get("password") and r.get("user")]
+            if not self.ready:
+                raise CredentialsError("ningún rol quedó con clave de usuario resuelta; sin eso no hay nada que explorar. "
+                                       + " · ".join(failures[:3]))
+            return self.ready
+        for role in roles:
             if not role.get("user") or not role.get("password"):
                 continue
             sql = sql_template.replace("{user}", role["user"]).replace("{password}", role["password"])
@@ -377,6 +416,32 @@ class Explorer:
                                + " · ".join(failures[:3]))
         self.ready = ready
         return ready
+
+    # ------------------------------------------------------------ observación operada por una persona
+
+    def observe(self, log=print) -> Dict[str, Any]:
+        """Una persona opera el sistema en ESTE navegador (`--headed`): el mismo perímetro que el explorador
+        (resolver cerrado, `route` al ingress, sin service workers, sin sync ni extensiones). Antes
+        `/pepper-observe` le pedía abrir su navegador de siempre, y un `location.href=`, un preconnect o
+        el historial sincronizado salían de la máquina sin que ningún contenedor lo viera (auditoría
+        2026-09-29). Termina cuando la persona cierra la ventana."""
+        action = Action(role="persona", route="/", kind="observe", label="ventana operada por una persona", started=_now())
+        try:
+            self.page.goto(self.base + "/")
+        except Exception as error:  # noqa: BLE001
+            action.result, action.detail = "error", {"error": str(error)[:200], "falla": "explorador"}
+            self._write(action)
+            return {"mode": "observe", "error": f"no se pudo abrir {self.base}: {str(error)[:120]}"}
+        log(f"  ventana abierta en {self.base}: opera el sistema ahí (un flujo a la vez, provoca un rechazo) y CIERRA LA VENTANA al terminar")
+        try:
+            self.page.wait_for_event("close", timeout=0)
+        except Exception:  # noqa: BLE001 — el contexto se fue: la persona cerró todo
+            pass
+        action.ended = _now()
+        action.result = "ok"
+        action.url_after = ""
+        self._write(action)
+        return {"mode": "observe", "roles": {}}
 
     # ------------------------------------------------------------ sesión
 
@@ -1037,6 +1102,27 @@ def walk_verdict(summary: Dict[str, Any], records: List[Dict[str, Any]]) -> Dict
     return {"status": "PARCIAL", "reason": "; ".join(parts), "counts": counts}
 
 
+def collector_source(collectors: List[Dict[str, Any]], captured: str, service: str) -> Optional[str]:
+    """Qué colector del perfil normaliza el archivo capturado `captured` (containers/app.log) del servicio `service`.
+
+    Primero el `file` exacto, luego un `file` con comodines (containers/*.log: una pieza por
+    servicio), y al final el colector cuyo `source` es el nombre del servicio. Hasta la auditoría
+    2026-09-29 se casaba buscando el nombre del archivo dentro de la prosa de `location`."""
+    from fnmatch import fnmatch
+
+    for collector in collectors:
+        if collector.get("file") == captured:
+            return collector.get("source")
+    for collector in collectors:
+        pattern = collector.get("file")
+        if pattern and any(ch in pattern for ch in "*?[") and fnmatch(captured, pattern):
+            return collector.get("source")
+    for collector in collectors:
+        if collector.get("source") == service:
+            return collector.get("source")
+    return None
+
+
 def config_problems(config: Dict[str, Any]) -> List[str]:
     """Qué le falta a explore.json para poder correr; vacío si está completo. Antes un KeyError
     a mitad del arranque era todo lo que veía el humano."""
@@ -1050,14 +1136,18 @@ def config_problems(config: Dict[str, Any]) -> List[str]:
     roles = config.get("roles") or []
     if not roles:
         problems.append("falta roles (al menos uno con name, user y password)")
+    creds = config.get("credentials") or {}
     for role in roles:
-        if not all(role.get(k) for k in ("name", "user", "password")):
-            problems.append(f"rol incompleto: {role.get('name') or '?'} (name, user, password)")
-        elif not identity_text(login, role):
+        if not role.get("name") or not role.get("password") or not (role.get("user") or role.get("user_sql")):
+            problems.append(f"rol incompleto: {role.get('name') or '?'} (name, password, y user o user_sql)")
+        elif role.get("user") and role.get("user_sql"):
+            problems.append(f"rol {role['name']}: user y user_sql a la vez; uno u otro")
+        elif role.get("user_sql") and not creds.get("db_name"):
+            problems.append(f"rol {role['name']}: user_sql necesita credentials.db_name (la base desechable donde se consulta)")
+        elif not (role.get("identity_text") or login.get("identity_text")):
             problems.append(f"rol {role['name']}: falta login.identity_text (o identity_text del rol): el texto que el "
                             "sistema muestra solo a quien entró, p. ej. \"{user}\"; sin él no se sabe con qué identidad se exploró")
-    creds = config.get("credentials")
-    if creds and creds.get("sql") and not creds.get("db_name"):
+    if creds.get("sql") and not creds.get("db_name"):
         problems.append("credentials.sql sin credentials.db_name")
     return problems
 
@@ -1065,7 +1155,11 @@ def config_problems(config: Dict[str, Any]) -> List[str]:
 def outcome(summary: Dict[str, Any], actions: List[Dict[str, Any]], captured_files: List[str],
             plan_steps: Optional[int] = None) -> Dict[str, Any]:
     """El veredicto de la sesión: {status, code, reason, counts}. Solo COMPLETO sale con 0."""
-    if plan_steps is not None or summary.get("mode") == "plan":
+    if summary.get("mode") == "observe":
+        verdict = ({"status": "COMPLETO", "reason": "ventana operada por una persona en el navegador hermético de PEPPER", "counts": {}}
+                   if any(a.get("kind") == "observe" and a.get("result") == "ok" for a in actions)
+                   else {"status": "FALLIDO", "reason": "la ventana de observación no se abrió", "counts": {}})
+    elif plan_steps is not None or summary.get("mode") == "plan":
         verdict = plan_verdict(actions, plan_steps if plan_steps is not None else int(summary.get("steps", 0)))
     else:
         verdict = walk_verdict(summary, actions)
@@ -1090,7 +1184,11 @@ def operator_note(actions: List[Dict[str, Any]], summary: Dict[str, Any], kind: 
         for m in a.get("messages", []):
             if m not in messages:
                 messages.append(m)
-    parts = [f"Sesión ejercitada POR EL AGENTE (explorador de PEPPER) con un navegador headless local, todo por el ingress; modo {kind}."]
+    if summary.get("mode") == "observe":
+        parts = ["Sesión operada POR UNA PERSONA en el navegador hermético de PEPPER (resolver cerrado, todo por el ingress); "
+                 "lo que hizo está en http.jsonl y en los logs, no en explore.jsonl."]
+    else:
+        parts = [f"Sesión ejercitada POR EL AGENTE (explorador de PEPPER) con un navegador headless local, todo por el ingress; modo {kind}."]
     if verdict:
         parts.append(f"Resultado: {verdict['status']} — {verdict['reason']}.")
     if roles:

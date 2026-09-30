@@ -5,6 +5,7 @@ delante, y peticiones reales de http.client. Nada sale de la máquina.
 """
 
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -552,6 +553,8 @@ class NavegacionHermeticaTest(unittest.TestCase):
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
+            if os.environ.get("PEPPER_CI"):
+                raise AssertionError("en CI la prueba hermética es obligatoria: falta playwright")
             raise unittest.SkipTest("necesita playwright")
         cls.upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UpstreamHandler)
         cls.upstream.daemon_threads = True
@@ -563,10 +566,12 @@ class NavegacionHermeticaTest(unittest.TestCase):
         try:
             cls.browser = cls.playwright.chromium.launch(
                 args=["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"])
-        except Exception as error:  # noqa: BLE001 — sin navegador instalado la prueba se salta, no falla
+        except Exception as error:  # noqa: BLE001 — sin navegador instalado la prueba se salta (en CI, falla)
             cls.playwright.stop()
             cls.proxy.shutdown(); cls.proxy.server_close()
             cls.upstream.shutdown(); cls.upstream.server_close()
+            if os.environ.get("PEPPER_CI"):
+                raise AssertionError(f"en CI la prueba hermética es obligatoria: chromium no disponible: {str(error).splitlines()[0]}")
             raise unittest.SkipTest(f"chromium no disponible: {str(error).splitlines()[0]}")
 
     @classmethod
@@ -678,3 +683,64 @@ class UrlSanitizationTest(unittest.TestCase):
             self.assertEqual(entry["blocked_uri"], expected, raw)
             self.assertNotIn("ClaveSecreta", json.dumps(entry))
             self.assertNotIn("T0k3n", json.dumps(entry))
+
+
+class MetaRefreshComoElNavegadorTest(unittest.TestCase):
+    """`strip_meta_refresh` con el parser de HTML: `url=` opcional, entidades, comillas, `>` dentro de un
+    valor. Cada variante pasaba intacta con la regex de bytes (auditoría 2026-09-29)."""
+
+    def _blocked(self, html):
+        from pepper.proxy import strip_meta_refresh
+        out, blocked = strip_meta_refresh(html, own=("127.0.0.1:18080",))
+        return out, blocked
+
+    def test_variantes_hacia_otro_origen_se_quitan(self):
+        for html in (b'<meta http-equiv="refresh" content="0; https://prod.institucion.mx/portal">',
+                     b'<meta http-equiv="refresh" content="0;url=&#104;ttps://prod.institucion.mx/portal">',
+                     b'<meta http-equiv="refresh" content="0;url=&#x2F;&#x2F;prod.institucion.mx/portal">',
+                     b'<meta http-equiv="&#114;efresh" content="0;url=https://prod.institucion.mx/">',
+                     b'<meta content="0;url=https://prod.institucion.mx/a?b=>c" http-equiv="refresh">',
+                     b"<meta http-equiv=refresh content=0;url=https://prod.institucion.mx/x>",
+                     b'<META HTTP-EQUIV="Refresh" CONTENT="5; URL=\'https://prod.institucion.mx/\'">'):
+            with self.subTest(html=html):
+                out, blocked = self._blocked(b"<html><head>" + html + b"</head></html>")
+                self.assertNotIn(b"prod.institucion.mx", out)
+                self.assertIn(b"pepper: meta refresh", out)
+                self.assertEqual(len(blocked), 1)
+
+    def test_el_local_se_queda_y_el_de_solo_recarga_tambien(self):
+        out, blocked = self._blocked(b'<meta http-equiv="refresh" content="3; url=/inicio"><meta http-equiv="refresh" content="30">')
+        self.assertIn(b'url=/inicio', out)
+        self.assertIn(b'content="30"', out)
+        self.assertEqual(blocked, [])
+
+    def test_hacia_el_propio_ingress_se_vuelve_relativo(self):
+        out, blocked = self._blocked(b'<meta http-equiv="refresh" content="0; url=http://127.0.0.1:18080/menu?x=1">')
+        self.assertIn(b'url=/menu?x=1', out)
+        self.assertNotIn(b"127.0.0.1:18080", out)
+        self.assertEqual(blocked, [])
+
+
+class HtmlSinContentTypeTest(unittest.TestCase):
+    def test_una_respuesta_sin_content_type_que_parece_html_recibe_el_guardian(self):
+        from pepper.proxy import guard_html, is_html_response
+        self.assertTrue(is_html_response("", b"  <!DOCTYPE html><html><head></head></html>"))
+        self.assertTrue(is_html_response("application/xhtml+xml; charset=utf-8", b"<?xml"))
+        self.assertFalse(is_html_response("", b"{\"json\": true}"))
+        self.assertFalse(is_html_response("application/json", b"<html>"))
+        out, _ = guard_html("", "", b"<html><head><title>x</title></head></html>")
+        self.assertIn(b'data-pepper="guard"', out)
+        self.assertIn(b"<![CDATA[", out)   # XHTML no admite `&&` fuera de CDATA
+
+    def test_el_guardian_no_se_inyecta_dentro_de_un_comentario_ni_en_un_header(self):
+        from pepper.proxy import guard_html
+        html = b"<!-- generado por <head>er --><html><header>x</header><head><title>t</title></head></html>"
+        out, _ = guard_html("text/html", "", html)
+        at = out.find(b'data-pepper="guard"')
+        self.assertGreater(at, out.find(b"-->"))
+        self.assertGreater(at, out.find(b"<head><title>"))
+
+    def test_la_politica_bloquea_webrtc_y_las_respuestas_llevan_los_headers_extra(self):
+        from pepper.proxy import BROWSER_POLICY, _EXTRA_RESPONSE_HEADERS
+        self.assertIn("webrtc 'block'", BROWSER_POLICY)
+        self.assertEqual(dict(_EXTRA_RESPONSE_HEADERS)["X-DNS-Prefetch-Control"], "off")

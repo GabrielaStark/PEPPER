@@ -10,6 +10,7 @@ python3 -m unittest discover -s tests       # la suite
 
 | Comando | Módulo | Qué hace |
 |---|---|---|
+| `init` | `init.py` | un workspace aparte del clon: enlace `pepper/` a la instalación, `.pepper-home`, la parte que Claude Code carga copiada (`.claude/`, `CLAUDE.md`, `AGENTS.md`, `templates/`, el guardia), `legacy/NOTAS.md`, `docs/pepper/`, `pepper-out/`, `evidence/` y el `.gitignore` del workspace; sin git ni remoto |
 | `detect` | `detect.py` | qué perfil aplica a unos artefactos, con qué señales |
 | `map` | `inspect/systemmap.py`, `inspect/pgdump.py` | todo lo que el sistema ES: rutas, jobs, pantallas, clases, tablas, catálogos, triggers → `system-map.json` + `map/*.md` |
 | `rehydrate` | `rehydrate.py` | del artefacto y el respaldo a un entorno aislado corriendo: lee la configuración embebida, rinde compose y restauración desde el perfil, restaura, arranca, verifica → `environment.json` |

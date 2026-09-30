@@ -1,0 +1,8 @@
+{
+  "name": "ejemplo/ventanilla-fixture",
+  "description": "Fixture sintético de PEPPER: una ventanilla de trámites inventada",
+  "require": {
+    "php": "^7.4|^8.0",
+    "laravel/framework": "^8.0"
+  }
+}

@@ -1,4 +1,4 @@
-"""Línea de comandos: `pepper detect | map | validate | isolate | proxy | collect | correlate | package | authorize | export | demo`."""
+"""Línea de comandos: `pepper init | detect | map | validate | isolate | proxy | collect | correlate | package | authorize | export | demo`."""
 
 from __future__ import annotations
 
@@ -42,6 +42,7 @@ def _cmd_package(args: argparse.Namespace) -> int:
         manifest_out=args.manifest_out,
         system_map=args.map,
         previous=args.previous,
+        include_uninspected=args.include_uninspected,
     )
     print(f"package · {summary['session_id']} · {summary['files']} archivos")
     print(f"  evidencia: {summary['events']} eventos, {summary['traces']} peticiones")
@@ -51,6 +52,10 @@ def _cmd_package(args: argparse.Namespace) -> int:
     print(f"  datos: modo {summary['data_mode']} · {summary['sensitive_findings']} hallazgo(s) sensible(s) · "
           f"{summary['unscanned_files']} archivo(s) no inspeccionado(s) · {summary['substituted']} valor(es) sustituido(s)"
           + (f" · excluido: {', '.join(summary['excluded'])}" if summary["excluded"] else ""))
+    if summary.get("excluded_uninspected"):
+        print(f"  no viaja (no inspeccionable; queda en la máquina): "
+              + ", ".join(f"{e['path']} ({e['kind']})" for e in summary["excluded_uninspected"][:8])
+              + (f" … y {len(summary['excluded_uninspected']) - 8} más" if len(summary["excluded_uninspected"]) > 8 else ""))
     print(f"  paquete: {args.out}")
     print(f"  manifest externo: {summary['external_manifest']} (no lo metas al paquete)")
     if summary.get("redacted_notes"):
@@ -299,7 +304,7 @@ def _cmd_explore(args: argparse.Namespace) -> int:
     import time as _time
     from datetime import datetime
 
-    from pepper.explore import Explorer, operator_note, write_session
+    from pepper.explore import Explorer, collector_source, operator_note, write_session
     from pepper.isolate import check_live, check_static, resolve_compose
     from pepper.observe import collect
     from pepper.profiles import load_profile
@@ -328,7 +333,10 @@ def _cmd_explore(args: argparse.Namespace) -> int:
         print(f"pepper explore: {args.config} incompleto — " + "; ".join(problems), file=sys.stderr)
         return 2
     system_map = _json.loads(args.map.read_text(encoding="utf-8")) if args.map else {"entrypoints": []}
-    if not args.plan and not any(e.get("method", "GET") in ("GET", "") for e in system_map.get("entrypoints", [])):
+    if args.observe and not args.headed:
+        print("pepper explore: --observe necesita --headed: la persona opera en una ventana visible", file=sys.stderr)
+        return 2
+    if not args.plan and not args.observe and not any(e.get("method", "GET") in ("GET", "") for e in system_map.get("entrypoints", [])):
         print("pepper explore: el mapa no trae rutas GET que recorrer; pasa --map docs/pepper/system-map.json", file=sys.stderr)
         return 2
     plan = _json.loads(args.plan.read_text(encoding="utf-8")) if args.plan else None
@@ -358,7 +366,8 @@ def _cmd_explore(args: argparse.Namespace) -> int:
         return 1
     print(f"explore · aislamiento verificado en vivo ({len([f for f in report.findings if f.level == 'ok'])} comprobaciones)")
 
-    kind = f"plan ({args.plan.name})" if plan else "recorrido automático por rol y pantalla"
+    kind = ("observación operada por una persona" if args.observe
+            else f"plan ({args.plan.name})" if plan else "recorrido automático por rol y pantalla")
     actions: List[Dict] = []
     summary: Dict = {}
     started = datetime.now().astimezone()
@@ -371,7 +380,9 @@ def _cmd_explore(args: argparse.Namespace) -> int:
             if args.budget:
                 explorer.deadline = _time.time() + args.budget
             try:
-                if plan:
+                if args.observe:
+                    summary = explorer.observe()
+                elif plan:
                     summary = explorer.run_plan(plan, docker_compose=args.compose)
                 else:
                     summary = explorer.walk(docker_compose=args.compose, submit=not args.no_submit)
@@ -416,11 +427,7 @@ def _cmd_explore(args: argparse.Namespace) -> int:
             collectors.append({"source": "http-proxy", "kind": "generic", "file": rel,
                                "note": "stdout del ingress (pepper/proxy.py): una línea JSON por petición y por respuesta; origen del correlation_id; incluye direction=blocked del navegador."})
             continue
-        source = None
-        for collector in (profile.data.get("collectors", []) if profile else []):
-            if rel.split("/")[-1] in (collector.get("location") or "") or collector.get("source") == item["service"]:
-                source = collector["source"]
-                break
+        source = collector_source(profile.data.get("collectors", []) if profile else [], rel, item["service"])
         if source:
             collectors.append({"source": source, "kind": "profile", "file": rel,
                                "note": f"docker logs --timestamps del servicio {item['service']} (prefijo RFC3339 UTC de Docker)."})
@@ -461,6 +468,22 @@ def _cmd_map(args: argparse.Namespace) -> int:
         spec_path = profile.dir / "extractors.json"
         if not spec_path.is_file():
             print(f"pepper map: el perfil {profile.id} no declara extractors.json", file=sys.stderr)
+            return 2
+        # El contrato antes de correr: una clave mal escrita (`member_pattern`, `patterns`) caía en un
+        # default en silencio y el mapa salía "completo" con lo que el default alcanzara (auditoría 2026-09-29).
+        try:
+            from pepper.validate import validate_file
+            problemas = validate_file(spec_path, "extractors")
+        except ImportError:
+            problemas = []
+            print("pepper map: sin jsonschema no se validó extractors.json contra su contrato (pip install jsonschema)", file=sys.stderr)
+        except ValueError as error:
+            problemas = [str(error)]
+        if problemas:
+            print(f"pepper map: {spec_path} no cumple schemas/extractors.schema.json:", file=sys.stderr)
+            for problema in problemas:
+                print(f"    {problema}", file=sys.stderr)
+            print("  corrige el extractors.json del perfil (cada mecanismo admite solo las claves que lee)", file=sys.stderr)
             return 2
         extractors = _json.loads(spec_path.read_text(encoding="utf-8")).get("extractors", [])
     else:
@@ -563,7 +586,38 @@ def _cmd_authorize(args: argparse.Namespace) -> int:
 
     from pepper.boundary import authorize, key_path
 
+    # La autorización es de una persona, en su terminal. Antes cualquier proceso podía escribirla
+    # con `--by "un nombre"`: un agente instruido a "preguntar" podía firmarla solo (auditoría
+    # 2026-09-29). Sin terminal interactiva no hay a quién preguntarle, y sin la palabra escrita
+    # a mano no hay decisión.
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("pepper authorize: se corre a mano, en una terminal, por la persona que autoriza. "
+              "No desde un agente, un script ni una tubería: sin terminal interactiva no hay decisión humana.", file=sys.stderr)
+        return 2
     needed = _json.loads(args.proposal.read_text(encoding="utf-8"))
+    print(f"Propuesta: {args.proposal}")
+    print(f"  sistema: perfil {(needed.get('system') or {}).get('profile_id')} · legacy {(needed.get('system') or {}).get('legacy_sha256', '')[:16]}…")
+    print(f"  destino: {needed.get('destination')}")
+    print(f"  categorías de datos detectadas (viajarían sustituidas): {', '.join(needed.get('categories') or []) or 'ninguna'}")
+    unscanned = needed.get("unscanned") or {}
+    print(f"  archivos no inspeccionables que viajarían ENTEROS y sin sustituir: {len(unscanned)}")
+    for path in list(unscanned)[:20]:
+        print(f"    - {path}")
+    if len(unscanned) > 20:
+        print(f"    … y {len(unscanned) - 20} más")
+    if needed.get("excluded"):
+        print(f"  excluido siempre (material de llave, no viaja): {', '.join(needed['excluded'])}")
+    for why in needed.get("why") or []:
+        print(f"  por qué hace falta: {why}")
+    print()
+    print("Lo que no tiene patrón (un nombre propio, una dirección, un teléfono) no se detecta ni se sustituye.")
+    try:
+        answer = input(f"{args.by}: escribe AUTORIZO para autorizar este alcance para este legacy (cualquier otra cosa cancela): ")
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer.strip() != "AUTORIZO":
+        print("pepper authorize: no se autorizó nada.", file=sys.stderr)
+        return 1
     result = authorize(args.proposal, args.by, args.out)
     print(f"authorize · {args.out} · decidió: {result['decided_by']} ({result['date']})")
     print(f"  sistema: perfil {result['system'].get('profile_id')} · legacy {result['system'].get('legacy_sha256', '')[:16]}…")
@@ -572,7 +626,30 @@ def _cmd_authorize(args: argparse.Namespace) -> int:
     print(f"  no inspeccionados autorizados: {len(result['unscanned'])} (cada uno con su sha256)")
     if needed.get("excluded"):
         print(f"  excluido siempre (material de llave, no viaja): {', '.join(needed['excluded'])}")
-    print(f"  llave de seudónimos: {key_path(args.out)} (local; nunca va en un paquete)")
+    print(f"  llave de seudónimos: {key_path(args.out, str(result['system'].get('legacy_sha256') or ''))} (local, por sistema; nunca va en un paquete)")
+    return 0
+
+
+def _cmd_init(args: argparse.Namespace) -> int:
+    from pepper.init import InitError, create_workspace
+    from pepper.workspace import version_line
+
+    try:
+        report = create_workspace(args.directory, force=args.force)
+    except InitError as error:
+        print(f"pepper init: {error}", file=sys.stderr)
+        return 2
+    root = args.directory.resolve()
+    print(f"init · {'actualizado' if args.force else 'workspace'} · {root}")
+    print(f"  {version_line(root).splitlines()[0]}")
+    for line in report:
+        print(line)
+    print()
+    print("Siguientes pasos:")
+    print(f"  1. copia el desplegable y el respaldo a {root / 'legacy'}/")
+    print("  2. escribe una línea en legacy/NOTAS.md con lo que sepas (\"producción es WildFly 21\" ahorra una desviación)")
+    print(f"  3. cd {root} && claude      # abre Claude Code EN el workspace; adentro: /pepper")
+    print("  (sin git ni remoto: nada de aquí tiene a dónde subirse; si quieres versionar docs/pepper/, haz `git init` tú)")
     return 0
 
 
@@ -616,6 +693,7 @@ def _cmd_demo(args: argparse.Namespace) -> int:
 
 
 COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
+    "init": _cmd_init,
     "correlate": _cmd_correlate,
     "package": _cmd_package,
     "export": _cmd_export,
@@ -632,14 +710,31 @@ COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
 }
 
 
+class _Version(argparse.Action):
+    """`--version` se calcula al pedirlo, no al construir el parser: consulta git y `.pepper-home`."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        from pepper.workspace import version_line
+
+        print(version_line())
+        parser.exit()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pepper",
         description="PEPPER — descubrimiento dinámico de sistemas legacy.",
     )
-    parser.add_argument("--version", action="version", version=f"pepper {__version__}")
+    parser.add_argument("--version", action=_Version, nargs=0,
+                        help=f"pepper {__version__}, con el commit de la instalación y, en un workspace de `pepper init`, cuál es")
     commands = parser.add_subparsers(dest="command", metavar="comando")
     commands.required = True
+
+    init = commands.add_parser("init", help="crea un workspace aparte del clon: legacy/, docs/pepper/, la herramienta copiada y un enlace al núcleo")
+    init.add_argument("directory", type=Path, help="dónde crear el workspace (debe no existir o estar vacío; fuera del clon de PEPPER)")
+    init.add_argument("--force", action="store_true",
+                      help="en un workspace existente, vuelve a copiar la herramienta (.claude/, CLAUDE.md, AGENTS.md, templates/, "
+                           "el guardia, el enlace y .pepper-home) sin tocar legacy/, docs/pepper/, pepper-out/ ni evidence/")
 
     correlate = commands.add_parser("correlate", help="normaliza, reduce y correlaciona evidencia cruda")
     correlate.add_argument("evidence", type=Path, help="directorio con session.json y los archivos de sus colectores")
@@ -662,10 +757,13 @@ def build_parser() -> argparse.ArgumentParser:
                          help="system-map.json de `pepper map` (se copia con su carpeta map/ legible); sin él el agente solo ve la ejecución")
     package.add_argument("--previous", type=Path,
                          help="funcional.json publicado por un discovery anterior: el nuevo lo extiende en vez de empezar de cero")
+    package.add_argument("--include-uninspected", action="store_true",
+                         help="en modo remote, copiar también lo que el escáner no puede leer (binarios, archivos enormes): "
+                              "viaja ENTERO y sin sustituir, y exige autorización expresa de cada archivo. Por defecto no viaja")
 
     authorize = commands.add_parser("authorize", help="una persona autoriza el alcance de datos que `package` propuso (D24)")
     authorize.add_argument("proposal", type=Path, help="<paquete>.data-boundary.propuesta.json que dejó `pepper package`")
-    authorize.add_argument("--by", required=True, help="nombre de la persona que autoriza (queda escrito)")
+    authorize.add_argument("--by", required=True, help="nombre de la persona que autoriza (queda escrito, fuera del paquete); se corre en una terminal, nunca desde un agente")
     authorize.add_argument("--out", type=Path, default=Path("pepper-out/data-boundary.json"),
                            help="autorización del sistema (default pepper-out/data-boundary.json); si existe y es del mismo sistema, se extiende")
 
@@ -717,13 +815,16 @@ def build_parser() -> argparse.ArgumentParser:
     explore.add_argument("--out", type=Path, default=Path("evidence"), help="raíz de la evidencia (default evidence/)")
     explore.add_argument("--budget", type=int, default=0, help="segundos máximos de recorrido (automático o plan); al agotarse no corre nada más, escribe session.json y sale INTERRUMPIDO (4)")
     explore.add_argument("--no-submit", action="store_true", help="solo abrir y fotografiar pantallas; no apretar botones")
-    explore.add_argument("--headed", action="store_true", help="navegador visible (para depurar)")
+    explore.add_argument("--headed", action="store_true", help="navegador visible (para depurar, y obligatorio con --observe)")
+    explore.add_argument("--observe", action="store_true",
+                         help="no explora: abre el navegador hermético de PEPPER para que UNA PERSONA opere el sistema; "
+                              "termina cuando cierra la ventana y captura la ventana como una sesión más (con --headed)")
     explore.add_argument("--settle", type=int, default=12, help="segundos de espera al final antes de cerrar la ventana (default 12)")
     explore.add_argument("--margin", type=int, default=30, help="margen de captura a cada lado (default 30)")
 
     validate = commands.add_parser("validate", help="valida archivos contra los contratos de schemas/")
-    validate.add_argument("files", type=Path, nargs="+", help="profile.json, parsers/*.json, session.json, environment.json, flow.json, events.jsonl, system-map.json, funcional.json")
-    validate.add_argument("--schema", choices=("event", "environment", "flow", "functional-discovery", "parser", "profile", "session", "system-map"), help="fuerza el schema (si el nombre del archivo no lo delata)")
+    validate.add_argument("files", type=Path, nargs="+", help="profile.json, extractors.json, parsers/*.json, session.json, environment.json, flow.json, events.jsonl, system-map.json, funcional.json")
+    validate.add_argument("--schema", choices=("event", "environment", "extractors", "flow", "functional-discovery", "parser", "profile", "session", "system-map"), help="fuerza el schema (si el nombre del archivo no lo delata)")
 
     isolate = commands.add_parser("isolate", help="verifica que un entorno rehidratado no pueda alcanzar nada externo")
     isolate.add_argument("compose", type=Path, help="docker-compose.yml del entorno rehidratado")

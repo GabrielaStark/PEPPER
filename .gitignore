@@ -27,3 +27,6 @@ __pycache__/
 /dist/
 
 .DS_Store
+
+# Worktrees de agentes (Claude Code): repos anidados, nunca parte de la herramienta
+.claude/worktrees/

@@ -11,8 +11,7 @@
     "status",
     "detection",
     "rehydrate",
-    "collectors",
-    "validation"
+    "collectors"
   ],
   "additionalProperties": false,
   "properties": {
@@ -171,13 +170,6 @@
           "type": "string",
           "description": "Ruta (relativa al perfil) de la plantilla docker-compose u orquestación equivalente."
         },
-        "steps": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Pasos de la receta en orden, legibles por humanos y ejecutables por el runner del núcleo."
-        },
         "restore_template": {
           "type": "string",
           "description": "Ruta (relativa al perfil) de la plantilla del script de restauración de datos."
@@ -325,10 +317,18 @@
           "minItems": 1,
           "description": "Qué extensiones cuentan como desplegable en este stack (default: .war/.ear/.jar). Un front que viaja en .zip o .tgz se declara aquí; si no, es invisible para el plan."
         },
+        "artifact_kind": {
+          "type": "string",
+          "enum": [
+            "archive",
+            "directory"
+          ],
+          "description": "Qué forma tiene el desplegable: `archive` (default; un zip: WAR/JAR/EAR o lo que artifact_suffixes declare) o `directory` (una carpeta directamente bajo legacy/: PHP, Node con fuente, un dist estático). Una carpeta se empaca como legacy.tar junto al compose para que el contenedor reciba un archivo :ro, nunca un directorio del host (D45)."
+        },
         "datasource": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Cómo leer la configuración embebida que dice a qué base se conecta el artefacto. spring_config: application*.yml/properties (config_patterns). groovy_config: DataSource.groovy compilado (Grails), reconstruido del bytecode con javap.",
+          "description": "Cómo leer la configuración que dice a qué base se conecta el artefacto. spring_config: application*.yml/properties (config_patterns). groovy_config: DataSource.groovy compilado (Grails), reconstruido del bytecode con javap. key_value / json / xml (auditoría 2026-09-29): lectores genéricos de FORMATO — un .env, .properties, .ini o YAML plano; un appsettings.json; un Web.config o standalone.xml — sobre los archivos de `files`, con las claves de `keys`. El núcleo no aprende el framework: el perfil señala el archivo y la clave.",
           "required": [
             "mechanism"
           ],
@@ -337,7 +337,10 @@
               "type": "string",
               "enum": [
                 "spring_config",
-                "groovy_config"
+                "groovy_config",
+                "key_value",
+                "json",
+                "xml"
               ]
             },
             "class_root": {
@@ -366,12 +369,24 @@
               },
               "description": "groovy_config: entornos preferidos, en orden (production, prod)."
             },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "description": "key_value/json/xml: globs (fnmatch, sobre la ruta relativa o el nombre) de los archivos donde vive el datasource: miembros del artefacto (`.env`, `BOOT-INF/classes/*.properties`, `appsettings*.json`) o archivos junto al desplegable en legacy/ (`configuration/standalone*.xml`). Todos los que casen se leen; una clave con valores distintos en dos de ellos es BLOCKED, no 'el último gana'."
+            },
             "keys": {
               "type": "object",
               "additionalProperties": {
                 "type": "string"
               },
-              "description": "groovy_config: claves de url/username/password dentro del entorno (dataSource.url…)."
+              "description": "Qué clave de la configuración es cada cosa. groovy_config: url/username/password dentro del entorno (dataSource.url…). key_value/json/xml: url (o host y db), user, password, y opcionales port y engine; el valor es la clave punteada (`DB_HOST`, `production.host`, `ConnectionStrings.Default`) o, en xml, la ruta (`configuration/connectionStrings/add[@name=Default]/@connectionString`). Obligatorio para esos tres mecanismos."
+            },
+            "url_pattern": {
+              "type": "string",
+              "description": "Regex (sintaxis Python) con grupos nombrados `host` y `db` (obligatorios) y `engine`, `port`, `user`, `password` (opcionales) que lee la URL del datasource cuando no es JDBC: `postgres://u:p@h:5432/db`, `Server=h;Database=db;User Id=u;Password=p`, `mysql:host=h;dbname=db`. Sin ella se usa la JDBC de siempre (jdbc:motor://host[:puerto]/base). Aplica a cualquier mecanismo."
             },
             "url_strip_params": {
               "type": "array",
@@ -559,12 +574,11 @@
     },
     "collectors": {
       "type": "array",
-      "description": "Fuentes de evidencia específicas del stack y cómo activarlas. Los colectores genéricos (proxy HTTP, contenedores, logs de BD) los aporta el núcleo y no se declaran aquí.",
+      "description": "Fuentes de evidencia del stack que `pepper correlate` normaliza con un parser del perfil. Los colectores genéricos (proxy HTTP, explorador) los aporta el núcleo y no se declaran aquí. Cómo se activa cada fuente (niveles de log, general log, sidecars) vive en el compose del perfil y se explica en su README, no aquí: hasta la auditoría 2026-09-29 este contrato declaraba method/location/enable, que ningún código leía como datos.",
       "items": {
         "type": "object",
         "required": [
-          "source",
-          "method"
+          "source"
         ],
         "additionalProperties": false,
         "properties": {
@@ -572,48 +586,13 @@
             "type": "string",
             "description": "Nombre de la fuente tal como aparecerá en event.source, p. ej. wildfly."
           },
-          "method": {
+          "file": {
             "type": "string",
-            "enum": [
-              "log_file",
-              "container_stdout",
-              "command",
-              "endpoint"
-            ],
-            "description": "Cómo se obtiene la evidencia."
-          },
-          "location": {
-            "type": "string",
-            "description": "Ruta del log, comando o endpoint según el método."
-          },
-          "enable": {
-            "type": "string",
-            "description": "Cómo activar/subir el nivel de esta fuente antes del arranque (la ventaja del entorno rehidratado)."
+            "description": "Archivo que `pepper collect`/`pepper explore` capturan bajo evidence/<sid>/ y que este colector normaliza: containers/<servicio>.log (stdout) o containers/<servicio>.err.log (stderr); admite glob fnmatch (containers/*.log para una pieza por servicio). Sin él, el colector casa solo si `source` es el nombre del servicio del compose."
           },
           "parser": {
             "type": "string",
             "description": "Ruta (relativa al perfil) del parser que normaliza esta fuente a event.schema.json."
-          }
-        }
-      }
-    },
-    "validation": {
-      "type": "array",
-      "description": "Comprobaciones específicas del stack tras el arranque. Alimentan environment.validations.",
-      "items": {
-        "type": "object",
-        "required": [
-          "check"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "check": {
-            "type": "string",
-            "description": "Qué comprobar, p. ej. 'deployment del WAR en estado OK'."
-          },
-          "command": {
-            "type": "string",
-            "description": "Comando o petición que lo verifica, cuando es automatizable."
           }
         }
       }

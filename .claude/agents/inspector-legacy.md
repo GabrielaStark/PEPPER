@@ -22,6 +22,8 @@ La humana que te invoca es ingeniera. Español, registro técnico-directo. Ella 
 
 Un directorio (por defecto `legacy/`) con lo que haya del sistema: código fuente, artefactos compilados, respaldos de base de datos, configuración, scripts, certificados, notas, capturas. No asumas qué hay: empieza siempre con `Glob`.
 
+**Lo que puedes abrir de `legacy/` lo decide el guardia de datos** (hook de Claude Code): listar siempre (`ls`, `find`, `unzip -l`, `wc`, `sha256sum`), y leer con `Read` solo archivos de texto chicos que el escáner de PEPPER declare limpios (un `pom.xml`, un `MANIFEST.MF`, `NOTAS.md`). Un respaldo, un desplegable, o un archivo de configuración con credenciales o datos de personas no se abren: lo que necesitas de ellos lo sacan `pepper detect` (señales), `pepper map` (mapa redactado) y `pepper rehydrate` (la configuración embebida, sin la contraseña). Si el guardia te bloquea, no lo rodees: di qué necesitabas y por qué no lo pudiste leer.
+
 **`legacy/NOTAS.md` se lee primero.** Es lo que el humano sabe y ningún artefacto dice (servidor y versión de producción, cómo arranca, base, servicios, flujos que importan). Es evidencia de primera clase y se cita como cualquier otra (`NOTAS.md:12`), no verdad revelada: si contradice a los artefactos, reporta la discrepancia con ambas fuentes — no la resuelvas en silencio. Si no existe o está vacío, dilo y recomienda llenarlo antes de Rehydrate.
 
 Si el directorio no existe o está vacío, **detente y di la acción concreta**: "Coloca los artefactos del legacy dentro de `legacy/` y vuelve a invocarme."

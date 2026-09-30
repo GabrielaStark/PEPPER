@@ -80,8 +80,9 @@ La evidencia de runtime contiene lo que el sistema procesa: datos personales, cr
 - Una credencial encontrada se reporta como hallazgo por ubicación (`archivo:línea`). **Nunca se copia su valor** a ningún documento — una credencial pegada en un reporte es una fuga nueva.
 - Datos personales de la evidencia se citan por ID de evidencia, no se transcriben, salvo que el valor sea imprescindible para la conclusión — y aun así nunca en un documento que se commitea.
 - `legacy/` y `evidence/` no se versionan por defecto. No lo cambies tú.
-- Antes de Discover, `pepper package --data-mode remote` compara lo que el paquete trae con la autorización de datos (`--authorization`: sistema, destino, categorías, huella de lo no inspeccionado) y si algo no cabe no arma nada y deja una propuesta. Nunca corras `pepper authorize` sin el sí y el nombre de la persona responsable, ni escribas o edites la autorización a mano. En `--data-mode local`, no abras el paquete con un agente que envíe contenido fuera de la máquina.
-- `package.evidence-manifest.json` queda fuera del paquete y no se toca durante Discover; Export lo exige como raíz de confianza.
+- **Tú eres un modelo remoto: lo que lees, sale de la máquina.** Un guardia (hook de Claude Code, `scripts/guardia_datos.py`) te impide abrir el respaldo y el desplegable, la evidencia cruda (`evidence/*/http.jsonl`, `screens/`, `containers/`, `raw/`), lo correlacionado antes de sustituir, el `.env` y el compose rendidos, la base desechable (`docker … exec db`, `psql`, `mysql`) y la autorización de datos. No lo rodees con variables, alias ni código en línea: es una capa contra el descuido, y rodearla es una decisión que no es tuya. Lo que necesitas de ahí lo saca el núcleo redactado; lo que sí lees está en `docs/documentacion/THREAT-MODEL.md`.
+- Antes de Discover, `pepper package --data-mode remote` compara lo que el paquete trae con la autorización de datos (`--authorization`: sistema, destino, categorías) y si algo no cabe no arma nada y deja una propuesta. Lo que el escáner no puede leer (el respaldo, el desplegable) no viaja. **`pepper authorize` lo corre la persona responsable en su terminal**, nunca tú: el comando se niega sin terminal interactiva y sin la palabra AUTORIZO tecleada, y el guardia te impide escribir esa autorización. En `--data-mode local`, no abras el paquete con un agente que envíe contenido fuera de la máquina.
+- `package.evidence-manifest.json` queda fuera del paquete y no se toca durante Discover; Export lo exige como raíz de confianza. Export además rechaza una salida con credenciales o datos de personas con patrón.
 
 ## 8. Fidelidad antes que modernización
 
@@ -97,7 +98,7 @@ Lo que el artefacto **no** trae (un servicio externo, un bus institucional, un s
 
 ## 10. El humano decide qué se convierte en conocimiento
 
-PEPPER observa y estructura. El agente interpreta. La herramienta corre sin preguntar (`/pepper`) y se detiene solo donde una persona debe decidir: aislamiento en rojo, insumo faltante, perfil nuevo en borrador, el envío de datos a un modelo remoto (una vez, y queda escrito en `pepper-out/data-boundary.json`), o un documento rechazado por Export. El humano decide qué del documento entra a stark. El agente nunca se auto-aprueba ni promueve confianzas.
+PEPPER observa y estructura. El agente interpreta. La herramienta corre sin preguntar (`/pepper`) y se detiene solo donde una persona debe decidir: aislamiento en rojo, insumo faltante, perfil nuevo en borrador, el envío de datos a un modelo remoto (la persona lo autoriza en su terminal y queda escrito en `pepper-out/data-boundary.json`, por sistema y por categoría), o un documento rechazado por Export. El humano decide qué del documento entra a stark. El agente nunca se auto-aprueba ni promueve confianzas.
 
 ## Checklist — aplica a cualquier entregable de PEPPER
 

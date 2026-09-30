@@ -1,0 +1,14 @@
+2026-08-25 13:20:40.121 CST [1247] solicitudes_app@solicitudes LOG:  statement: SELECT 1
+2026-08-25 13:20:44.517 CST [1249] solicitudes_app@solicitudes LOG:  execute <unnamed>: SELECT id, nombre, status, nationality FROM citizen WHERE id = $1
+2026-08-25 13:20:44.517 CST [1249] solicitudes_app@solicitudes DETAIL:  parameters: $1 = '1003'
+2026-08-25 13:20:55.123 CST [1247] solicitudes_app@solicitudes LOG:  statement: SELECT 1
+2026-08-25 13:21:01.640 CST [1251] solicitudes_app@solicitudes LOG:  execute <unnamed>: SELECT id, nombre, status, nationality FROM citizen WHERE id = $1
+2026-08-25 13:21:01.640 CST [1251] solicitudes_app@solicitudes DETAIL:  parameters: $1 = '1001'
+2026-08-25 13:21:01.788 CST [1251] solicitudes_app@solicitudes LOG:  execute <unnamed>: SELECT nextval('folio_seq')
+2026-08-25 13:21:01.910 CST [1251] solicitudes_app@solicitudes LOG:  execute <unnamed>: INSERT INTO application (folio, citizen_id, tipo_tramite, estado, fecha_registro) VALUES ($1, $2, $3, 'REGISTERED', now())
+2026-08-25 13:21:01.910 CST [1251] solicitudes_app@solicitudes DETAIL:  parameters: $1 = 'SOL-2026-000042', $2 = '1001', $3 = 'LICENCIA_FUNCIONAMIENTO'
+2026-08-25 13:21:02.031 CST [1251] solicitudes_app@solicitudes LOG:  execute <unnamed>: INSERT INTO application_history (application_id, estado, fecha) VALUES ($1, $2, now())
+2026-08-25 13:21:02.031 CST [1251] solicitudes_app@solicitudes DETAIL:  parameters: $1 = '87', $2 = 'REGISTERED'
+2026-08-25 13:21:10.125 CST [1247] solicitudes_app@solicitudes LOG:  statement: SELECT 1
+2026-08-25 13:21:25.127 CST [1247] solicitudes_app@solicitudes LOG:  statement: SELECT 1
+2026-08-25 13:21:40.129 CST [1247] solicitudes_app@solicitudes LOG:  statement: SELECT 1

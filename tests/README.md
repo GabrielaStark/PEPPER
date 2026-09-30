@@ -5,7 +5,7 @@ python3 -m unittest discover -s tests          # todo
 python3 -m unittest discover -s tests -v       # con detalle
 ```
 
-Solo biblioteca estándar (`unittest`); `jsonschema` habilita las comprobaciones de forma contra los contratos (sin él, esos tests se saltan).
+Solo biblioteca estándar (`unittest`); `jsonschema` y `pyyaml` habilitan las comprobaciones de forma contra los contratos y del compose rendido (sin ellos, esos tests se saltan); la prueba hermética del navegador necesita Chromium de Playwright. En CI (`PEPPER_CI=1`) nada se salta: sin la herramienta, falla.
 
 ## Qué cubren
 
@@ -58,6 +58,8 @@ Solo biblioteca estándar (`unittest`); `jsonschema` habilita las comprobaciones
 
 **`test_tools.py`** — `pepper detect` y `pepper validate`: señales dentro de WARs **y de tarballs** (la herramienta no asume stack), modo encima-del-repo, errores claros.
 
+**`test_init.py`** — `pepper init`: el workspace aparte del clon (enlace `pepper/` válido, `.pepper-home`, la herramienta copiada, `legacy/NOTAS.md`, el `.gitignore` del workspace, sin `.git`); se niega sobre un directorio con contenido o dentro del clon; `--force` recopia la herramienta sin tocar `legacy/`, `docs/pepper/`, `pepper-out/` ni `evidence/`. Desde el workspace, por subprocess: `--version` y `REPO_ROOT` resuelven a la instalación, `detect` evalúa sus perfiles, `demo` deja su salida en el workspace, el guardia copiado bloquea igual. La herramienta copiada no cuenta como legacy para `detect .` ni para `package --legacy .`. Y `rehydrate` planea con `legacy/` fuera de `REPO_ROOT`: las rutas de los volúmenes quedan relativas al compose y `check_static` las acepta.
+
 **`test_collect.py`** — el colector genérico de contenedores, con un `docker` fingido que devuelve logs enlatados y anota sus invocaciones:
 
 - layout de salida (`http.jsonl` del ingress sin contaminar por su stderr; `containers/*.log` y `*.err.log`);
@@ -71,4 +73,16 @@ Solo biblioteca estándar (`unittest`); `jsonschema` habilita las comprobaciones
 - Ventanas concurrentes: dos peticiones traslapadas resueltas por afinidad, y el caso ambiguo que debe quedar sin asignar.
 - La integración completa contra el legacy-demo **levantado de verdad**, comparando evidencia real contra la sintética.
 
+**`test_rehydrate_directory.py`** — un desplegable que es una carpeta (perfil `php-apache-mysql`): la carpeta bajo `legacy/` es el desplegable y los archivos sueltos no; el servidor sale de `NOTAS.md` con la versión completa (`php:7.4-apache`); el datasource se lee del `.env`; `render` empaca la carpeta como `legacy.tar` (0600, sin `.git`, sin seguir enlaces) y el compose resultante pasa `check_static` en VERIFIED.
 
+**`test_perfiles.py`** — cada perfil de `profiles/` se demuestra con sus fixtures, sin legacy real: contratos, parsers sobre `fixtures/logs/` (0 líneas sin parsear o las declaradas), `discover_datasource` sobre `fixtures/config/`, el lector del respaldo sintético, y `expected.json › map` (rutas, jobs, hosts y pantallas que el perfil promete sobre un desplegable sintético).
+
+**`test_readers.py`**, **`test_regex_extractor.py`**, **`test_datasource.py`**, **`test_sql_shape.py`**, **`test_extractors_schema.py`**, **`test_perfil_contrato.py`**, **`test_wildfly_extractors.py`** — el núcleo que conoce formatos (D44): el registro único de lectores; `regex_extractor` con Laravel, Django y Rails en la misma prueba y cada hueco declarado; `key_value`/`json`/`xml` y `url_pattern` fail-closed con el archivo y la clave que faltó; `sql_shape` con backticks, comillas, corchetes, esquema calificado y `EXEC`; `extractors.json` con contrato y `pepper map` que lo exige; el perfil sin campos muertos y el casado colector ↔ archivo; `java-wildfly-postgres` con extractores que terminan honestos.
+
+**`test_guardia.py`** — el guardia de datos del agente (`scripts/guardia_datos.py`): bloquea `cat`/`python3 -c`/heredocs/clientes de base sobre `legacy/` y la evidencia cruda, deja pasar al núcleo y los listados, fail-closed ante cualquier error.
+
+**`test_boundary.py`** — la frontera de datos: propuesta con alcance, llave HMAC por sistema (huella del legacy), lo no inspeccionable fuera del paquete salvo decisión explícita.
+
+**`test_groovy.py`** — Groovy compilado: `groovyconfig` y los mecanismos Grails del mapa.
+
+**`test_sqldump.py`** — el lector de SQL en texto (mysqldump, mariadb-dump, pg_dump plano): cabecera, tablas, filas, esquema de sistema detectado.

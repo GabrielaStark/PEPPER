@@ -152,6 +152,33 @@ class PlanTest(unittest.TestCase):
         with self.assertRaises(Blocked):
             make_plan(self.legacy, PROFILE)
 
+    def test_un_desplegable_que_no_es_zip_es_blocked_con_el_porque(self):
+        """Un `.war` que en realidad es un tar, un `.exe` o basura reventaba `_choose_server` con un
+        BadZipFile sin capturar (auditoría 2026-09-29). Es un insumo con nombre, no un traceback."""
+        import io
+        import tarfile
+
+        from pepper.rehydrate import _choose_server
+
+        war = self.legacy / "nominas-2.3.war"
+        war.unlink()
+        with tarfile.open(war, "w") as tar:
+            data = b"<jboss-web/>"
+            info = tarfile.TarInfo("WEB-INF/jboss-web.xml"); info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+        with self.assertRaises(Blocked) as caught:
+            make_plan(self.legacy, PROFILE, notes_path=self.legacy / "NOTAS.md")
+        self.assertIn("nominas-2.3.war", str(caught.exception))
+        self.assertIn("un tar", str(caught.exception))
+        with self.assertRaisesRegex(Blocked, "un tar"):
+            _choose_server(war, PROFILE, "wildfly 21")
+        war.write_bytes(b"MZ\x90\x00" + b"\x00" * 100)
+        with self.assertRaisesRegex(Blocked, r"nominas-2\.3\.war un ejecutable de Windows"):
+            _choose_server(war, PROFILE, "wildfly 21")
+        war.write_bytes(b"esto no es ni zip ni tar")
+        with self.assertRaisesRegex(Blocked, "no es un zip legible"):
+            make_plan(self.legacy, PROFILE, notes_path=self.legacy / "NOTAS.md")
+
 
 if __name__ == "__main__":
     unittest.main()

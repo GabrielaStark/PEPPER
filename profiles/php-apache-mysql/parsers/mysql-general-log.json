@@ -1,0 +1,59 @@
+{
+  "parser_version": "0.1.0",
+  "source": "mysql",
+  "description": "General query log de MySQL 5.7/8 (--general-log=1 --log-output=FILE --log-timestamps=UTC) que el sidecar `dblog` saca por su stdout y `pepper collect` captura (docker logs --timestamps). Formato por línea: '<ts ISO-8601 UTC con microsegundos>\\t<id de conexión alineado> <Comando>\\t<argumento>'. PDO/mysqli con mysqlnd: con la emulación de prepares (default de PDO) cada Query trae la sentencia completa con sus valores; sin ella, `Prepare` trae la plantilla y `Execute` la sentencia ya con valores, y las dos cuentan como sql. El id de conexión agrupa lo que hizo una misma petición PHP (PHP abre y cierra una conexión por petición salvo con conexiones persistentes). Las sentencias multilínea continúan en líneas sin el timestamp del motor y se anexan al evento anterior; las tres líneas de cabecera que mysqld escribe al abrir el log no son eventos y quedan sin parsear. Mismo formato que el parser del perfil groovy-grails1-tomcat-mysql, probado contra un log real (2026-09-22); cambia el ruido: el de mysqlnd/PDO en vez del de Connector/J.",
+  "line_pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z) (?P<my_ts>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z)\\s+(?P<conn>\\d+) (?P<command>Connect|Query|Quit|Init DB|Prepare|Execute|Close stmt|Reset stmt|Field List|Statistics|Ping|Change user|Set option|Fetch|Refresh|Processlist|Kill|Shutdown|Debug)\\t?(?P<message>.*)$",
+  "timestamp": {
+    "group": "timestamp"
+  },
+  "fields": {
+    "component": {
+      "value": "database"
+    },
+    "message": {
+      "from": "message"
+    },
+    "severity": {
+      "value": "info"
+    },
+    "metadata.connection_id": {
+      "from": "conn"
+    },
+    "metadata.command": {
+      "from": "command"
+    },
+    "metadata.mysql_ts": {
+      "from": "my_ts"
+    }
+  },
+  "event_type": {
+    "default": "log",
+    "rules": [
+      {
+        "when": {
+          "field": "command",
+          "matches": "^(Query|Execute|Prepare)$"
+        },
+        "value": "sql"
+      }
+    ]
+  },
+  "continuation": {
+    "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z) (?!\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z\\s+\\d+ )(?!\\S*mysqld, Version:)(?!Tcp port:)(?!Time\\s+Id\\s+Command)"
+  },
+  "affinity": [
+    "connection_id"
+  ],
+  "noise": [
+    {
+      "id": "mysqlnd-session-setup",
+      "description": "ajustes de sesión sin contenido de negocio que PDO/mysqli mandan al abrir cada conexión (SET NAMES, sql_mode, zona horaria, variables @@)",
+      "matches": "(?i)^(SET NAMES \\w+(?: COLLATE \\w+)?|SET (?:SESSION )?sql_mode\\s*=|SET (?:SESSION )?(?:time_zone|character_set_\\w+|wait_timeout|autocommit)\\s*=|SELECT @@|select @@|SHOW (?:FULL )?(?:COLLATION|VARIABLES|WARNINGS|TABLES)|SET CHARACTER SET)"
+    },
+    {
+      "id": "pepper-marker",
+      "description": "la marca de restauración que rehydrate consulta (pepper_meta.restored) y la sonda `select 1`",
+      "matches": "(?i)pepper_meta\\.restored|^select 1$"
+    }
+  ]
+}

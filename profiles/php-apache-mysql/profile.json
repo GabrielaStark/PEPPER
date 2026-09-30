@@ -1,0 +1,194 @@
+{
+  "schema_version": "0.1.0",
+  "id": "php-apache-mysql",
+  "name": "PHP 7/8 con Apache (mod_php) y MySQL 5.7/8, configuración de base en .env (Laravel, Lumen, CodeIgniter 4, Symfony con dotenv, PHP clásico con .env)",
+  "version": "0.1.0",
+  "status": "draft",
+  "stack": {
+    "languages": [
+      "php"
+    ],
+    "frameworks": [
+      "laravel",
+      "lumen",
+      "codeigniter-4",
+      "symfony",
+      "php-clasico"
+    ],
+    "servers": [
+      "apache"
+    ],
+    "databases": [
+      "mysql"
+    ]
+  },
+  "detection": {
+    "signals": [
+      {
+        "type": "file_exists",
+        "pattern": "*.php",
+        "weight": 2,
+        "required": true
+      },
+      {
+        "type": "file_content",
+        "file": "*.php",
+        "pattern": "<\\?php",
+        "weight": 1
+      },
+      {
+        "type": "file_exists",
+        "pattern": ".env",
+        "weight": 2,
+        "required": true
+      },
+      {
+        "type": "file_content",
+        "file": ".env",
+        "pattern": "(?m)^DB_CONNECTION\\s*=\\s*mysql",
+        "weight": 3,
+        "required": true
+      },
+      {
+        "type": "file_exists",
+        "pattern": "composer.json",
+        "weight": 1
+      },
+      {
+        "type": "file_exists",
+        "pattern": "artisan",
+        "weight": 1
+      },
+      {
+        "type": "file_exists",
+        "pattern": ".htaccess",
+        "weight": 1
+      },
+      {
+        "type": "file_content",
+        "file": "*.sql",
+        "pattern": "(MySQL|MariaDB) dump",
+        "weight": 1
+      }
+    ],
+    "min_score": 8
+  },
+  "rehydrate": {
+    "required_inputs": [
+      "la CARPETA del fuente tal como estaba desplegada en el servidor (con su .env de producción: DB_CONNECTION, DB_HOST, DB_PORT, DB_DATABASE, DB_USERNAME, DB_PASSWORD), directamente bajo legacy/ (p. ej. legacy/sistema/); un zip se descomprime antes",
+      "respaldo SQL (mysqldump/mariadb-dump) de la BASE DE LA APLICACIÓN, con --routines --triggers, con la cabecera que declara la versión del motor",
+      "legacy/NOTAS.md con la versión de PHP de producción (`PHP 7.4`, `PHP 8.1`): el fuente no la dice (composer.json declara un rango, no la que corre) y por fidelidad no se adivina"
+    ],
+    "optional_inputs": [
+      "legacy/NOTAS.md con la versión de Apache, charset/collation y sql_mode del MySQL de producción, y si la base usaba mysql_native_password",
+      "crontab del servidor (crontab, cron.d/*) junto al fuente: entra al mapa como tareas programadas",
+      "la configuración de PHP de producción (php.ini) si difería de la de la imagen oficial: se declara como desviación",
+      "extensiones de PHP que producción tenía además de pdo_mysql/mysqli (gd, intl, zip, soap…): hoy el compose compila solo las dos de MySQL y lo declara como desviación"
+    ],
+    "artifact_kind": "directory",
+    "compose_template": "compose.template.yml",
+    "restore_template": "restore.template.sh",
+    "server_images": {
+      "php": {
+        "*": "php:{version}-apache"
+      }
+    },
+    "descriptors": {
+      "php": [
+        "index.php",
+        "public/index.php",
+        "composer.json",
+        "artisan"
+      ]
+    },
+    "datasource": {
+      "mechanism": "key_value",
+      "files": [
+        ".env"
+      ],
+      "keys": {
+        "engine": "DB_CONNECTION",
+        "host": "DB_HOST",
+        "port": "DB_PORT",
+        "db": "DB_DATABASE",
+        "user": "DB_USERNAME",
+        "password": "DB_PASSWORD"
+      }
+    },
+    "database": {
+      "engine": "mysql",
+      "engine_aliases": [
+        "mariadb"
+      ],
+      "default_port": 3306,
+      "images": {
+        "5": "mysql:5.7",
+        "8": "mysql:8.0",
+        "*": "mysql:{version}"
+      },
+      "tool_images": {
+        "mysqldump:*": "mysql:{version}",
+        "mariadb-dump:*": "mariadb:{version}"
+      },
+      "dump": {
+        "format": "sql_text",
+        "suffixes": [
+          ".sql",
+          ".dump"
+        ]
+      },
+      "localhost": "shared_network_namespace",
+      "subnet_hint": "10.100.0",
+      "probe": {
+        "service": "db",
+        "client": [
+          "mysql",
+          "-uroot",
+          "-N",
+          "-B",
+          "-e",
+          "{sql}"
+        ],
+        "env": {
+          "MYSQL_PWD": "{db_password}"
+        },
+        "quiet_prefix": "SET SESSION sql_log_off = 1; ",
+        "ready_sql": "select 1",
+        "tables_sql": "select count(*) from information_schema.tables where table_schema = '{db_name}' and table_type = 'BASE TABLE'",
+        "marker_sql": "select concat('pepper:restored:', dump_sha) from pepper_meta.restored order by restored_at desc limit 1",
+        "restore_ok_status": [
+          0
+        ]
+      }
+    },
+    "ready_log_pattern": "resuming normal operations|Command line: 'apache2 -D FOREGROUND'",
+    "failed_log_pattern": "PHP Fatal error|PHP Parse error|AH00015: Unable to open logs|AH00072: make_sock|SQLSTATE\\[HY000\\] \\[(1045|2002|2054)\\]|No such file or directory: AH",
+    "stub_ports": "80,443,25,465,587",
+    "startup_timeout_s": 420
+  },
+  "collectors": [
+    {
+      "source": "apache-php",
+      "file": "containers/app.log",
+      "parser": "parsers/apache-php-stdout.json"
+    },
+    {
+      "source": "mysql",
+      "file": "containers/dblog.log",
+      "parser": "parsers/mysql-general-log.json"
+    }
+  ],
+  "notes": "Borrador redactado en la auditoría 2026-09-29 SIN un legacy real: existe para demostrar que una familia que no es JVM entra a PEPPER solo con datos (extractors.json con regex_extractor/view_templates/archive_url_scan/sql_dump, datasource key_value sobre .env, plantillas de compose y restore, dos parsers) y para que quien tenga un sistema PHP empiece desde aquí en vez de desde cero. Sus fixtures/ son sintéticos y la suite los prueba en CI; lo que enseñe la primera corrida contra un sistema real entra como datos de este perfil. Pasa a validated cuando una persona vea el ciclo completo contra un legacy real y confirme el documento.",
+  "http": {
+    "action_fields": [
+      "_method",
+      "action",
+      "accion",
+      "submit",
+      "btn",
+      "boton"
+    ],
+    "noise_field_pattern": "^(_token|_method|XSRF-TOKEN|laravel_session|PHPSESSID|csrf[-_]?token|__utm\\w*|_)$",
+    "field_name_pattern": "([A-Za-z_][\\w]*)(?:\\[\\]|\\[\\w*\\])?$"
+  }
+}

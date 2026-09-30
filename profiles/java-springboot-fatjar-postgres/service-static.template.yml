@@ -2,6 +2,8 @@
   # No se compila ni se toca: el dist original se monta en solo lectura.
   {{component_name}}:
     image: {{component_image}}
+    cap_drop: [NET_RAW]                # la red interna no es la única capa: sin tramas crudas al bridge
+    security_opt: [no-new-privileges:true]
     platform: ${PEPPER_PLATFORM}
     dns: [{{dns_sink}}]                     # sumidero: lo que no sea alias muere dentro de la red
     depends_on:
