@@ -123,10 +123,36 @@ def split_documents(text: str) -> List[str]:
     return [d for d in docs if d.strip()]
 
 
+def _open_artifact(artifact: Path) -> zipfile.ZipFile:
+    """El desplegable abierto como zip (WAR/JAR/EAR), o BLOCKED diciendo qué es en realidad.
+
+    `zipfile.ZipFile` sobre un `.exe`, un tar o un archivo truncado reventaba con un traceback
+    en vez de un BLOCKED (auditoría 2026-09-29): el artefacto dicta el ambiente, y uno que no
+    se puede abrir es un insumo faltante con nombre, no un error de programa."""
+    try:
+        head = artifact.read_bytes()[:262] if artifact.is_file() else b""
+    except OSError as error:
+        raise Blocked(f"no se pudo leer el desplegable {artifact.name}: {error}")
+    try:
+        return zipfile.ZipFile(artifact)
+    except (zipfile.BadZipFile, OSError, IsADirectoryError) as error:
+        if head[257:262] == b"ustar" or head[:2] == b"\x1f\x8b":
+            forma = "un tar (o tar.gz), no un zip"
+        elif head[:2] == b"MZ":
+            forma = "un ejecutable de Windows (.exe/.dll), no un zip"
+        elif artifact.is_dir():
+            forma = "un directorio, no un archivo"
+        else:
+            forma = "no es un zip legible"
+        raise Blocked(f"el desplegable {artifact.name} {forma} ({type(error).__name__}: {str(error)[:80]}). "
+                      "Esta receta espera un WAR/JAR/EAR; si el stack empaca de otra forma, el perfil debe declararlo "
+                      "en rehydrate.artifact_suffixes y con lectores que entiendan ese formato")
+
+
 def read_artifact_configs(artifact: Path, patterns: List[str]) -> Dict[str, Dict[str, str]]:
     """{nombre-de-perfil: config} de cada archivo (y documento) de configuración dentro del artefacto."""
     configs: Dict[str, Dict[str, str]] = {}
-    with zipfile.ZipFile(artifact) as archive:
+    with _open_artifact(artifact) as archive:
         for name in sorted(archive.namelist()):
             if not any(re.search(p, name) for p in patterns):
                 continue
@@ -379,8 +405,8 @@ def classify_components(artifacts: List[Path], profile: Profile, subnet_base: st
         members = _member_names(artifact)
         try:
             configs = read_artifact_configs(artifact, patterns)
-        except (zipfile.BadZipFile, OSError):
-            configs = {}
+        except Blocked:
+            configs = {}   # una pieza que no se puede abrir no tiene configuración: quedará "sin clasificar", con nombre
         rule = next((r for r in rules if _rule_matches(r, artifact, members, configs)), None)
         if rule is None:
             sin_clasificar.append(artifact.name)
@@ -475,7 +501,7 @@ def _choose_server(artifact: Path, profile: Profile, notes_text: str) -> Tuple[s
     deviations: List[str] = []
     descriptors: Dict[str, List[str]] = recipe.get("descriptors") or {}
     images: Dict[str, Dict[str, str]] = recipe.get("server_images") or {}
-    with zipfile.ZipFile(artifact) as archive:
+    with _open_artifact(artifact) as archive:
         members = set(archive.namelist())
     present = [server for server, files in descriptors.items() if any(f in members for f in files)]
     # Solo cuentan los servidores de APLICACIÓN (los que el perfil sabe reconocer por descriptor):
@@ -1091,7 +1117,7 @@ def make_plan(legacy_dir: Path, profile: Profile, host_port: int = DEFAULT_PORT,
         notes.append("dependencias declaradas por IP directa (no se pueden aliasear al stub; fallan sin salir y sin registro): " + ", ".join(by_ip))
 
     start_class = ""
-    with zipfile.ZipFile(artifact) as archive:
+    with _open_artifact(artifact) as archive:
         if "META-INF/MANIFEST.MF" in archive.namelist():
             manifest = archive.read("META-INF/MANIFEST.MF").decode("utf-8", errors="replace")
             mm = re.search(r"Start-Class:\s*(\S+)", manifest)
