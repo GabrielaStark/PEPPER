@@ -7,6 +7,9 @@ carpeta. Eso impedía actualizar la herramienta, versionarla y devolver un perfi
 
     <dir>/
       pepper -> <instalación>/pepper     enlace: `python3 -m pepper …` corre desde aquí tal cual
+      docs/documentacion, profiles, schemas -> <instalación>/…   enlaces: los comandos citan PRINCIPIOS.md
+                                         y REFERENCIA.md, un borrador de perfil se escribe en profiles/
+                                         DE LA INSTALACIÓN (es la contribución), y los contratos se leen
       .pepper-home                       ruta, versión y commit de la instalación
       .claude/                           copia: commands, agents, skills, settings.json
       scripts/guardia_datos.py           copia: el hook que Claude Code invoca desde la raíz
@@ -38,6 +41,9 @@ from pepper.workspace import HOME_FILE, MARKER, installation_commit
 # Lo que se copia de la instalación, tal cual, a la raíz del workspace.
 CLAUDE_ITEMS = ("commands", "agents", "skills", "settings.json")
 COPIED = ("CLAUDE.md", "AGENTS.md", "templates", "scripts/guardia_datos.py")
+# Lo que se ENLAZA a la instalación: la documentación que los comandos citan, los perfiles (un
+# borrador redactado en el workspace cae en el clon, listo para contribuirse) y los contratos.
+LINKED = ("docs/documentacion", "profiles", "schemas")
 # Lo que es trabajo: `--force` no lo toca.
 WORK_DIRS = ("legacy", "docs/pepper", "pepper-out", "evidence")
 
@@ -63,6 +69,9 @@ GITIGNORE = """\
 /CLAUDE.md
 /AGENTS.md
 /templates/
+/docs/documentacion
+/profiles
+/schemas
 
 # Configuración del explorador: claves de usuario reales y contraseña de prueba. Vive en
 # pepper-out/, nunca en docs/pepper/.
@@ -87,7 +96,7 @@ def _is_under(path: Path, root: Path) -> bool:
 
 
 def _check_installation(home: Path) -> None:
-    missing = [rel for rel in (str(MARKER), "pepper/__init__.py", *COPIED) if not (home / rel).exists()]
+    missing = [rel for rel in (str(MARKER), "pepper/__init__.py", *COPIED, *LINKED) if not (home / rel).exists()]
     missing += [f".claude/{item}" for item in CLAUDE_ITEMS if not (home / ".claude" / item).exists()]
     if missing:
         raise InitError(f"la instalación en {home} no trae {', '.join(missing)}: ¿es un clon completo de PEPPER?")
@@ -105,21 +114,27 @@ def _copy(source: Path, target: Path) -> None:
         shutil.copy2(source, target)
 
 
-def _link_package(root: Path, home: Path) -> Path:
-    link = root / "pepper"
+def _link(root: Path, home: Path, rel: str, expect_file: str) -> Path:
+    """Un enlace simbólico `root/rel` → `home/rel`; `expect_file` tiene que existir detrás."""
+    link = root / rel
+    link.parent.mkdir(parents=True, exist_ok=True)
     if link.is_symlink():
         link.unlink()
     elif link.exists():
-        raise InitError(f"{link} existe y no es un enlace: un workspace no lleva una copia del núcleo (bórralo y repite)")
+        raise InitError(f"{link} existe y no es un enlace: un workspace no lleva una copia de la herramienta (bórralo y repite)")
     try:
-        link.symlink_to(home / "pepper", target_is_directory=True)
+        link.symlink_to(home / rel, target_is_directory=True)
     except OSError as error:
-        raise InitError(f"no pude crear el enlace {link} → {home / 'pepper'} ({error}); "
+        raise InitError(f"no pude crear el enlace {link} → {home / rel} ({error}); "
                         "sin enlace simbólico no hay workspace aparte")
-    if not (link / "__init__.py").is_file():
+    if not (link / expect_file).is_file():
         link.unlink()
-        raise InitError(f"el enlace {link} no lleva al paquete de PEPPER ({home / 'pepper'})")
+        raise InitError(f"el enlace {link} no lleva a la instalación de PEPPER ({home / rel})")
     return link
+
+
+def _link_package(root: Path, home: Path) -> Path:
+    return _link(root, home, "pepper", "__init__.py")
 
 
 def _write_home(root: Path, home: Path) -> None:
@@ -157,6 +172,9 @@ def create_workspace(directory: Path, force: bool = False, home: Path = REPO_ROO
     report.append(f"  pepper → {os.readlink(link)}  (enlace al núcleo de la instalación)")
     _write_home(root, home)
     report.append(f"  {HOME_FILE}  (instalación, versión y commit)")
+    for rel, marker_file in zip(LINKED, ("PRINCIPIOS.md", "README.md", "profile.schema.json")):
+        _link(root, home, rel, marker_file)
+    report.append(f"  {', '.join(LINKED)} → instalación  (enlaces: documentación, perfiles —un borrador nuevo cae en el clon— y contratos)")
 
     for item in CLAUDE_ITEMS:
         _copy(home / ".claude" / item, root / ".claude" / item)

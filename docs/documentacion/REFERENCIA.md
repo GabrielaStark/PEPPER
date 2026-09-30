@@ -24,6 +24,7 @@
 ## 2. El núcleo a mano
 
 ```bash
+python3 -m pepper init <dir> [--force]                                              # el workspace de un legacy, aparte del clon: enlace al núcleo, comandos y guardia copiados, sin repositorio ni remoto
 python3 -m pepper detect legacy/ [--json]                                          # qué perfil aplica, con qué señales
 python3 -m pepper map <artefacto> --profile <id> --dump <respaldo> --out docs/pepper/system-map.json [--evidence evidence/<sid>]
 python3 -m pepper rehydrate legacy/ --profile <id> [--up] [--port 18080] [--wait 300] [--out pepper-out/rehydrate] [--docs docs/pepper] [--notes legacy/NOTAS.md]
@@ -105,6 +106,7 @@ El agente que orquesta es un modelo remoto. El guardia de datos (`scripts/guardi
 - **Stub**: a donde se resuelve todo host externo del artefacto; registra toda conexión (HTTP, TLS, protocolos donde el servidor habla primero) y la cierra.
 - **Sonda de salida**: un contenedor efímero en la misma red interna que intenta salir a internet y al host; si sale, NO AISLADO. Corre en `isolate --live`.
 - **Explorador**: el Chromium local, con el resolver cerrado (solo el host del ingress) y sin service workers, que recorre el sistema por el ingress con cada rol; deja `explore.jsonl` y capturas. Con `--observe --headed`, el mismo navegador para que una persona opere.
+- **Instalación y workspace**: la instalación es el clon de PEPPER (se actualiza con `git pull`, tiene versión y recibe perfiles); el workspace lo crea `pepper init <dir>` para un legacy: enlaza `pepper/`, `docs/documentacion/`, `profiles/` y `schemas/` a la instalación, copia lo que Claude Code carga de la raíz (`.claude/`, `CLAUDE.md`, `AGENTS.md`, el guardia, `templates/`), y deja `legacy/`, `docs/pepper/`, `pepper-out/` y `evidence/` como trabajo. Sin repositorio ni remoto. `--force` recopia la herramienta sin tocar el trabajo; `.pepper-home` dice de qué instalación y versión viene.
 - **Guardia de datos**: el hook que acota lo que el agente puede leer y escribir en el workspace.
 - **Ventana / sesión**: el intervalo que se captura (`evidence/<sid>/`), del explorador o de una persona.
 - **Documento funcional** (`funcional.md/json`): el entregable — qué hace el sistema, 12 secciones fijas, cada afirmación con su origen; del sistema, acumulado sesión a sesión.

@@ -56,8 +56,12 @@ class LayoutTest(Base):
             self.assertFalse(copied.is_symlink(), f"{rel} es copia, no enlace: la persona y Claude Code lo leen de la raíz")
             self.assertEqual(copied.read_bytes(), (ROOT / rel).read_bytes(), f"{rel} difiere de la instalación")
         self.assertFalse((self.ws / ".claude" / "worktrees").exists(), "de .claude/ solo viajan commands, agents, skills y settings.json")
-        for rel in ("schemas", "profiles", "examples", "tests", "docs/documentacion"):
+        for rel in ("examples", "tests"):
             self.assertFalse((self.ws / rel).exists(), f"{rel} es de la instalación: no se copia al workspace")
+        for rel in ("schemas", "profiles", "docs/documentacion"):
+            self.assertTrue((self.ws / rel).is_symlink(), f"{rel} es un enlace a la instalación")
+            self.assertEqual((self.ws / rel).resolve(), (ROOT / rel).resolve())
+        self.assertTrue((self.ws / "docs" / "documentacion" / "PRINCIPIOS.md").is_file(), "los comandos citan PRINCIPIOS.md desde el workspace")
         self.assertEqual((self.ws / "legacy" / "NOTAS.md").read_text(encoding="utf-8"),
                          (ROOT / "templates" / "NOTAS-LEGACY.md").read_text(encoding="utf-8"))
         self.assertTrue((self.ws / "docs" / "pepper" / ".gitkeep").is_file())
