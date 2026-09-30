@@ -57,12 +57,22 @@ class SensitiveDataGateTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "curp"):
             assemble(self.correlated, self.root / "package-curp", legacy, data_mode="remote")
 
-    def test_remoto_exige_reconocer_binarios(self):
+    def test_remoto_no_lleva_binarios_salvo_con_la_bandera(self):
         legacy = self.root / "legacy-binary"
         legacy.mkdir()
         (legacy / "sistema.war").write_bytes(b"PK\x03\x04\x00\x00contenido")
+        summary = assemble(self.correlated, self.root / "package-binary", legacy, data_mode="remote")
+        self.assertFalse((self.root / "package-binary" / "legacy" / "sistema.war").exists())
+        self.assertEqual([e["path"] for e in summary["excluded_uninspected"]], ["legacy/sistema.war"])
         with self.assertRaisesRegex(ValueError, r"sin autorizar|sistema\.war \(binary\)"):
-            assemble(self.correlated, self.root / "package-binary", legacy, data_mode="remote")
+            assemble(self.correlated, self.root / "package-binary-2", legacy, data_mode="remote", include_uninspected=True)
+
+    def test_en_modo_local_los_binarios_si_se_copian(self):
+        legacy = self.root / "legacy-binary-local"
+        legacy.mkdir()
+        (legacy / "sistema.war").write_bytes(b"PK\x03\x04\x00\x00contenido")
+        assemble(self.correlated, self.root / "package-binary-local", legacy, data_mode="local")
+        self.assertTrue((self.root / "package-binary-local" / "legacy" / "sistema.war").exists())
 
     def test_la_autorizacion_queda_registrada_en_el_manifest(self):
         legacy = self.root / "legacy-approved"
@@ -70,10 +80,13 @@ class SensitiveDataGateTest(unittest.TestCase):
         (legacy / "config.properties").write_text("token=TokenAprobadoPorHumano\n", encoding="utf-8")
         (legacy / "sistema.war").write_bytes(b"PK\x03\x04\x00\x00contenido")
         package = self.root / "package-approved"
-        summary = assemble_authorized(self.correlated, package, legacy, by="Ana Responsable", data_mode="remote")
+        summary = assemble_authorized(self.correlated, package, legacy, by="Ana Responsable", data_mode="remote",
+                                      include_uninspected=True)
         manifest = json.loads(Path(summary["external_manifest"]).read_text(encoding="utf-8"))
         policy = manifest["data_policy"]
-        self.assertEqual(policy["authorization"]["decided_by"], "Ana Responsable")
+        self.assertTrue(policy["authorization"]["sha256"])
+        self.assertNotIn("decided_by", policy["authorization"], "el nombre de la persona no viaja en el paquete")
+        self.assertIn("registrada fuera del paquete", (package / "README.md").read_text(encoding="utf-8"))
         self.assertIn("credential", policy["categories"])
         self.assertGreaterEqual(policy["sensitive_findings"], 1)
         self.assertGreaterEqual(policy["unscanned_files"], 1)
@@ -106,8 +119,8 @@ class SensitiveDataGateTest(unittest.TestCase):
         correlate_run(raw, correlated)
         legacy = self.root / "legacy-real"
         legacy.mkdir()
-        (legacy / "sistema.war").write_bytes(b"PK\x03\x04\x00\x00contenido")
-        with self.assertRaisesRegex(ValueError, r"sin autorizar|sistema\.war \(binary\)"):
+        (legacy / "application.properties").write_text("db.password=ValorQueNoDebeSalir123\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, r"no hay autorización|credential"):
             assemble(correlated, self.root / "package-synthetic", legacy, data_mode="remote")
         self.assertFalse((self.root / "package-synthetic").exists())
 
@@ -228,3 +241,30 @@ class GateOnWhatTravelsTest(SensitiveDataGateTest):
         self.assertEqual(summary["redacted_notes"], ["NOTAS.md"])
         self.assertEqual(summary["sensitive_findings"], 0)
         self.assertNotIn("ValorQueNoDebeSalir789", (package / "legacy" / "NOTAS.md").read_text(encoding="utf-8"))
+
+
+class RedactorSinLlaveTest(unittest.TestCase):
+    """`redact_text`: lo que el núcleo escribe antes de cualquier autorización (el mapa) va tachado."""
+
+    def test_tacha_credenciales_y_datos_de_personas_conservando_lineas(self):
+        from pepper.sensitive import redact_text
+        text = ("CREATE FUNCTION f() AS $$ SELECT dblink('host=10.1.1.5 user=app password=Secreto123', 'x') $$;\n"
+                "-- contacto alguien@example.com y CURP GOCG950101MDFRRB09\n"
+                "SELECT 1;")
+        out = redact_text(text)
+        self.assertEqual(len(out.splitlines()), 3)
+        for value in ("Secreto123", "alguien@example.com", "GOCG950101MDFRRB09"):
+            self.assertNotIn(value, out)
+        self.assertIn("host=10.1.1.5 user=app", out)   # lo que no es dato de persona ni credencial se conserva
+        self.assertIn("SELECT 1;", out)
+
+    def test_uninspectable_kind_es_la_regla_compartida(self):
+        from pepper.sensitive import uninspectable_kind
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "bin.dat").write_bytes(b"\x00\x01")
+            (root / "texto.sql").write_text("select 1;\n", encoding="utf-8")
+            (root / "mixto.sql").write_bytes(b"-- comentario\n" * 700 + b"-- a\xf1o\n")
+            self.assertEqual(uninspectable_kind(root / "bin.dat"), "binary")
+            self.assertIsNone(uninspectable_kind(root / "texto.sql"))
+            self.assertEqual(uninspectable_kind(root / "mixto.sql"), "undecodable")

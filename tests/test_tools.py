@@ -298,3 +298,20 @@ class NoInstalableTest(unittest.TestCase):
         efectivo = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
         self.assertNotIn("setuptools", efectivo, "ningún backend real: solo el que se niega")
         self.assertIn("requires = []", efectivo)
+
+
+class AuthorizeSoloEnTerminalTest(unittest.TestCase):
+    """`pepper authorize` exige una terminal interactiva: desde un agente, un script o una tubería no hay decisión humana."""
+
+    def test_sin_tty_se_niega_sin_tocar_nada(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            proposal = Path(tmp) / "p.data-boundary.propuesta.json"
+            proposal.write_text(json.dumps({"system": {"profile_id": "x", "legacy_sha256": "0" * 64}, "destination": "d",
+                                            "categories": ["curp"], "unscanned": {}, "excluded": []}), encoding="utf-8")
+            out = Path(tmp) / "data-boundary.json"
+            result = subprocess.run([sys.executable, "-m", "pepper", "authorize", str(proposal), "--by", "Alguien", "--out", str(out)],
+                                    capture_output=True, text=True, stdin=subprocess.DEVNULL, cwd=str(ROOT))
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("terminal", result.stderr)
+            self.assertFalse(out.exists())

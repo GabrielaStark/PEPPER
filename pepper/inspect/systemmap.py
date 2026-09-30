@@ -64,16 +64,37 @@ _MAX_MEMBER_BYTES = 4 * 1024 * 1024
 _URL_RE = re.compile(r"https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+")
 _REDACTED = "[REDACTADO]"
 
-# Columnas cuyo VALOR no debe viajar: credenciales y datos de personas.
+# Columnas cuyo VALOR no debe viajar: credenciales y datos de personas. En español y en inglés:
+# el redactor solo conocía `nombre|apellido|domicilio…`, y un esquema con `first_name`, `phone`,
+# `ssn` o `salary` se volcaba entero a catalogs.md (auditoría 2026-09-29). También los nombres
+# de quien ocupa un puesto (titular, responsable, encargado) y las claves de usuario (login,
+# usuario, username): son personas aunque la tabla se llame `oficinas`.
 _SENSITIVE_COLUMN_RE = re.compile(
     r"(?i)pass|pwd|contrase|secret|token|credencial|correo|mail|curp|rfc|telefono|celular|nacimiento|cedula|"
-    r"nombre|apellido|domicilio|direccion|calle|colonia|nss|imss|clabe|cuenta|tarjeta|fecha_?nac|fnac|sexo|salario|sueldo"
+    r"nombre|apellido|domicilio|direccion|calle|colonia|nss|imss|clabe|cuenta|tarjeta|fecha_?nac|fnac|sexo|salario|sueldo|"
+    r"titular|responsable|encargado|jefe|firmante|representante|razon_?social|usuario|user_?name|username|login|"
+    r"edad|placa|matricula|pasaporte|licencia|"
+    r"first_?name|last_?name|middle_?name|full_?name|surname|given_?name|family_?name|address|street|"
+    r"phone|mobile|cell|birth|\bdob\b|gender|\bsex\b|\bssn\b|social_?sec|salary|wage|income|\biban\b|card|passport|license"
 )
 # Valores que son datos de una persona o una credencial, en cualquier columna o cadena.
 _PII_VALUE_RE = re.compile(
     r"[\w.+-]+@[\w-]+\.[\w.-]+|\b[A-Z]{4}\d{6}[HM][A-Z]{5}[A-Z0-9]\d\b|\b[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}\b|"
-    r"\b\d{2,3}[ -]?\d{3}[ -]?\d{2}[ -]?\d{2}\b|\b\d{10}\b|\b\d{11}\b|\b\d{18}\b"
+    r"\b\d{2,3}[ -]?\d{3}[ -]?\d{2}[ -]?\d{2}\b|\b\d{10}\b|\b\d{11}\b|\b\d{18}\b|"
+    r"\b(?:\d{4}[ -]?){3}\d{4}\b|\b\d{3}-\d{2}-\d{4}\b"   # tarjeta; SSN
 )
+# Constantes cuyo VALOR nombra a una cuenta (ADMIN_USER = "jperez", DB_USER = "app_prod"):
+# una clave de usuario es un dato de persona y una pista de acceso, se llame como se llame.
+# Solo cuando el valor parece una clave (una palabra sin espacios); `ADMIN_ROLE_ID = 1` o
+# `USER_STATUS_ACTIVE = "ACTIVO"` son negocio y se conservan.
+_ACCOUNT_KEY_RE = re.compile(r"(?i)(?:^|_)(?:user(?:name)?|usuario|login|account|cuenta)(?:$|_)")
+
+
+def _looks_like_account(name: str, value: str) -> bool:
+    text = value.strip().strip('"')
+    if not _ACCOUNT_KEY_RE.search(name) or re.search(r"(?i)(?:^|_)(?:id|status|estatus|estado|type|tipo|role|rol|count|max|min|len)(?:$|_)", name):
+        return False
+    return bool(re.fullmatch(r"[A-Za-z][\w.@-]{2,39}", text)) and not text.isupper()
 # Renglones de tablas parámetro/clave-valor donde la CLAVE delata un secreto.
 _SECRET_KEY_RE = re.compile(
     r"(?i)pass(?:word|phrase)?|pwd|psw|contrase|clave|llave|secret|token|credencial|smtp\.user|mail\.user|"
@@ -203,6 +224,16 @@ def _extract_config_hosts(artifact: Path, spec: Dict[str, Any], report: "MapRepo
 
 # ---- el respaldo ---------------------------------------------------------
 
+def _redact_definition(definition: str) -> str:
+    """El cuerpo de una vista, función o trigger va al mapa (y al documento) tal cual. Un
+    `dblink('host=… user=… password=…')` o un `CREATE USER MAPPING … OPTIONS (password '…')`
+    llevaba la credencial de producción a db.md sin pasar por ningún redactor (auditoría
+    2026-09-29). Lo que el escáner detecta se tacha; el resto del cuerpo se conserva."""
+    from pepper.sensitive import redact_text
+
+    return redact_text(definition.strip())
+
+
 def _redact_row(columns: List[str], row: List[Optional[str]]) -> List[Optional[str]]:
     """Redacta columnas sensibles por nombre y renglones clave-valor cuya clave delate un secreto."""
     secret_row = any(cell and _SECRET_KEY_RE.search(cell) and len(cell) < 64 for cell in row)
@@ -308,15 +339,15 @@ def _extract_pg_dump(spec: Dict[str, Any], report: "MapReport", dump: Optional[P
         report.data.append({"kind": "table", "name": table_name(*key), "columns": pgdump.table_columns(tables[key].defn),
                             "detail": "sin datos en el respaldo", "evidence": ref})
     for entry in info.by_desc("VIEW"):
-        report.data.append({"kind": "view", "name": entry.tag, "definition": entry.defn.strip(), "evidence": ref})
+        report.data.append({"kind": "view", "name": entry.tag, "definition": _redact_definition(entry.defn), "evidence": ref})
     for entry in info.by_desc("FUNCTION"):
-        report.data.append({"kind": "function", "name": entry.tag, "definition": entry.defn.strip(), "evidence": ref})
+        report.data.append({"kind": "function", "name": entry.tag, "definition": _redact_definition(entry.defn), "evidence": ref})
     for entry in info.by_desc("TRIGGER"):
         target = pgdump.trigger_targets(entry.defn)
         detail = (f"{target.get('event', '?')} en {target.get('table', '?')} → {target.get('function', '?')}()"
                   if target else "regla dura en la base")
         report.data.append({"kind": "trigger", "name": entry.tag, "detail": detail,
-                            "definition": entry.defn.strip(), "evidence": ref})
+                            "definition": _redact_definition(entry.defn), "evidence": ref})
     for entry in info.by_desc("SERVER"):
         report.data.append({"kind": "foreign_server", "name": entry.tag,
                             "detail": "servidor foráneo (dblink/postgres_fdw): interconexión directa a otra base",
@@ -431,12 +462,12 @@ def _extract_sql_dump(spec: Dict[str, Any], report: "MapReport", dump: Optional[
                     continue
                 _emit_distribution(report, table.qualified, column, mode, table.count, counter, pat["top_n"], ref)
     for name, definition in info.views:
-        report.data.append({"kind": "view", "name": name, "definition": definition, "evidence": ref})
+        report.data.append({"kind": "view", "name": name, "definition": _redact_definition(definition), "evidence": ref})
     for kind, name, definition in info.routines:
-        report.data.append({"kind": "function", "name": name, "detail": kind, "definition": definition, "evidence": ref})
+        report.data.append({"kind": "function", "name": name, "detail": kind, "definition": _redact_definition(definition), "evidence": ref})
     for name, event, table, definition in info.triggers:
         report.data.append({"kind": "trigger", "name": name, "detail": f"{event} en {table}",
-                            "definition": definition, "evidence": ref})
+                            "definition": _redact_definition(definition), "evidence": ref})
     if info.owners:
         report.notes.append(f"respaldo {dump.name} · definers/dueños referidos: {', '.join(info.owners[:10])}")
 
@@ -614,7 +645,7 @@ def _extract_jvm_classes(artifact: Path, spec: Dict[str, Any], report: "MapRepor
                 if m:
                     value = m.group(2).strip()
                     if cryptographic or _SECRET_STRING_RE.search(f"{m.group(1)}={value}") or _SECRET_KEY_RE.search(m.group(1)) \
-                            or looks_like_secret_value(value):
+                            or _looks_like_account(m.group(1), value) or looks_like_secret_value(value):
                         # por ubicación, nunca el valor: que se sepa que ahí hay una llave
                         constants[m.group(1)] = _REDACTED
                     else:

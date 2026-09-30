@@ -528,3 +528,40 @@ class ExtractorRotoTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RedactorBilingueTest(unittest.TestCase):
+    """El redactor del mapa: columnas en inglés, titulares de puesto, cuentas en constantes, y
+    cuerpos de funciones con credenciales (auditoría 2026-09-29)."""
+
+    def test_columnas_en_ingles_y_titulares_se_redactan(self):
+        from pepper.inspect.systemmap import _redact_row
+        columns = ["id", "first_name", "phone", "ssn", "salary", "titular", "login", "descripcion", "estatus"]
+        row = ["3", "Juan", "5551234567", "123-45-6789", "18000", "LIC. JUAN PEREZ", "jperez", "Oficina regional", "ACTIVA"]
+        out = _redact_row(columns, row)
+        self.assertEqual(out[0], "3")
+        for index in range(1, 7):
+            self.assertEqual(out[index], "[REDACTADO]", columns[index])
+        self.assertEqual(out[7], "Oficina regional")
+        self.assertEqual(out[8], "ACTIVA")
+
+    def test_un_valor_con_forma_de_tarjeta_o_ssn_se_redacta_en_cualquier_columna(self):
+        from pepper.inspect.systemmap import _redact_row
+        out = _redact_row(["nota"], ["pago con 4111 1111 1111 1111 y ssn 123-45-6789"])
+        self.assertNotIn("4111", out[0])
+        self.assertNotIn("123-45-6789", out[0])
+
+    def test_la_definicion_de_una_funcion_no_lleva_la_credencial(self):
+        from pepper.inspect.systemmap import _redact_definition
+        body = "SELECT * FROM dblink('host=10.4.2.10 dbname=prod user=app password=Secreto123', 'select 1') AS t(x int)"
+        out = _redact_definition(body)
+        self.assertNotIn("Secreto123", out)
+        self.assertIn("dblink('host=10.4.2.10 dbname=prod user=app", out)
+
+    def test_una_constante_que_nombra_una_cuenta_se_redacta_y_un_id_de_rol_no(self):
+        from pepper.inspect.systemmap import _looks_like_account
+        self.assertTrue(_looks_like_account("ADMIN_USER", '"jperez"'))
+        self.assertTrue(_looks_like_account("DB_USER", '"app_prod"'))
+        self.assertFalse(_looks_like_account("ADMIN_ROLE_ID", "1"))
+        self.assertFalse(_looks_like_account("USER_STATUS_ACTIVE", '"ACTIVO"'))
+        self.assertFalse(_looks_like_account("MAX_USERS", "50"))

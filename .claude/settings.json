@@ -1,0 +1,49 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./legacy/**/*.sql)",
+      "Read(./legacy/**/*.dump)",
+      "Read(./legacy/**/*.bak)",
+      "Read(./legacy/**/*.dmp)",
+      "Read(./legacy/**/*.backup)",
+      "Read(./legacy/**/*.gz)",
+      "Read(./legacy/**/*.zip)",
+      "Read(./legacy/**/*.tar)",
+      "Read(./legacy/**/*.tgz)",
+      "Read(./legacy/**/*.war)",
+      "Read(./legacy/**/*.jar)",
+      "Read(./legacy/**/*.ear)",
+      "Read(./legacy/**/*.csv)",
+      "Read(./evidence/**/screens/**)",
+      "Read(./evidence/**/http.jsonl)",
+      "Read(./evidence/**/containers/**)",
+      "Read(./evidence/**/raw/**)",
+      "Read(./pepper-out/**/correlated/**)",
+      "Read(./pepper-out/rehydrate/.env)",
+      "Read(./pepper-out/rehydrate/docker-compose.yml)",
+      "Read(./pepper-out/rehydrate/restore.sh)",
+      "Read(./pepper-out/data-boundary*.json)",
+      "Read(./pepper-out/*.key)",
+      "Edit(./legacy/**)",
+      "Write(./legacy/**)",
+      "Edit(./pepper-out/data-boundary*.json)",
+      "Write(./pepper-out/data-boundary*.json)",
+      "Edit(./pepper-out/*.key)",
+      "Write(./pepper-out/*.key)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Read|Grep|Glob|Edit|MultiEdit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR:-.}/scripts/guardia_datos.py\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

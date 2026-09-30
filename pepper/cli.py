@@ -42,6 +42,7 @@ def _cmd_package(args: argparse.Namespace) -> int:
         manifest_out=args.manifest_out,
         system_map=args.map,
         previous=args.previous,
+        include_uninspected=args.include_uninspected,
     )
     print(f"package · {summary['session_id']} · {summary['files']} archivos")
     print(f"  evidencia: {summary['events']} eventos, {summary['traces']} peticiones")
@@ -51,6 +52,10 @@ def _cmd_package(args: argparse.Namespace) -> int:
     print(f"  datos: modo {summary['data_mode']} · {summary['sensitive_findings']} hallazgo(s) sensible(s) · "
           f"{summary['unscanned_files']} archivo(s) no inspeccionado(s) · {summary['substituted']} valor(es) sustituido(s)"
           + (f" · excluido: {', '.join(summary['excluded'])}" if summary["excluded"] else ""))
+    if summary.get("excluded_uninspected"):
+        print(f"  no viaja (no inspeccionable; queda en la máquina): "
+              + ", ".join(f"{e['path']} ({e['kind']})" for e in summary["excluded_uninspected"][:8])
+              + (f" … y {len(summary['excluded_uninspected']) - 8} más" if len(summary["excluded_uninspected"]) > 8 else ""))
     print(f"  paquete: {args.out}")
     print(f"  manifest externo: {summary['external_manifest']} (no lo metas al paquete)")
     if summary.get("redacted_notes"):
@@ -563,7 +568,38 @@ def _cmd_authorize(args: argparse.Namespace) -> int:
 
     from pepper.boundary import authorize, key_path
 
+    # La autorización es de una persona, en su terminal. Antes cualquier proceso podía escribirla
+    # con `--by "un nombre"`: un agente instruido a "preguntar" podía firmarla solo (auditoría
+    # 2026-09-29). Sin terminal interactiva no hay a quién preguntarle, y sin la palabra escrita
+    # a mano no hay decisión.
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("pepper authorize: se corre a mano, en una terminal, por la persona que autoriza. "
+              "No desde un agente, un script ni una tubería: sin terminal interactiva no hay decisión humana.", file=sys.stderr)
+        return 2
     needed = _json.loads(args.proposal.read_text(encoding="utf-8"))
+    print(f"Propuesta: {args.proposal}")
+    print(f"  sistema: perfil {(needed.get('system') or {}).get('profile_id')} · legacy {(needed.get('system') or {}).get('legacy_sha256', '')[:16]}…")
+    print(f"  destino: {needed.get('destination')}")
+    print(f"  categorías de datos detectadas (viajarían sustituidas): {', '.join(needed.get('categories') or []) or 'ninguna'}")
+    unscanned = needed.get("unscanned") or {}
+    print(f"  archivos no inspeccionables que viajarían ENTEROS y sin sustituir: {len(unscanned)}")
+    for path in list(unscanned)[:20]:
+        print(f"    - {path}")
+    if len(unscanned) > 20:
+        print(f"    … y {len(unscanned) - 20} más")
+    if needed.get("excluded"):
+        print(f"  excluido siempre (material de llave, no viaja): {', '.join(needed['excluded'])}")
+    for why in needed.get("why") or []:
+        print(f"  por qué hace falta: {why}")
+    print()
+    print("Lo que no tiene patrón (un nombre propio, una dirección, un teléfono) no se detecta ni se sustituye.")
+    try:
+        answer = input(f"{args.by}: escribe AUTORIZO para autorizar este alcance para este legacy (cualquier otra cosa cancela): ")
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer.strip() != "AUTORIZO":
+        print("pepper authorize: no se autorizó nada.", file=sys.stderr)
+        return 1
     result = authorize(args.proposal, args.by, args.out)
     print(f"authorize · {args.out} · decidió: {result['decided_by']} ({result['date']})")
     print(f"  sistema: perfil {result['system'].get('profile_id')} · legacy {result['system'].get('legacy_sha256', '')[:16]}…")
@@ -572,7 +608,7 @@ def _cmd_authorize(args: argparse.Namespace) -> int:
     print(f"  no inspeccionados autorizados: {len(result['unscanned'])} (cada uno con su sha256)")
     if needed.get("excluded"):
         print(f"  excluido siempre (material de llave, no viaja): {', '.join(needed['excluded'])}")
-    print(f"  llave de seudónimos: {key_path(args.out)} (local; nunca va en un paquete)")
+    print(f"  llave de seudónimos: {key_path(args.out, str(result['system'].get('legacy_sha256') or ''))} (local, por sistema; nunca va en un paquete)")
     return 0
 
 
@@ -662,10 +698,13 @@ def build_parser() -> argparse.ArgumentParser:
                          help="system-map.json de `pepper map` (se copia con su carpeta map/ legible); sin él el agente solo ve la ejecución")
     package.add_argument("--previous", type=Path,
                          help="funcional.json publicado por un discovery anterior: el nuevo lo extiende en vez de empezar de cero")
+    package.add_argument("--include-uninspected", action="store_true",
+                         help="en modo remote, copiar también lo que el escáner no puede leer (binarios, archivos enormes): "
+                              "viaja ENTERO y sin sustituir, y exige autorización expresa de cada archivo. Por defecto no viaja")
 
     authorize = commands.add_parser("authorize", help="una persona autoriza el alcance de datos que `package` propuso (D24)")
     authorize.add_argument("proposal", type=Path, help="<paquete>.data-boundary.propuesta.json que dejó `pepper package`")
-    authorize.add_argument("--by", required=True, help="nombre de la persona que autoriza (queda escrito)")
+    authorize.add_argument("--by", required=True, help="nombre de la persona que autoriza (queda escrito, fuera del paquete); se corre en una terminal, nunca desde un agente")
     authorize.add_argument("--out", type=Path, default=Path("pepper-out/data-boundary.json"),
                            help="autorización del sistema (default pepper-out/data-boundary.json); si existe y es del mismo sistema, se extiende")
 

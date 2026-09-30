@@ -317,10 +317,15 @@ class Explorer:
         nada se detuviera: un fallo de credenciales es fatal, no una nota al pie."""
         creds = self.config.get("credentials") or {}
         sql_template = creds.get("sql")
-        if not sql_template or docker_compose is None:
-            return [r["name"] for r in self.config.get("roles", []) if r.get("password")]
+        roles = self.config.get("roles", [])
+        # `roles[].user_sql`: la clave de usuario de ese rol se resuelve DENTRO de la base desechable
+        # y nunca pasa por quien escribe explore.json (el agente la consultaba con psql y el valor
+        # entraba a su contexto — auditoría 2026-09-29). Solo la ve el navegador.
+        needs_db = bool(sql_template) or any(r.get("user_sql") for r in roles)
+        if not needs_db or docker_compose is None:
+            return [r["name"] for r in roles if r.get("password") and r.get("user")]
 
-        secrets = [r["password"] for r in self.config.get("roles", []) if r.get("password")]
+        secrets = [r["password"] for r in roles if r.get("password")]
 
         # El cliente de la base lo declara el perfil (`rehydrate.database.probe`: psql, mysql…);
         # `pepper explore --profile` lo copia a `credentials.client`. Sin perfil, psql como antes.
@@ -360,7 +365,26 @@ class Explorer:
                 raise CredentialsError(f"credentials.setup_sql falló en la base desechable: {error}")
         ready: List[str] = []
         failures: List[str] = []
-        for role in self.config.get("roles", []):
+        for role in roles:
+            if role.get("user_sql") and not role.get("user"):
+                result = psql(role["user_sql"])
+                first = (result.stdout or "").strip().splitlines()
+                value = first[0].split("\t")[0].strip() if first else ""
+                if result.returncode != 0 or not value:
+                    error = (result.stderr.strip() or "la consulta no devolvió ninguna clave de usuario")[:300]
+                    failures.append(f"{role['name']}: user_sql: {error}")
+                    self._write(Action(role=role["name"], route="", kind="credentials", label="user_sql", started=_now(),
+                                       result="error", detail={"stderr": error, "falla": "acceso"}))
+                    continue
+                role["user"] = value       # solo en memoria: no se escribe en explore.jsonl ni en session.json
+                secrets.append(value)      # y tampoco en un stderr que sí se escribe
+        if not sql_template:
+            self.ready = [r["name"] for r in roles if r.get("password") and r.get("user")]
+            if not self.ready:
+                raise CredentialsError("ningún rol quedó con clave de usuario resuelta; sin eso no hay nada que explorar. "
+                                       + " · ".join(failures[:3]))
+            return self.ready
+        for role in roles:
             if not role.get("user") or not role.get("password"):
                 continue
             sql = sql_template.replace("{user}", role["user"]).replace("{password}", role["password"])
@@ -1050,14 +1074,18 @@ def config_problems(config: Dict[str, Any]) -> List[str]:
     roles = config.get("roles") or []
     if not roles:
         problems.append("falta roles (al menos uno con name, user y password)")
+    creds = config.get("credentials") or {}
     for role in roles:
-        if not all(role.get(k) for k in ("name", "user", "password")):
-            problems.append(f"rol incompleto: {role.get('name') or '?'} (name, user, password)")
-        elif not identity_text(login, role):
+        if not role.get("name") or not role.get("password") or not (role.get("user") or role.get("user_sql")):
+            problems.append(f"rol incompleto: {role.get('name') or '?'} (name, password, y user o user_sql)")
+        elif role.get("user") and role.get("user_sql"):
+            problems.append(f"rol {role['name']}: user y user_sql a la vez; uno u otro")
+        elif role.get("user_sql") and not creds.get("db_name"):
+            problems.append(f"rol {role['name']}: user_sql necesita credentials.db_name (la base desechable donde se consulta)")
+        elif not (role.get("identity_text") or login.get("identity_text")):
             problems.append(f"rol {role['name']}: falta login.identity_text (o identity_text del rol): el texto que el "
                             "sistema muestra solo a quien entró, p. ej. \"{user}\"; sin él no se sabe con qué identidad se exploró")
-    creds = config.get("credentials")
-    if creds and creds.get("sql") and not creds.get("db_name"):
+    if creds.get("sql") and not creds.get("db_name"):
         problems.append("credentials.sql sin credentials.db_name")
     return problems
 

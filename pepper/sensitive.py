@@ -15,7 +15,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
-_MAX_TEXT_BYTES = 2_000_000
+# Hasta aquí se lee un archivo de texto completo para escanearlo y sustituirlo. Antes eran 2 MB:
+# un respaldo real siempre los supera, y "no inspeccionado" pasaba a viajar entero con
+# autorización (auditoría 2026-09-29). Ahora lo que no se puede inspeccionar NO viaja por
+# defecto (pepper.package), y el tope solo decide cuánto texto se lee de una vez.
+_MAX_TEXT_BYTES = 50_000_000
+# Lo que un dump o un desplegable suele ser, por nombre: nunca se abre desde el orquestador.
+DUMP_SUFFIXES = {".sql", ".dump", ".bak", ".dmp", ".backup", ".gz", ".bz2", ".xz", ".zip", ".tar", ".tgz",
+                 ".war", ".jar", ".ear", ".dll", ".exe", ".bacpac", ".mdb", ".accdb", ".sqlite", ".db"}
 # Tope de lo que se MUESTRA, nunca de lo que se decide. Antes era el tope de todo: con 201
 # archivos no inspeccionables el último quedaba fuera de la autorización y podía cambiar sin
 # que nada lo notara; y en un respaldo con más de 200 CURP, una categoría que aparecía después
@@ -131,6 +138,29 @@ def _looks_binary(sample: bytes) -> bool:
     return False
 
 
+def uninspectable_kind(path: Path) -> Optional[str]:
+    """Por qué un archivo no se puede inspeccionar (`symlink`, `large_file`, `unreadable`, `binary`,
+    `undecodable`), o None si es texto legible completo. Es LA regla, compartida por el escáner y
+    por Package: lo que el escáner no lee, Package no lo copia a un paquete remoto."""
+    if path.is_symlink():
+        return "symlink"
+    try:
+        if path.stat().st_size > _MAX_TEXT_BYTES:
+            return "large_file"
+        with path.open("rb") as handle:
+            head = handle.read(8192)
+            if _looks_binary(head):
+                return "binary"
+            rest = handle.read()
+    except OSError:
+        return "unreadable"
+    try:
+        (head + rest).decode("utf-8")
+    except UnicodeDecodeError:
+        return "undecodable"
+    return None
+
+
 def _safe_secret_value(value: str) -> bool:
     normalized = value.strip().strip("\"'").lower()
     # lo que PEPPER ya quitó (notas redactadas, credenciales sustituidas) no es un secreto
@@ -177,26 +207,14 @@ def scan(roots: Iterable[Tuple[str, Path, Optional[Ignore]]]) -> Report:
             if path.name.lower() in _SENSITIVE_NAMES or path.suffix.lower() in _SENSITIVE_SUFFIXES:
                 report.add_sensitive("key_material", display, None)
                 continue
-            try:
-                size = path.stat().st_size
-                if size > _MAX_TEXT_BYTES:
-                    report.add_unscanned("large_file", display)
-                    continue
-                data = path.read_bytes()
-            except OSError:
-                report.add_unscanned("unreadable", display)
+            kind = uninspectable_kind(path)
+            if kind:
+                # binario, demasiado grande, ilegible, o UTF-8 en los primeros 8 KB y otra
+                # codificación después (un SQL viejo en latin-1): no se puede afirmar que se
+                # leyó completo → no inspeccionado.
+                report.add_unscanned(kind, display)
                 continue
-            if _looks_binary(data[:8192]):
-                report.add_unscanned("binary", display)
-                continue
-            try:
-                text = data.decode("utf-8")
-            except UnicodeDecodeError:
-                # UTF-8 en los primeros 8 KB y otra codificación después (un SQL viejo en
-                # latin-1): no se puede afirmar que se leyó completo → no inspeccionado.
-                report.add_unscanned("undecodable", display)
-                continue
-            _scan_text(text, display, report)
+            _scan_text(path.read_text(encoding="utf-8"), display, report)
     return report
 
 
@@ -222,6 +240,28 @@ CREDENTIAL_TOKEN = "[CREDENCIAL]"
 PRIVATE_KEY_TOKEN = "[LLAVE PRIVADA EXCLUIDA]"
 _PII = (("tarjeta", "TARJETA", _TARJETA), ("clabe", "CLABE", _CLABE), ("curp", "CURP", _CURP),
         ("rfc", "RFC", _RFC), ("email", "CORREO", _EMAIL))
+
+
+REDACTED_TOKEN = "[REDACTADO]"
+
+
+def redact_text(text: str) -> str:
+    """Tacha en `text` lo que el escáner detecta (credenciales y datos de personas), sin llave y
+    sin seudónimo: para lo que el núcleo escribe ANTES de cualquier autorización (el mapa, las
+    notas de configuración). Conserva el número de líneas."""
+    out: List[str] = []
+    in_key = False
+    for line in text.split("\n"):
+        if _PRIVATE_KEY.search(line) or in_key:
+            in_key = not re.search(r"-----END [A-Z ]*PRIVATE KEY-----", line)
+            out.append(PRIVATE_KEY_TOKEN)
+            continue
+        for start, end in reversed(_credential_spans(line)):
+            line = line[:start] + REDACTED_TOKEN + line[end:]
+        for _, _, pattern in _PII:
+            line = pattern.sub(REDACTED_TOKEN, line)
+        out.append(line)
+    return "\n".join(out)
 
 
 def _normalize_pii(kind: str, value: str) -> str:
