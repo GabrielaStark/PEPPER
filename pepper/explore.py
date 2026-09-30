@@ -128,6 +128,16 @@ def identity_text(login: Dict[str, Any], role: Dict[str, Any]) -> str:
     return str(template).replace("{user}", str(role.get("user", ""))).replace("{role}", str(role.get("name", "")))
 
 
+def browser_args(base_url: str) -> List[str]:
+    """Flags de Chromium con las que el navegador del explorador no puede salir de la máquina aunque
+    `route` no viera una petición: todo nombre → NOTFOUND salvo el host del ingress; WebRTC sin UDP directo."""
+    host = urlsplit(base_url).hostname or "127.0.0.1"
+    return [f"--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE {host}",
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            "--disable-background-networking", "--disable-component-update", "--disable-sync",
+            "--dns-prefetch-disable", "--no-pings"]
+
+
 class CredentialsError(RuntimeError):
     """No se pudo fijar ninguna credencial de prueba: sin eso no hay nada que explorar."""
 
@@ -163,7 +173,11 @@ class Explorer:
         self.shots.mkdir(exist_ok=True)
         self._log = self.log_path.open("a", encoding="utf-8")
         self._pw = sync_playwright().start()
-        self._browser = self._pw.chromium.launch(headless=self.headless)
+        # El mismo endurecimiento que la prueba hermética del ingress, que en producción no se aplicaba
+        # (auditoría 2026-09-29): el resolver de Chromium no resuelve NADA salvo el host del ingress
+        # (un <link rel=preconnect>, un dns-prefetch o el predictor no pasan por `route`), y WebRTC no
+        # manda UDP a ningún STUN. `route` sigue siendo la segunda capa, y la evidencia de lo bloqueado.
+        self._browser = self._pw.chromium.launch(headless=self.headless, args=browser_args(self.base))
         self._context = None
         self._fresh_context()
         self.ready: Optional[List[str]] = None
@@ -182,7 +196,8 @@ class Explorer:
                 self._context.close()
             except Exception:
                 pass
-        context = self._browser.new_context(viewport={"width": 1366, "height": 900})
+        # service_workers="block": `route` no intercepta lo que un service worker pide; sin ellos, todo pasa por aquí
+        context = self._browser.new_context(viewport={"width": 1366, "height": 900}, service_workers="block")
         self._context = context
         context.set_default_timeout(self.timeout_ms)
         # El navegador del explorador corre en el host (con VPN). La CSP del ingress frena lo
@@ -401,6 +416,32 @@ class Explorer:
                                + " · ".join(failures[:3]))
         self.ready = ready
         return ready
+
+    # ------------------------------------------------------------ observación operada por una persona
+
+    def observe(self, log=print) -> Dict[str, Any]:
+        """Una persona opera el sistema en ESTE navegador (`--headed`): el mismo perímetro que el explorador
+        (resolver cerrado, `route` al ingress, sin service workers, sin sync ni extensiones). Antes
+        `/pepper-observe` le pedía abrir su navegador de siempre, y un `location.href=`, un preconnect o
+        el historial sincronizado salían de la máquina sin que ningún contenedor lo viera (auditoría
+        2026-09-29). Termina cuando la persona cierra la ventana."""
+        action = Action(role="persona", route="/", kind="observe", label="ventana operada por una persona", started=_now())
+        try:
+            self.page.goto(self.base + "/")
+        except Exception as error:  # noqa: BLE001
+            action.result, action.detail = "error", {"error": str(error)[:200], "falla": "explorador"}
+            self._write(action)
+            return {"mode": "observe", "error": f"no se pudo abrir {self.base}: {str(error)[:120]}"}
+        log(f"  ventana abierta en {self.base}: opera el sistema ahí (un flujo a la vez, provoca un rechazo) y CIERRA LA VENTANA al terminar")
+        try:
+            self.page.wait_for_event("close", timeout=0)
+        except Exception:  # noqa: BLE001 — el contexto se fue: la persona cerró todo
+            pass
+        action.ended = _now()
+        action.result = "ok"
+        action.url_after = ""
+        self._write(action)
+        return {"mode": "observe", "roles": {}}
 
     # ------------------------------------------------------------ sesión
 
@@ -1093,7 +1134,11 @@ def config_problems(config: Dict[str, Any]) -> List[str]:
 def outcome(summary: Dict[str, Any], actions: List[Dict[str, Any]], captured_files: List[str],
             plan_steps: Optional[int] = None) -> Dict[str, Any]:
     """El veredicto de la sesión: {status, code, reason, counts}. Solo COMPLETO sale con 0."""
-    if plan_steps is not None or summary.get("mode") == "plan":
+    if summary.get("mode") == "observe":
+        verdict = ({"status": "COMPLETO", "reason": "ventana operada por una persona en el navegador hermético de PEPPER", "counts": {}}
+                   if any(a.get("kind") == "observe" and a.get("result") == "ok" for a in actions)
+                   else {"status": "FALLIDO", "reason": "la ventana de observación no se abrió", "counts": {}})
+    elif plan_steps is not None or summary.get("mode") == "plan":
         verdict = plan_verdict(actions, plan_steps if plan_steps is not None else int(summary.get("steps", 0)))
     else:
         verdict = walk_verdict(summary, actions)
@@ -1118,7 +1163,11 @@ def operator_note(actions: List[Dict[str, Any]], summary: Dict[str, Any], kind: 
         for m in a.get("messages", []):
             if m not in messages:
                 messages.append(m)
-    parts = [f"Sesión ejercitada POR EL AGENTE (explorador de PEPPER) con un navegador headless local, todo por el ingress; modo {kind}."]
+    if summary.get("mode") == "observe":
+        parts = ["Sesión operada POR UNA PERSONA en el navegador hermético de PEPPER (resolver cerrado, todo por el ingress); "
+                 "lo que hizo está en http.jsonl y en los logs, no en explore.jsonl."]
+    else:
+        parts = [f"Sesión ejercitada POR EL AGENTE (explorador de PEPPER) con un navegador headless local, todo por el ingress; modo {kind}."]
     if verdict:
         parts.append(f"Resultado: {verdict['status']} — {verdict['reason']}.")
     if roles:

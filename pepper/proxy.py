@@ -43,6 +43,7 @@ import threading
 import time
 import uuid
 from datetime import datetime
+from html.parser import HTMLParser
 from http.client import HTTPConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -66,8 +67,16 @@ BROWSER_POLICY = (
     "default-src 'self' data: blob: 'unsafe-inline' 'unsafe-eval'; "
     "frame-src 'self'; object-src 'self'; child-src 'self' blob:; worker-src 'self' blob:; "
     "connect-src 'self'; form-action 'self'; base-uri 'self'; "
+    # WebRTC no pasa por connect-src: un ICE candidate manda UDP a un STUN/TURN sin que CSP lo vea
+    "webrtc 'block'; "
     "report-uri /__pepper/csp-report"
 )
+# Con cada respuesta: el navegador no pre-resuelve los hosts de los <a href> (una página HTTP con
+# enlaces a la intranet dejaba consultas en el DNS de la VPN), y una ventana nueva no hereda opener.
+_EXTRA_RESPONSE_HEADERS = (("X-DNS-Prefetch-Control", "off"), ("Cross-Origin-Opener-Policy", "same-origin"))
+_HTML_KINDS = {"text/html", "application/xhtml+xml"}
+_HTML_SNIFF = (b"<!doctype", b"<html", b"<head", b"<body", b"<meta", b"<?xml", b"<script", b"<title")
+_MAX_RESPONSE_BYTES = 64 * 1024 * 1024   # más que eso no es una pantalla: 502 registrado, no un proxy sin memoria
 # Headers del app que podrían relajar o sustituir la política, o precargar de fuera.
 _STRIPPED_RESPONSE_HEADERS = {"content-security-policy", "content-security-policy-report-only", "link", "refresh"}
 # Endpoints propios del ingress: el navegador reporta aquí lo que bloqueó.
@@ -100,7 +109,8 @@ _MAX_TRAILERS = 32
 # Guardián para lo que CSP no cubre: window.open, clic en <a href> externo y submit
 # a otro origen. Intercepta, no navega, y reporta. Solo ASCII: se inyecta en bytes.
 _GUARD_SCRIPT = (
-    b"<script data-pepper=\"guard\">(function(){var O=location.origin;"
+    # //<![CDATA[ … //]]> : válido en HTML (comentario JS) y obligatorio en XHTML (el script lleva `&&`)
+    b"<script data-pepper=\"guard\">//<![CDATA[\n(function(){var O=location.origin;"
     b"function X(u){try{return new URL(u,location.href).origin!==O}catch(e){return false}}"
     b"function R(k,u){try{var b=JSON.stringify({kind:k,blocked_uri:String(u),document_uri:location.href});"
     b"if(navigator.sendBeacon){navigator.sendBeacon('/__pepper/nav-report',b)}else{fetch('/__pepper/nav-report',{method:'POST',body:b,keepalive:true})}}catch(e){}}"
@@ -108,13 +118,17 @@ _GUARD_SCRIPT = (
     b"document.addEventListener('click',function(e){var t=e.target;var a=(t&&t.closest)?t.closest('a[href]'):null;"
     b"if(a&&X(a.href)){e.preventDefault();e.stopImmediatePropagation();R('link',a.href)}},true);"
     b"document.addEventListener('submit',function(e){var f=e.target;if(f&&f.action&&X(f.action)){e.preventDefault();e.stopImmediatePropagation();R('form',f.action)}},true);"
-    b"})();</script>"
+    b"})();\n//]]></script>"
 )
 
 _MAX_CAPTURE_BYTES = 65536   # cuerpos más grandes no se interpretan: solo se anota el tamaño
 _MAX_TEXT_CHARS = 2048       # tope para cuerpos JSON que no parsean
 
 CORRELATION_HEADER = "X-Pepper-Correlation-Id"
+
+
+class _TooLargeResponse(ValueError):
+    """El app devolvió más de lo que el proxy guarda en memoria: no es una pantalla."""
 
 
 class _BadRequest(ValueError):
@@ -161,26 +175,48 @@ def _capture_body(content_type: str, data: bytes) -> Tuple[Optional[Any], Option
     return None, len(data)
 
 
+def is_html_response(content_type: str, payload: bytes) -> bool:
+    """HTML es lo que el navegador va a tratar como HTML: `text/html`, XHTML, y una respuesta SIN
+    Content-Type cuyo cuerpo empieza como un documento (un servlet viejo que no lo fija; el navegador
+    lo sniffea). Antes solo `text/html` exacto recibía el guardián (auditoría 2026-09-29)."""
+    kind = content_type.split(";", 1)[0].strip().lower()
+    if kind in _HTML_KINDS:
+        return True
+    if kind:
+        return False
+    head = payload[:1024].lstrip().lower()
+    return any(head.startswith(mark) for mark in _HTML_SNIFF)
+
+
 def guard_html(content_type: str, content_encoding: str, payload: bytes) -> Tuple[bytes, Optional[str]]:
     """Inyecta el guardián al inicio de <head> (o al inicio del documento) en respuestas HTML.
 
     Devuelve (cuerpo, nota). Si el cuerpo viene comprimido no se toca —la política
     CSP del header aplica igual— y se anota para que quede en la evidencia."""
-    kind = content_type.split(";", 1)[0].strip().lower()
-    if kind != "text/html" or not payload:
+    if not payload or not is_html_response(content_type, payload):
         return payload, None
     if content_encoding and content_encoding.strip().lower() not in ("", "identity"):
         return payload, f"guardián del navegador no inyectado: respuesta comprimida ({content_encoding})"
-    lower = payload.lower()
-    at = 0
-    for tag in (b"<head", b"<html"):
-        i = lower.find(tag)
-        if i >= 0:
-            j = lower.find(b">", i)
-            if j >= 0:
-                at = j + 1
-                break
+    at = _guard_insertion_point(payload)
     return payload[:at] + _GUARD_SCRIPT + payload[at:], None
+
+
+_HEAD_TAG_RE = re.compile(rb"<head(?=[\s>])[^>]*>", re.IGNORECASE)
+_HTML_TAG_RE = re.compile(rb"<html(?=[\s>])[^>]*>", re.IGNORECASE)
+_COMMENT_RE = re.compile(rb"<!--.*?-->", re.DOTALL)
+
+
+def _guard_insertion_point(payload: bytes) -> int:
+    """Justo después del primer <head …> real (si no hay, del <html …>) que no esté dentro de un
+    comentario; si no hay ninguno, al inicio. `<head` como subcadena aceptaba `<header>` y
+    `<!-- <head> -->` (auditoría 2026-09-29)."""
+    comments = [m.span() for m in _COMMENT_RE.finditer(payload)]
+    for pattern in (_HEAD_TAG_RE, _HTML_TAG_RE):
+        for match in pattern.finditer(payload):
+            if any(start <= match.start() < end for start, end in comments):
+                continue
+            return match.end()
+    return 0
 
 
 def _navigation_authority(rest: str, own: Iterable[str]) -> Tuple[str, str]:
@@ -226,12 +262,68 @@ def classify_navigation(value: str, own: Iterable[str] = ()) -> Tuple[str, str]:
     return "relative", raw
 
 
+class _MetaRefreshFinder(HTMLParser):
+    """Encuentra cada <meta http-equiv=refresh> como lo lee un navegador: entidades decodificadas
+    (`&#114;efresh`, `url=&#104;ttps://…`), atributos sin comillas, `>` dentro de un valor."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.found: List[Tuple[str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
+        if tag.lower() != "meta":
+            return
+        values = {(k or "").lower(): (v or "") for k, v in attrs}
+        if values.get("http-equiv", "").strip().lower() == "refresh":
+            self.found.append((self.get_starttag_text() or "", values.get("content", "")))
+
+    handle_startendtag = handle_starttag
+
+
+# content="0; url=destino" · "0;URL='destino'" · "0; destino" (el `url=` es opcional en la especificación)
+_REFRESH_CONTENT_RE = re.compile(r"^\s*([0-9.]*)\s*[;,]?\s*(?:url\s*=\s*)?['\"]?\s*([^'\"]*?)\s*['\"]?\s*$", re.IGNORECASE | re.DOTALL)
+
+
 def strip_meta_refresh(payload: bytes, own: Iterable[str] = ()) -> Tuple[bytes, List[str]]:
     """Quita todo <meta http-equiv=refresh> cuyo destino salga del ingress (o sea ambiguo)
     y devuelve los destinos: una navegación top-level que la CSP no frena. La misma regla
-    que Location (`classify_navigation`)."""
+    que Location (`classify_navigation`). Primero con un parser de HTML (entidades, comillas,
+    `url=` opcional: una regex sobre bytes se saltaba `content="0; https://prod/…"` y
+    `url=&#104;ttps://…`, auditoría 2026-09-29), y después la regex de siempre para lo que el
+    parser no reconozca como etiqueta."""
     blocked: List[str] = []
     own_hosts = set(own)
+    text = payload.decode("latin-1")   # byte a byte: las posiciones y los bytes se conservan
+    finder = _MetaRefreshFinder()
+    try:
+        finder.feed(text)
+        finder.close()
+    except Exception:  # noqa: BLE001 — HTML roto: la regex de abajo hace lo que pueda
+        finder.found = []
+    cursor = 0
+    for raw, content in finder.found:
+        if not raw:
+            continue
+        at = text.find(raw, cursor)
+        if at < 0:
+            continue
+        match = _REFRESH_CONTENT_RE.match(content)
+        target = (match.group(2) if match else "").strip()
+        delay = (match.group(1) if match else "") or "0"
+        if not target:
+            cursor = at + len(raw)
+            continue   # solo recarga la misma página
+        kind, resolved = classify_navigation(target, own_hosts)
+        if kind == "blocked":
+            blocked.append(target)
+            replacement = "<!-- pepper: meta refresh hacia otro origen bloqueado -->"
+        elif resolved != target:
+            replacement = f'<meta http-equiv="refresh" content="{delay}; url={resolved}">'
+        else:
+            replacement = raw
+        text = text[:at] + replacement + text[at + len(raw):]
+        cursor = at + len(replacement)
+    payload = text.encode("latin-1")
 
     def replace(match: "re.Match[bytes]") -> bytes:
         tag = match.group(0)
@@ -466,7 +558,9 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
             connection.putheader(CORRELATION_HEADER, correlation_id)
             connection.endheaders(body if body else None)
             response = connection.getresponse()
-            payload = response.read()
+            payload = response.read(_MAX_RESPONSE_BYTES + 1)
+            if len(payload) > _MAX_RESPONSE_BYTES:
+                raise _TooLargeResponse(len(payload))
             return response.status, response.reason, response.getheaders(), payload
         finally:
             connection.close()
@@ -627,6 +721,13 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
         started = time.monotonic()
         try:
             status, reason, headers, payload = self._forward(correlation_id, body)
+        except _TooLargeResponse as error:
+            duration_ms = int((time.monotonic() - started) * 1000)
+            # Antes la respuesta entera se guardaba en memoria sin tope: una descarga de gigabytes
+            # tumbaba al ingress y `isolate --live` seguía en verde (auditoría 2026-09-29).
+            self._fail(correlation_id, 502, duration_ms, "pepper-proxy: respuesta demasiado grande",
+                       f"más de {_MAX_RESPONSE_BYTES} bytes", note="respuesta descartada por tamaño: no es una pantalla de un legacy")
+            return
         except (OSError, HTTPException) as error:
             duration_ms = int((time.monotonic() - started) * 1000)
             self._fail(correlation_id, 502, duration_ms, "pepper-proxy: el app no respondió", str(error),
@@ -638,7 +739,8 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
         # elimina la carrera request-only en capturas y pruebas concurrentes.
         content_type = next((value for name, value in headers if name.lower() == "content-type"), "")
         encoding = next((value for name, value in headers if name.lower() == "content-encoding"), "")
-        is_html = content_type.split(";", 1)[0].strip().lower() == "text/html"
+        is_html = is_html_response(content_type, payload if not encoding else b"") or (
+            bool(encoding) and content_type.split(";", 1)[0].strip().lower() in _HTML_KINDS)
         drop_encoding = False
         if is_html and encoding:
             payload, decoded = decode_body(encoding, payload)
@@ -664,6 +766,8 @@ class PepperProxyHandler(BaseHTTPRequestHandler):
             self.send_header(name, value)
         self.send_header("Content-Security-Policy", BROWSER_POLICY)
         self.send_header("Referrer-Policy", "no-referrer")
+        for name, value in _EXTRA_RESPONSE_HEADERS:
+            self.send_header(name, value)
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         if self.command != "HEAD" and payload:

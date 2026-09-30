@@ -1046,6 +1046,75 @@ def env_line(name: str, value: str) -> str:
 
 # --------------------------------------------------------------- render
 
+# Lo que cada variable de plantilla puede contener. Los valores salen del artefacto (nombre de base,
+# usuario del datasource, dueños del respaldo) y se insertaban con str.replace encadenado en un YAML
+# y en un shell: un rol `$(…)` del respaldo se ejecutaba en el contenedor de restauración, y una
+# sustitución anidada (`{{db_url}}` dentro de un valor) se expandía (auditoría 2026-09-29). Ahora
+# cada valor se valida contra su forma y se sustituye en UNA pasada; lo que no cabe es BLOCKED.
+_IDENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.,-]*$|^$")
+_IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@-]*$|^$")
+_VERSION = re.compile(r"^[A-Za-z0-9._+-]*$")
+_PORTS = re.compile(r"^\d+(,\d+)*$|^$")
+_DIGITS = re.compile(r"^\d+$")
+_PATH = re.compile(r"^[^\s$`;\"'|&<>*?]+$|^$")
+_HOST_LIST = re.compile(r"^\[[A-Za-z0-9._-]*(?:, [A-Za-z0-9._-]+)*\]$")
+_OWNERS = re.compile(r"^(?:[A-Za-z0-9_][A-Za-z0-9_.-]*(?: [A-Za-z0-9_][A-Za-z0-9_.-]*)*)?$")
+_URL = re.compile(r"^[^\s\"'`$;|&<>]*$")
+_TEMPLATE_RULES: Dict[str, Any] = {
+    **{k: _IDENT for k in ("db_name", "db_user", "stack_name", "app_name", "war_name", "component_name",
+                           "component_artifact_name", "entry_component", "config_profile", "spring_profile",
+                           "component_config_profile", "component_role", "component_engine", "app_package_env")},
+    **{k: "ip" for k in ("db_ip", "stub_ip", "gateway_ip", "entry_ip", "app_ip", "component_ip")},
+    "dns_sink": "quoted_ip", "subnet": "cidr",
+    **{k: _DIGITS for k in ("db_port", "host_port", "entry_port", "component_port")},
+    **{k: _IMAGE for k in ("db_image", "db_tool_image", "server_image", "component_image")},
+    **{k: _VERSION for k in ("db_version", "db_tool_version", "postgres_version", "pg_restore_version", "db_engine", "dump_sha")},
+    **{k: _PATH for k in ("dump_path", "war_path", "component_artifact_path", "files_root")},
+    "stub_ports": _PORTS, "external_hosts": _HOST_LIST, "db_alias": _HOST_LIST, "db_owners": _OWNERS, "db_url": _URL,
+}
+_VARIABLE_RE = re.compile(r"\{\{(\w+)\}\}")
+
+
+def _template_value_ok(name: str, value: str) -> bool:
+    rule = _TEMPLATE_RULES.get(name)
+    if rule is None:
+        return "\n" not in value and "{{" not in value if name != "components" else True
+    if rule == "ip":
+        try:
+            ipaddress.ip_address(value)
+            return True
+        except ValueError:
+            return False
+    if rule == "quoted_ip":
+        try:
+            ipaddress.ip_address(value.strip('"'))
+            return value.startswith('"') and value.endswith('"')
+        except ValueError:
+            return False
+    if rule == "cidr":
+        try:
+            ipaddress.ip_network(value, strict=False)
+            return True
+        except ValueError:
+            return False
+    return bool(rule.match(value))
+
+
+def render_template(text: str, values: Dict[str, str], template_name: str) -> str:
+    """Sustituye `{{nombre}}` en una sola pasada, con cada valor validado contra su forma."""
+    missing = sorted(set(_VARIABLE_RE.findall(text)) - set(values))
+    if missing:
+        raise Blocked(f"la plantilla {template_name} pide variables que el plan no tiene: {', '.join(missing)}")
+    used = set(_VARIABLE_RE.findall(text))
+    for name in sorted(used):
+        value = str(values[name])
+        if not _template_value_ok(name, value):
+            shown = value if len(value) <= 40 else value[:40] + "…"
+            raise Blocked(f"{template_name}: el valor de `{name}` ({shown!r}) no tiene la forma que PEPPER admite en una "
+                          "plantilla (identificador, IP, imagen, ruta sin caracteres de shell): no se inserta lo que no se reconoce")
+    return _VARIABLE_RE.sub(lambda m: str(values[m.group(1)]), text)
+
+
 def render_components(plan: Plan, profile: Profile, out_dir: Path, variables: Dict[str, str]) -> str:
     """El fragmento de compose del perfil, renderizado una vez por pieza y concatenado.
 
@@ -1069,13 +1138,7 @@ def render_components(plan: Plan, profile: Profile, out_dir: Path, variables: Di
         text = (profile.dir / template_name).read_text(encoding="utf-8")
         values = dict(variables)
         values.update(component.variables(str(_relative_to(component.artifact, out_dir))))
-        missing = sorted(set(re.findall(r"\{\{(\w+)\}\}", text)) - set(values))
-        if missing:
-            raise Blocked(f"la plantilla {template_name} pide variables que el plan no tiene: {', '.join(missing)}")
-        piece = text
-        for name, value in values.items():
-            piece = piece.replace("{{" + name + "}}", value)
-        rendered.append(piece.rstrip() + "\n")
+        rendered.append(render_template(text, values, template_name).rstrip() + "\n")
     return "\n".join(rendered)
 
 
@@ -1096,14 +1159,10 @@ def render(plan: Plan, profile: Profile, out_dir: Path) -> List[Path]:
         template_name = recipe.get(key)
         if not template_name:
             raise Blocked(f"el perfil {profile.id} no declara {key}")
-        text = (profile.dir / template_name).read_text(encoding="utf-8")
-        missing = sorted(set(re.findall(r"\{\{(\w+)\}\}", text)) - set(variables))
-        if missing:
-            raise Blocked(f"la plantilla {template_name} pide variables que el plan no tiene: {', '.join(missing)}")
-        for name, value in variables.items():
-            text = text.replace("{{" + name + "}}", value)
+        text = render_template((profile.dir / template_name).read_text(encoding="utf-8"), variables, template_name)
         path = out_dir / target
         path.write_text(text, encoding="utf-8")
+        path.chmod(0o600)   # el compose y el restore rendidos llevan valores del datasource
         written.append(path)
     # Archivos extra del perfil (p. ej. la configuración externa que el servidor original tenía
     # fuera del artefacto): se renderizan con las mismas variables y cada uno queda como desviación.
@@ -1111,12 +1170,7 @@ def render(plan: Plan, profile: Profile, out_dir: Path) -> List[Path]:
         template_name, target = extra["template"], extra["target"]
         if "/" in target or target.startswith("."):
             raise Blocked(f"extra_templates: el destino {target!r} debe ser un nombre de archivo junto al compose")
-        text = (profile.dir / template_name).read_text(encoding="utf-8")
-        missing = sorted(set(re.findall(r"\{\{(\w+)\}\}", text)) - set(variables))
-        if missing:
-            raise Blocked(f"la plantilla {template_name} pide variables que el plan no tiene: {', '.join(missing)}")
-        for name, value in variables.items():
-            text = text.replace("{{" + name + "}}", value)
+        text = render_template((profile.dir / template_name).read_text(encoding="utf-8"), variables, template_name)
         path = out_dir / target
         path.write_text(text, encoding="utf-8")
         path.chmod(0o600)   # puede llevar la credencial del datasource
@@ -1187,9 +1241,49 @@ def _http(url: str, timeout: int = 5) -> Tuple[Optional[int], str]:
         return None, ""
 
 
+def _create_verified_and_start(out_dir: Path, compose_path: Path, plan: Plan, validations: List[Dict[str, str]],
+                               *services: str, force: bool = False, log=print) -> Optional[Dict[str, str]]:
+    """`docker compose create` → inspección según Docker → `start`. Lo que el daemon hizo con el compose
+    se mira ANTES de que el legacy ejecute una sola instrucción: antes el aislamiento en vivo se
+    verificaba después de que el app ya había corrido sus jobs de arranque (auditoría 2026-09-29).
+    Devuelve la validación fallida, o None si arrancó."""
+    from pepper.isolate import check_live
+
+    args = ["create", "--pull", "never"] + (["--force-recreate"] if force else []) + list(services)
+    created = _compose(out_dir, *args)
+    if created.returncode != 0:
+        return {"check": f"docker compose create {' '.join(services)}", "result": "fail", "detail": created.stderr[-400:]}
+    report = check_live(compose_path, plan.external_hosts, "ingress", created_only=True, probe=False)
+    if report.verdict != "VERIFIED":
+        for finding in report.errors + report.unknowns:
+            log(f"  ✗ {finding.check}")
+        return {"check": f"aislamiento de {', '.join(services)} según Docker, antes de arrancar", "result": "fail",
+                "detail": report.verdict + ": " + "; ".join(f.check for f in report.errors + report.unknowns)[:400]}
+    started = _compose(out_dir, "start", *services)
+    if started.returncode != 0:
+        return {"check": f"docker compose start {' '.join(services)}", "result": "fail", "detail": started.stderr[-400:]}
+    validations.append({"check": f"{', '.join(services)}: creados, inspeccionados según Docker y arrancados", "result": "pass",
+                        "detail": f"{len([f for f in report.findings if f.level == 'ok'])} comprobaciones antes de arrancar"})
+    return None
+
+
 def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
              log=print) -> Tuple[str, List[Dict[str, str]], List[Dict[str, str]]]:
-    """Levanta, restaura si hace falta, espera, verifica y valida. → (estado, validaciones, faltantes)."""
+    """Levanta, restaura si hace falta, espera, verifica y valida. → (estado, validaciones, faltantes).
+    Si termina en FAILED con contenedores arriba, los DETIENE (sin borrar volúmenes ni contenedores:
+    `docker compose logs` sigue sirviendo para diagnosticar): un entorno que no pasó la verificación
+    no se queda corriendo (auditoría 2026-09-29)."""
+    status, validations, missing = _bring_up(plan, profile, out_dir, wait_s=wait_s, log=log)
+    if status == "FAILED":
+        stopped = _compose(out_dir, "stop")
+        validations.append({"check": "entorno detenido tras FAILED (contenedores y volumen conservados para diagnosticar)",
+                            "result": "pass" if stopped.returncode == 0 else "fail",
+                            "detail": "docker compose stop" if stopped.returncode == 0 else stopped.stderr[-200:]})
+    return status, validations, missing
+
+
+def _bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
+              log=print) -> Tuple[str, List[Dict[str, str]], List[Dict[str, str]]]:
     from pepper.isolate import check_live, check_static, resolve_compose
 
     validations: List[Dict[str, str]] = []
@@ -1223,10 +1317,10 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
     validations.append({"check": "aislamiento del compose verificado antes de levantar", "result": "pass",
                         "detail": f"{len([f for f in report.findings if f.level == 'ok'])} comprobaciones"})
 
-    log("  levantando base y stub…")
-    up = _compose(out_dir, "up", "-d", "--pull", "never", "db", "stub")
-    if up.returncode != 0:
-        return "FAILED", validations + [{"check": "docker compose up db stub", "result": "fail", "detail": up.stderr[-400:]}], missing
+    log("  creando base y stub, inspeccionando según Docker y arrancando…")
+    failure = _create_verified_and_start(out_dir, compose_path, plan, validations, "db", "stub", log=log)
+    if failure:
+        return "FAILED", validations + [failure], missing
     alive = False
     for _ in range(int(probe.get("ready_attempts", 60))):
         try:
@@ -1290,17 +1384,16 @@ def bring_up(plan: Plan, profile: Profile, out_dir: Path, wait_s: int = 300,
 
     # Con varias piezas, los servicios son las piezas; con una, el `app` de siempre.
     services = [c.name for c in plan.components] or ["app"]
-    log(f"  levantando {', '.join(services)} e ingress…")
+    log(f"  creando {', '.join(services)} e ingress, inspeccionando según Docker y arrancando…")
     since = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-    up = _compose(out_dir, "up", "-d", "--pull", "never", "--force-recreate", *services, "ingress")
-    if up.returncode != 0:
-        return "FAILED", validations + [{"check": f"docker compose up {' '.join(services)} ingress", "result": "fail",
-                                         "detail": up.stderr[-400:]}], missing
+    failure = _create_verified_and_start(out_dir, compose_path, plan, validations, *services, "ingress", force=True, log=log)
+    if failure:
+        return "FAILED", validations + [failure], missing
     # Lo demás que el compose declare sin `profiles:` (sidecars como el que saca el general log de
     # MySQL por stdout): el núcleo no sabe qué son, pero sin ellos `pepper collect` no ve su evidencia.
-    rest = _compose(out_dir, "up", "-d", "--pull", "never")
-    if rest.returncode != 0:
-        return "FAILED", validations + [{"check": "docker compose up (servicios auxiliares)", "result": "fail", "detail": rest.stderr[-400:]}], missing
+    failure = _create_verified_and_start(out_dir, compose_path, plan, validations, log=log)
+    if failure:
+        return "FAILED", validations + [failure], missing
     recipe = profile.data.get("rehydrate", {})
     default_ready = recipe.get("ready_log_pattern") or "Started|started"
     failed_re = re.compile(recipe["failed_log_pattern"]) if recipe.get("failed_log_pattern") else None

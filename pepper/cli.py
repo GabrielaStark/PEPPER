@@ -333,7 +333,10 @@ def _cmd_explore(args: argparse.Namespace) -> int:
         print(f"pepper explore: {args.config} incompleto — " + "; ".join(problems), file=sys.stderr)
         return 2
     system_map = _json.loads(args.map.read_text(encoding="utf-8")) if args.map else {"entrypoints": []}
-    if not args.plan and not any(e.get("method", "GET") in ("GET", "") for e in system_map.get("entrypoints", [])):
+    if args.observe and not args.headed:
+        print("pepper explore: --observe necesita --headed: la persona opera en una ventana visible", file=sys.stderr)
+        return 2
+    if not args.plan and not args.observe and not any(e.get("method", "GET") in ("GET", "") for e in system_map.get("entrypoints", [])):
         print("pepper explore: el mapa no trae rutas GET que recorrer; pasa --map docs/pepper/system-map.json", file=sys.stderr)
         return 2
     plan = _json.loads(args.plan.read_text(encoding="utf-8")) if args.plan else None
@@ -363,7 +366,8 @@ def _cmd_explore(args: argparse.Namespace) -> int:
         return 1
     print(f"explore · aislamiento verificado en vivo ({len([f for f in report.findings if f.level == 'ok'])} comprobaciones)")
 
-    kind = f"plan ({args.plan.name})" if plan else "recorrido automático por rol y pantalla"
+    kind = ("observación operada por una persona" if args.observe
+            else f"plan ({args.plan.name})" if plan else "recorrido automático por rol y pantalla")
     actions: List[Dict] = []
     summary: Dict = {}
     started = datetime.now().astimezone()
@@ -376,7 +380,9 @@ def _cmd_explore(args: argparse.Namespace) -> int:
             if args.budget:
                 explorer.deadline = _time.time() + args.budget
             try:
-                if plan:
+                if args.observe:
+                    summary = explorer.observe()
+                elif plan:
                     summary = explorer.run_plan(plan, docker_compose=args.compose)
                 else:
                     summary = explorer.walk(docker_compose=args.compose, submit=not args.no_submit)
@@ -756,7 +762,10 @@ def build_parser() -> argparse.ArgumentParser:
     explore.add_argument("--out", type=Path, default=Path("evidence"), help="raíz de la evidencia (default evidence/)")
     explore.add_argument("--budget", type=int, default=0, help="segundos máximos de recorrido (automático o plan); al agotarse no corre nada más, escribe session.json y sale INTERRUMPIDO (4)")
     explore.add_argument("--no-submit", action="store_true", help="solo abrir y fotografiar pantallas; no apretar botones")
-    explore.add_argument("--headed", action="store_true", help="navegador visible (para depurar)")
+    explore.add_argument("--headed", action="store_true", help="navegador visible (para depurar, y obligatorio con --observe)")
+    explore.add_argument("--observe", action="store_true",
+                         help="no explora: abre el navegador hermético de PEPPER para que UNA PERSONA opere el sistema; "
+                              "termina cuando cierra la ventana y captura la ventana como una sesión más (con --headed)")
     explore.add_argument("--settle", type=int, default=12, help="segundos de espera al final antes de cerrar la ventana (default 12)")
     explore.add_argument("--margin", type=int, default=30, help="margen de captura a cada lado (default 30)")
 

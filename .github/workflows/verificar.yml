@@ -6,13 +6,15 @@ on:
 jobs:
   verificar:
     runs-on: ubuntu-latest
+    env:
+      PEPPER_CI: "1"      # en CI nada se salta: sin Chromium o sin Docker, la prueba FALLA
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.9"
       - run: pip install -r requirements-dev.txt
-      - name: Chromium para la prueba hermética del ingress (sin él, esa prueba se salta)
+      - name: Chromium para la prueba hermética del ingress (en CI es obligatorio: sin él la prueba falla)
         run: python3 -m playwright install --with-deps chromium
       # `javap` para el mapa de un artefacto JVM y `javac` para compilar el servicio del E2E de Docker.
       - uses: actions/setup-java@v4

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -96,12 +97,15 @@ def main() -> int:
     parser.add_argument("--work", type=Path, help="directorio de trabajo (default: uno temporal)")
     args = parser.parse_args()
 
+    # En CI el E2E es obligatorio: un runner sin Docker apagaría la única prueba real del levantamiento
+    # sin que nadie lo notara (auditoría 2026-09-29). Fuera de CI, sin Docker se salta y lo dice.
+    en_ci = bool(os.environ.get("PEPPER_CI"))
     if not shutil.which("docker") or correr(["docker", "compose", "version"]).returncode != 0:
-        print("e2e: sin Docker con Compose v2 — se salta (no es una falla del código)")
-        return 0
+        print("e2e: sin Docker con Compose v2 — " + ("FALLA: en CI el E2E es obligatorio" if en_ci else "se salta (no es una falla del código)"))
+        return 1 if en_ci else 0
     if correr(["docker", "info"]).returncode != 0:
-        print("e2e: el daemon de Docker no responde — se salta (no es una falla del código)")
-        return 0
+        print("e2e: el daemon de Docker no responde — " + ("FALLA: en CI el E2E es obligatorio" if en_ci else "se salta (no es una falla del código)"))
+        return 1 if en_ci else 0
 
     import tempfile
     temporal = None

@@ -522,3 +522,20 @@ class UserSqlTest(unittest.TestCase):
         ready, _ = self._run(ex, lambda sql: (0, "", "") if "1=0" in sql else (0, "", ""))
         self.assertEqual(ready, ["CONSULTAS"])
         self.assertEqual(ex.actions[0].detail.get("falla"), "acceso")
+
+
+class NavegadorHermeticoYObserveTest(unittest.TestCase):
+    def test_los_flags_cierran_el_resolver_salvo_el_ingress(self):
+        from pepper.explore import browser_args
+        args = browser_args("http://127.0.0.1:18080")
+        self.assertIn("--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1", args)
+        self.assertTrue(any(a.startswith("--force-webrtc-ip-handling-policy") for a in args))
+
+    def test_el_veredicto_de_una_observacion(self):
+        from pepper.explore import outcome
+        ok = outcome({"mode": "observe"}, [{"kind": "observe", "result": "ok"}], ["http.jsonl"])
+        self.assertEqual(ok["status"], "COMPLETO")
+        sin_http = outcome({"mode": "observe"}, [{"kind": "observe", "result": "ok"}], [])
+        self.assertEqual(sin_http["status"], "FALLIDO")
+        no_abrio = outcome({"mode": "observe"}, [{"kind": "observe", "result": "error"}], ["http.jsonl"])
+        self.assertEqual(no_abrio["status"], "FALLIDO")

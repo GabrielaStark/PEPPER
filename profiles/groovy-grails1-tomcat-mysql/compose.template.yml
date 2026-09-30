@@ -32,6 +32,8 @@ volumes:
 services:
   db:
     image: {{db_image}}                # la versión del respaldo ("Server version" en su cabecera), vía rehydrate.database.images
+    cap_drop: [NET_RAW]                # la red interna no es la única capa: sin tramas crudas al bridge
+    security_opt: [no-new-privileges:true]
     platform: ${PEPPER_PLATFORM}      # la dicta el registro: amd64 emulado si la imagen exigida no existe para esta máquina
     dns: [{{dns_sink}}]
     environment:
@@ -60,6 +62,8 @@ services:
   # reescribiría las cuentas del contenedor. Una vez: docker compose --profile restore run --rm restore
   restore:
     image: {{db_tool_image}}
+    cap_drop: [NET_RAW]                # la red interna no es la única capa: sin tramas crudas al bridge
+    security_opt: [no-new-privileges:true]
     platform: ${PEPPER_PLATFORM}      # la dicta el registro: amd64 emulado si la imagen exigida no existe para esta máquina
     dns: [{{dns_sink}}]
     profiles: ["restore"]
@@ -80,6 +84,8 @@ services:
   # va a un archivo del volumen y este sidecar lo saca por SU stdout → `pepper collect` → dblog.log.
   dblog:
     image: python:3-alpine
+    cap_drop: [NET_RAW]                # la red interna no es la única capa: sin tramas crudas al bridge
+    security_opt: [no-new-privileges:true]
     dns: [{{dns_sink}}]
     command: ["sh", "-c", "while [ ! -f /var/lib/mysql/general.log ]; do sleep 1; done; exec tail -n +1 -F /var/lib/mysql/general.log"]
     depends_on:
@@ -91,6 +97,8 @@ services:
 
   stub:
     image: python:3-alpine
+    cap_drop: [NET_RAW]                # la red interna no es la única capa: sin tramas crudas al bridge
+    security_opt: [no-new-privileges:true]
     dns: [{{dns_sink}}]
     command: ["python3", "-u", "/stub/stub.py", "--ports", "{{stub_ports}}"]
     networks:
@@ -102,6 +110,8 @@ services:
 
   app:
     image: {{server_image}}            # Tomcat 7 sobre JDK 7 (MANIFEST Created-By 24.272-b10 = HotSpot de JDK 7)
+    cap_drop: [NET_RAW]                # la red interna no es la única capa: sin tramas crudas al bridge
+    security_opt: [no-new-privileges:true]
     platform: ${PEPPER_PLATFORM}      # la dicta el registro: amd64 emulado si la imagen exigida no existe para esta máquina
     network_mode: "service:db"         # localhost:3306 del datasource embebido = la base (ver cabecera)
     depends_on:
@@ -123,6 +133,10 @@ services:
   # propia: su 8080 vive en el namespace de db, así que el upstream es {{db_ip}}:8080.
   ingress:
     image: python:3-alpine
+    cap_drop: [NET_RAW]                # la red interna no es la única capa: sin tramas crudas al bridge
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m                    # el proxy guarda cada respuesta en memoria: un stream sin fin no tumba la máquina
+    restart: unless-stopped            # y si cae, vuelve: sin ingress no hay puerta verificada
     dns: [{{dns_sink}}]
     command: ["python3", "-u", "/pepper-proxy.py", "--listen", "0.0.0.0:8080", "--upstream", "{{db_ip}}:8080"]
     depends_on:
