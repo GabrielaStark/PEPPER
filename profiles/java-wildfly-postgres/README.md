@@ -8,9 +8,18 @@ Primer perfil de PEPPER. Existe para probar la tubería completa de punta a punt
 
 | Archivo | Estado |
 |---|---|
-| `profile.json` | detección, receta, colectores, validaciones — valida contra `schemas/profile.schema.json` |
+| `profile.json` | detección, receta, colectores — valida contra `schemas/profile.schema.json` |
+| `extractors.json` | **heredado, sin corrida real** (2026-09-30): `jvm_route_annotations`, `jvm_class_inventory`, `view_templates` (XHTML), `config_hosts` (properties, standalone*.xml, persistence.xml), `archive_url_scan`, `pg_dump_custom`; patrones copiados de `java-springboot-jsf-postgres` donde el formato es el mismo |
 | `parsers/wildfly-server-log.json` | probado: `server.log` con formato por defecto, stack traces como continuación, ruido de pool |
 | `parsers/postgresql-log.json` | probado: `log_statement=all`, parámetros de las líneas `DETAIL` fusionados en la sentencia |
+
+## Los extractores son heredados: qué esperar de `pepper map`
+
+Hasta la auditoría 2026-09-29 este perfil no tenía `extractors.json`, y `pepper map` con él terminaba en exit 2 aunque `pepper detect` lo eligiera para `examples/legacy-demo/artifacts`. Ahora trae los seis mecanismos que aplican al mismo formato que el perfil JSF (WAR con `WEB-INF/classes`, vistas XHTML, respaldo `pg_dump -Fc`), con sus patrones copiados. Nadie los ha corrido contra un legacy real de este stack; lo que sí se sabe:
+
+- **`jvm_route_annotations` solo conoce Spring** (`@RequestMapping`, `@*Mapping`, `@Scheduled`). Un WAR Java EE con JAX-RS (`@Path`/`@GET`, como el legacy-demo) o servlets (`@WebServlet`, `web.xml`) pasa por él sin dejar rutas, y el mapa lo anota en `notes`: "ninguna trae una anotación que este lector reconozca". Las rutas de ese sistema **no están en el mapa** hasta que exista un lector de JAX-RS; no se inventan.
+- `config_hosts` lee `*.properties` (también `clave=valor`), `persistence.xml` y el `standalone*.xml` del servidor, porque en Java EE el datasource vive fuera del WAR.
+- Sobre `examples/legacy-demo/artifacts` (código fuente, no un WAR) el mapa sale **INCOMPLETO** y lo dice: los mecanismos de bytecode declaran que el artefacto no es un zip, `pg_dump_custom` que no hay respaldo. Es el resultado honesto para un directorio de fuente; el WAR compilado del demo (`mvn package`) es el artefacto que este perfil espera.
 
 ## Para pasar a `validated`
 

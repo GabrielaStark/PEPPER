@@ -24,4 +24,6 @@ profiles/<id>/
 | id | estado | nota |
 |---|---|---|
 | [java-springboot-jsf-postgres](java-springboot-jsf-postgres/) | draft | corrió el ciclo entero contra un legacy real: extractores del mapa, receta de rehydrate, lectura de formularios, parsers |
-| [java-wildfly-postgres](java-wildfly-postgres/) | draft | el primero; parsers de WildFly y PostgreSQL, sin extractores |
+| [java-wildfly-postgres](java-wildfly-postgres/) | draft | el primero; parsers de WildFly y PostgreSQL; extractores heredados del perfil JSF sin corrida real (no enumera rutas JAX-RS) |
+| [java-springboot-fatjar-postgres](java-springboot-fatjar-postgres/) | draft | varios fat jars de Spring Boot y un front estático; multicomponente probado con artefactos sintéticos |
+| [groovy-grails1-tomcat-mysql](groovy-grails1-tomcat-mysql/) | validated | Grails 1.3 en Tomcat con MySQL; el ciclo completo corrió contra un legacy real (2026-09-22) |

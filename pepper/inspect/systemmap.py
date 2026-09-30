@@ -200,9 +200,13 @@ def _extract_config_hosts(artifact: Path, spec: Dict[str, Any], report: "MapRepo
             stripped = line.strip()
             if not stripped or stripped.startswith("#") or secret_re.search(stripped):
                 continue
-            if ":" not in stripped:
+            # `clave: valor` (YAML) o `clave=valor` (.properties): manda el separador que aparece primero,
+            # así `datasource.url=jdbc:postgresql://…` no parte en el `:` de la URL (auditoría 2026-09-29)
+            eq, colon = stripped.find("="), stripped.find(":")
+            if eq == -1 and colon == -1:
                 continue
-            key, _, value = stripped.partition(":")
+            separator = "=" if eq != -1 and (colon == -1 or eq < colon) else ":"
+            key, _, value = stripped.partition(separator)
             value = value.strip()
             # usuario:clave@host dentro de una URL (jdbc, postgres://): la clave no viaja al mapa
             value = re.sub(r"(?i)(://[^\s/:@]+:)[^\s@]+@", r"\1[REDACTADO]@", value)
@@ -476,10 +480,19 @@ def _extract_jvm_routes(artifact: Path, spec: Dict[str, Any], report: "MapReport
         outputs, tool_notes = jvm.javap_outputs(tools, classes, ["-p", "-v"])
         report.notes.extend(f"jvm_route_annotations: {n}" for n in tool_notes)
         _report_unreadable("jvm_route_annotations", classes, outputs, report)
+        before = (len(report.entrypoints), len(report.jobs))
         for fqn, _ in classes:
             out = outputs.get(fqn)
             if out:
                 _parse_javap(out, fqn.split(".")[-1], report, spec.get("job_signatures") or {})
+        if outputs and (len(report.entrypoints), len(report.jobs)) == before:
+            # Cero rutas no es "este sistema no tiene rutas": este lector solo conoce las anotaciones de
+            # Spring. Un WAR Java EE con JAX-RS (@Path/@GET) o servlets (@WebServlet) pasa por aquí sin
+            # dejar nada, y callarlo presentaría un mapa sin entradas como si fuera verdad (2026-09-30).
+            report.notes.append(
+                f"jvm_route_annotations: {len(outputs)} clase(s) leídas y ninguna trae una anotación que este lector "
+                "reconozca (@RequestMapping/@*Mapping y @Scheduled de Spring); si el stack declara rutas de otra forma "
+                "(JAX-RS @Path, @WebServlet, web.xml), NO están en el mapa")
 
 
 def _report_no_classes(mechanism: str, classes, class_root: str, artifact: Path, report: "MapReport") -> bool:
